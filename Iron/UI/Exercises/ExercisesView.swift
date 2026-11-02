@@ -9,52 +9,20 @@
 import SwiftUI
 import WorkoutDataKit
 
-private final class ExerciseThumbnailCache {
-    static let shared = ExerciseThumbnailCache()
-    let images = NSCache<NSString, UIImage>()
-}
-
 struct ExerciseDiagramThumbnail: View {
     let exercise: Exercise
     var size: CGFloat = 58
 
-    @State private var image: UIImage?
     @State private var loadedRemoteMediaURL: URL?
-
-    private func load() {
-        guard image == nil, let path = exercise.pdfPaths.first else { return }
-        // The same diagram is rendered at several row sizes. Include the
-        // requested pixel edge so a compact completion-summary thumbnail
-        // cannot seed the cache with a blurry image that is later enlarged.
-        let key = "\(path)|\(Int((size * 2).rounded(.up)))" as NSString
-        if let cached = ExerciseThumbnailCache.shared.images.object(forKey: key) {
-            image = cached
-            return
-        }
-
-        let url = ExerciseStore.defaultBuiltInExercisesResourceURL.appendingPathComponent(path)
-        guard let document = CGPDFDocument(url as CFURL), let page = document.page(at: 1) else { return }
-        let pageRect = page.getBoxRect(.mediaBox)
-        let scale = min((size * 2) / pageRect.width, (size * 2) / pageRect.height)
-        let renderSize = CGSize(width: pageRect.width * scale, height: pageRect.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: renderSize)
-        let rendered = renderer.image { context in
-            UIColor.white.setFill()
-            context.fill(CGRect(origin: .zero, size: renderSize))
-            context.cgContext.translateBy(x: 0, y: renderSize.height)
-            context.cgContext.scaleBy(x: scale, y: -scale)
-            context.cgContext.drawPDFPage(page)
-        }
-        ExerciseThumbnailCache.shared.images.setObject(rendered, forKey: key)
-        image = rendered
-    }
 
     var body: some View {
         ZStack {
             Circle()
                 .fill(IronTheme.diagramCanvas)
             if exercise.imageURL == nil || loadedRemoteMediaURL != exercise.imageURL {
-                fallbackContent
+                Image(systemName: "figure.strengthtraining.traditional")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
             }
             if let remoteURL = exercise.imageURL {
                 ExerciseRemoteMediaView(
@@ -76,29 +44,12 @@ struct ExerciseDiagramThumbnail: View {
                 .stroke(IronTheme.outline.opacity(0.55), lineWidth: 1)
         )
         .shadow(color: IronTheme.mediaBackdrop.opacity(0.08), radius: 2, x: 0, y: 1)
-        .onAppear(perform: load)
         .onChange(of: exercise.imageURL) { _, newURL in
             if loadedRemoteMediaURL != newURL {
                 loadedRemoteMediaURL = nil
             }
         }
         .accessibilityHidden(true)
-    }
-
-    @ViewBuilder private var fallbackContent: some View {
-        if let image = image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    // The built-in diagrams do not all have the same amount
-                    // of whitespace in their PDF canvas. A proportional inset
-                    // keeps wide poses inside the circle at every row size.
-                    .padding(size * 0.14)
-        } else {
-            Image(systemName: "figure.strengthtraining.traditional")
-            .font(.title2.weight(.semibold))
-            .foregroundStyle(IronTheme.secondaryText)
-        }
     }
 }
 
@@ -116,66 +67,65 @@ struct ExerciseLibraryTag: View {
     }
 }
 
+/// Shared plain-text metadata for library and selection rows.
+@MainActor
+struct ExerciseLibraryMetadata {
+    let exercise: Exercise
+    let lastPerformed: Date?
+
+    private var muscleTitle: String {
+        exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized
+    }
+
+    private var details: [String] {
+        [muscleTitle, exercise.equipment.first?.equipmentTitle].compactMap { $0 }
+    }
+
+    var title: String {
+        (details + (lastPerformed.map { [ExerciseRecencyCaption.title(for: $0)] } ?? []))
+            .joined(separator: " · ")
+    }
+
+    var accessibilityLabel: String {
+        let recency = lastPerformed.map { ["last done \(ExerciseRecencyCaption.title(for: $0).lowercased())"] } ?? []
+        return ([exercise.title] + details + recency).joined(separator: ", ")
+    }
+}
+
 struct ExerciseLibraryRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var exerciseStore: ExerciseStore
 
     let exercise: Exercise
 
-    private var muscleTitle: String {
-        exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized
-    }
-
     private var lastPerformed: Date? {
         exerciseStore.lastPerformedDates[exercise.uuid]
     }
 
-    var body: some View {
-        HStack(spacing: 12) {
-            ExerciseDiagramThumbnail(exercise: exercise, size: 52)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(exercise.title)
-                    .font(.headline)
-                    .foregroundStyle(IronTheme.primaryText)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                Group {
-                    if dynamicTypeSize.isAccessibilitySize {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ExerciseLibraryTag(title: muscleTitle)
-                            if let equipment = exercise.equipment.first {
-                                ExerciseLibraryTag(title: equipment.capitalized)
-                            }
-                        }
-                        .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        HStack(spacing: 6) {
-                            ExerciseLibraryTag(title: muscleTitle)
-                            if let equipment = exercise.equipment.first {
-                                ExerciseLibraryTag(title: equipment.capitalized)
-                            }
-                        }
-                        .lineLimit(1)
-                    }
-                }
-            }
-            Spacer()
-            if let lastPerformed, !dynamicTypeSize.isAccessibilitySize {
-                ExerciseRecencyCaption(date: lastPerformed)
-            }
-        }
-        .padding(.vertical, 3)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityTitle)
-        .accessibilityValue(lastPerformed.map { "Last performed \(ExerciseRecencyCaption.title(for: $0))" } ?? "")
+    private var metadata: ExerciseLibraryMetadata {
+        ExerciseLibraryMetadata(exercise: exercise, lastPerformed: lastPerformed)
     }
 
-    private var accessibilityTitle: String {
-        let muscle = exercise.primaryMuscleCommonName.first?.capitalized
-            ?? exercise.muscleGroup.capitalized
-        guard let equipment = exercise.equipment.first else {
-            return "\(exercise.title), \(muscle)"
+    var body: some View {
+        HStack(spacing: 12) {
+            ExerciseDiagramThumbnail(exercise: exercise, size: 48)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(exercise.title)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(IronTheme.primaryText)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(metadata.title)
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        return "\(exercise.title), \(muscle), \(equipment.capitalized)"
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(metadata.accessibilityLabel)
     }
 }
 
@@ -216,6 +166,7 @@ struct ExercisesView : View {
             }
         }
         .listStyle(.insetGrouped)
+        .contentMargins(.horizontal, 10, for: .scrollContent)
     }
 }
 

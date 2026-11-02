@@ -53,8 +53,45 @@ extension WorkoutDataStorage {
             
             workoutsChangedSubject
                 .debounce(for: .seconds(2), scheduler: DispatchQueue.main)
-                .sink(receiveValue: WidgetKind.lastWorkout.reloadTimelines)
+                .sink {
+                    WidgetKind.lastWorkout.reloadTimelines()
+                    WidgetKind.thisWeek.reloadTimelines()
+                }
                 .store(in: &cancellables)
+        }
+
+        // Reuse Home's saved-history projection, including its completed-set and
+        // tracking-type rules. Its save observer also covers set/exercise edits,
+        // deletions, imports and the initial app launch, before Home is opened.
+        Task { @MainActor in
+            let history = TrainingHistoryStore.shared
+            history.$snapshot
+                .dropFirst(history.snapshot.sessions.isEmpty ? 1 : 0)
+                .map { snapshot in
+                    ThisWeekWidgetHistory(sessions: snapshot.sessions.map {
+                        .init(date: $0.date, sets: $0.setCount, volume: $0.volume)
+                    })
+                }
+                .removeDuplicates()
+                .sink { value in
+                    do {
+                        try ThisWeekWidgetCache.save(value)
+                        WidgetKind.thisWeek.reloadTimelines()
+                    } catch {
+                        os_log("Could not update This Week widget: %{public}@", log: .widgets,
+                               type: .error, error.localizedDescription)
+                    }
+                }
+                .store(in: &cancellables)
+            NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: UserDefaults.appGroup)
+                .map { _ in UserDefaults.appGroup.string(forKey: "weightUnit") }
+                .prepend(UserDefaults.appGroup.string(forKey: "weightUnit"))
+                .removeDuplicates()
+                .dropFirst()
+                .debounce(for: .milliseconds(200), scheduler: DispatchQueue.main)
+                .sink { _ in WidgetKind.thisWeek.reloadTimelines() }
+                .store(in: &cancellables)
+            history.observe(in: workoutDataStorage.persistentContainer.viewContext)
         }
         
         workoutDataStorage.persistentContainer.viewContext.publisher

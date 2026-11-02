@@ -29,6 +29,7 @@ enum HistorySetTrackingValues {
 
 struct WorkoutExerciseDetailView: View {
     @Environment(\.managedObjectContext) private var managedObjectContext
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var restTimerStore: RestTimerStore
     @EnvironmentObject private var exerciseStore: ExerciseStore
@@ -41,6 +42,7 @@ struct WorkoutExerciseDetailView: View {
     @State private var showingRestTimerEditor = false
     @State private var plateCalculatorSet: WorkoutSet?
     @State private var persistenceError: String?
+    @State private var deleteFeedback = 0
 
     init(workoutExercise: WorkoutExercise) {
         self.workoutExercise = workoutExercise
@@ -76,11 +78,13 @@ struct WorkoutExerciseDetailView: View {
 
     var body: some View {
         List {
-            overviewSection
-            setsSection
+            exerciseSection
             previousSessionsSection
         }
         .listStyle(.insetGrouped)
+        .sensoryFeedback(.impact(weight: .medium), trigger: deleteFeedback) { _, _ in settingsStore.workoutHaptics }
+        .sensoryFeedback(.error, trigger: persistenceError) { _, error in error != nil && settingsStore.workoutHaptics }
+        .contentMargins(.horizontal, 10, for: .scrollContent)
         .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
         .navigationTitle(exercise?.title ?? "Exercise Log")
         .navigationBarTitleDisplayMode(.large)
@@ -153,11 +157,14 @@ struct WorkoutExerciseDetailView: View {
                 title: "Plate Calculator",
                 subtitle: "",
                 systemImage: "plusminus",
+                showsDone: false,
                 onClose: { plateCalculatorSet = nil }
             ) {
                 PlateCalculatorView(
                     unit: settingsStore.weightUnit,
-                    initialTarget: max(displayWeight(for: set), settingsStore.weightUnit.barbellWeight),
+                    initialTarget: displayWeight(for: set),
+                    exerciseKey: workoutExercise.exerciseUuid?.uuidString ?? exercise?.title,
+                    onClose: { plateCalculatorSet = nil },
                     onApply: { value in
                         performMutation(failureMessage: "The plate-calculator weight was not saved.") {
                             set.weightValue = WeightUnit.convert(
@@ -186,45 +193,95 @@ struct WorkoutExerciseDetailView: View {
     }
 
     @ViewBuilder
-    private var overviewSection: some View {
+    private var exerciseSection: some View {
         Section {
-            if let exercise {
-                NavigationLink {
-                    ExerciseDetailView(exercise: exercise)
-                        .environmentObject(settingsStore)
-                } label: {
-                    HStack(spacing: 12) {
-                        ExerciseDiagramThumbnail(exercise: exercise, size: 40)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(exercise.title)
-                                .lineLimit(2)
-                            Text(exerciseContextText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-
-            LabeledContent("Sets") {
-                Text("\(workoutExercise.numberOfCompletedSets ?? 0) of \(workoutSets.count)").font(.ironMetric(.body, weight: .semibold))
-            }
-            LabeledContent(sessionWorkLabel.capitalized) {
-                Text(sessionWorkValue).font(.ironMetric(.body, weight: .semibold))
-            }
+            exerciseHeader
+                .listRowInsets(EdgeInsets(top: 14, leading: 10, bottom: 8, trailing: 10))
+            sessionSummary
+                .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 12, trailing: 10))
+            setRows
         } header: {
             Text("Overview")
         } footer: {
             Text(sessionContextText)
         }
-        .monospacedDigit()
+        .listRowSeparator(.hidden)
+    }
+
+    @ViewBuilder
+    private var exerciseHeader: some View {
+        if let exercise {
+            Button { showExerciseInfo = true } label: {
+                HStack(alignment: .top, spacing: 10) {
+                    ExerciseDiagramThumbnail(exercise: exercise, size: 42)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(exercise.title)
+                            .font(.headline)
+                            .foregroundStyle(IronTheme.primaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(exerciseContextText)
+                            .font(.subheadline)
+                            .foregroundStyle(IronTheme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if workoutSets.contains(where: { $0.isPersonalRecord == true }) {
+                        Image(systemName: "trophy.fill")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(IronTheme.metricRecord)
+                            .accessibilityLabel("Personal record")
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(IronTheme.tertiaryText)
+                        .accessibilityHidden(true)
+                }
+                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var sessionSummary: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        let work = sessionWorkDisplay
+        return layout {
+            summaryMetric("Sets", value: "\(workoutExercise.numberOfCompletedSets ?? 0) of \(workoutSets.count)")
+            summaryMetric(sessionWorkLabel.capitalized, value: work.value, unit: work.unit)
+        }
+    }
+
+    private var sessionWorkDisplay: (value: String, unit: String?) {
+        let formatted = sessionWorkValue
+        guard sessionWorkLabel == "volume" || sessionWorkLabel == "distance",
+              let separator = formatted.lastIndex(where: { $0.isWhitespace }) else {
+            return (formatted, nil)
+        }
+        return (String(formatted[..<separator]), String(formatted[formatted.index(after: separator)...]))
+    }
+
+    private func summaryMetric(_ title: String, value: String, unit: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(IronTheme.secondaryText)
+            IronMetricValue(value: value, unit: unit, style: .title2, unitStyle: .body)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private var exerciseContextText: String {
         guard let exercise else { return "Exercise details unavailable" }
         let muscle = exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized
-        guard let equipment = exercise.equipment.first, !equipment.isEmpty else { return muscle }
-        return "\(muscle) · \(equipment.capitalized)"
+        let equipment = exercise.equipment.filter { !$0.isEmpty }.map(\.equipmentTitle).joined(separator: ", ")
+        return equipment.isEmpty ? muscle : "\(muscle) · \(equipment)"
     }
 
     private var sessionContextText: String {
@@ -244,7 +301,8 @@ struct WorkoutExerciseDetailView: View {
         let totalDuration = completedWorkoutSets.compactMap(\.durationValue).reduce(0, +)
         if totalDuration > 0 { return formatDuration(totalDuration) }
 
-        if let volume = workoutExercise.totalCompletedWeight, volume > 0 {
+        let volume = workoutExercise.trackedCompletedVolume
+        if volume > 0 {
             return WeightUnit.format(weight: volume, from: .metric, to: settingsStore.weightUnit)
         }
 
@@ -255,50 +313,89 @@ struct WorkoutExerciseDetailView: View {
     private var sessionWorkLabel: String {
         if completedWorkoutSets.contains(where: { $0.distanceValue != nil }) { return "distance" }
         if completedWorkoutSets.contains(where: { $0.durationValue != nil }) { return "duration" }
-        if (workoutExercise.totalCompletedWeight ?? 0) > 0 { return "volume" }
+        if workoutExercise.trackedCompletedVolume > 0 { return "volume" }
         return "reps"
     }
 
     @ViewBuilder
-    private var setsSection: some View {
-        let usesDuration = workoutSets.contains { $0.durationValue != nil }
-        let isBarbell = exercise?.type == .barbell && !usesDuration
+    private var setRows: some View {
+        let trackingType = workoutSets.first?.trackingType ?? workoutExercise.setTrackingType
 
-        Section {
-            TextField("Exercise Notes", text: commentBinding, axis: .vertical)
-                .lineLimit(1...4)
+        Text(isCurrentWorkout ? "Log Sets" : "Session Sets")
+            .font(.headline)
+            .foregroundStyle(IronTheme.primaryText)
+            .accessibilityAddTraits(.isHeader)
+            .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10))
 
-            if isCurrentWorkout {
-                Button {
-                    showingRestTimerEditor = true
-                } label: {
-                    LabeledContent(
-                        "Rest Timer",
-                        value: restTimerDurationFormatter.string(from: restTimerDuration) ?? "Off"
-                    )
-                }
-            }
-
-            ForEach(Array(workoutSets.enumerated()), id: \.element.id) { index, set in
-                InlineWorkoutSetRow(
-                    set: set,
-                    index: index,
-                    usesDuration: usesDuration,
-                    isBarbell: isBarbell,
-                    previousTitle: previousSetTitle(at: index),
-                    onOpenPlateCalculator: { plateCalculatorSet = set },
-                    onToggleCompleted: { toggleCompleted(set) },
-                    onDelete: { delete(set) },
-                    onChanged: save,
-                    allowsSwipeToDelete: true
+        if isCurrentWorkout {
+            Button {
+                showingRestTimerEditor = true
+            } label: {
+                LabeledContent(
+                    "Rest Timer",
+                    value: restTimerDurationFormatter.string(from: restTimerDuration) ?? "Off"
                 )
-                .environmentObject(settingsStore)
+                .frame(minHeight: IronTheme.controlHeight)
             }
-
-            Button("Add Set", systemImage: "plus", action: addSet)
-        } header: {
-            Text(isCurrentWorkout ? "Log Sets" : "Session Sets")
+            .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 4, trailing: 10))
         }
+
+        TextField("Notes for This Workout", text: commentBinding, axis: .vertical)
+            .accessibilityHint("Saved with this session only")
+            .font(.body)
+            .lineLimit(1...4)
+            .frame(minHeight: IronTheme.controlHeight)
+            .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 8, trailing: 10))
+
+        if !workoutSets.isEmpty, !dynamicTypeSize.isAccessibilitySize {
+            setColumnHeaders(trackingType: trackingType)
+                .listRowInsets(EdgeInsets(top: 6, leading: 10, bottom: 4, trailing: 10))
+        }
+
+        ForEach(Array(workoutSets.enumerated()), id: \.element.id) { index, set in
+            HistoryWorkoutSetRow(
+                set: set,
+                index: index,
+                trackingType: set.isCompleted ? set.trackingType : workoutExercise.setTrackingType,
+                onOpenPlateCalculator: { plateCalculatorSet = set },
+                onToggleCompleted: { toggleCompleted(set) },
+                onDelete: { delete(set) },
+                onChanged: save
+            )
+            .environmentObject(settingsStore)
+            .listRowInsets(EdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10))
+        }
+
+        Button(action: addSet) {
+            Label("Add Set", systemImage: "plus")
+                .font(.headline)
+                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
+                .background(IronTheme.raisedSurface, in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(IronTheme.accent)
+        .listRowInsets(EdgeInsets(top: 8, leading: 10, bottom: 12, trailing: 10))
+    }
+
+    private func setColumnHeaders(trackingType: SetTrackingType) -> some View {
+        HStack(spacing: InlineWorkoutSetLayout.spacing) {
+            Text("Set").frame(width: InlineWorkoutSetLayout.setWidth)
+            ForEach(trackingType.columns) { column in
+                Text(trackingType.header(for: column, weightUnit: settingsStore.weightUnit.unit.symbol,
+                                         distanceUnit: WorkoutSet.distanceUnit(settingsStore.weightUnit)))
+                    .frame(maxWidth: .infinity)
+            }
+            if settingsStore.logRPE {
+                Text("RPE").frame(width: InlineWorkoutSetLayout.rpeWidth)
+            }
+            Image(systemName: "checkmark")
+                .frame(width: InlineWorkoutSetLayout.completionWidth)
+        }
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(IronTheme.secondaryText)
+        .multilineTextAlignment(.center)
+        .accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -368,12 +465,13 @@ struct WorkoutExerciseDetailView: View {
         let totalDuration = sets.compactMap(\.durationValue).reduce(0, +)
         if totalDuration > 0 { return formatDuration(totalDuration) }
 
-        if let volume = session.totalCompletedWeight, volume > 0 {
+        let volume = session.trackedCompletedVolume
+        if volume > 0 {
             return WeightUnit.format(weight: volume, from: .metric, to: settingsStore.weightUnit)
         }
 
         let repetitions = session.numberOfCompletedRepetitions ?? 0
-        return repetitions > 0 ? "\(repetitions) reps" : "—"
+        return repetitions > 0 ? "\(repetitions) \(repetitions == 1 ? "rep" : "reps")" : "—"
     }
 
     private var restTimerDuration: TimeInterval {
@@ -398,14 +496,6 @@ struct WorkoutExerciseDetailView: View {
         performMutation(failureMessage: "The rest-timer setting was not saved.") {
             workoutExercise.restTimerDurationValue = duration
         }
-    }
-
-    private func previousSetTitle(at index: Int) -> String {
-        for session in previousSessions {
-            guard let sets = session.workoutSets?.array as? [WorkoutSet], sets.indices.contains(index) else { continue }
-            return sets[index].resultTitle(weightUnit: settingsStore.weightUnit)
-        }
-        return "—"
     }
 
     private func formatDuration(_ seconds: TimeInterval) -> String {
@@ -488,8 +578,6 @@ struct WorkoutExerciseDetailView: View {
         } onSuccess: {
             if isCompleting && isCurrentWorkout {
                 restTimerStore.start(duration: restTimerDuration)
-                let feedback = UINotificationFeedbackGenerator()
-                feedback.notificationOccurred(.success)
             }
         }
     }
@@ -499,6 +587,8 @@ struct WorkoutExerciseDetailView: View {
         performMutation(failureMessage: "The set was not removed.") {
             workoutExercise.removeFromWorkoutSets(set)
             managedObjectContext.delete(set)
+        } onSuccess: {
+            deleteFeedback += 1
         }
     }
 
@@ -530,6 +620,1065 @@ struct WorkoutExerciseDetailView: View {
         } catch {
             persistenceError = "\(failureMessage) \(error.localizedDescription)"
             return false
+        }
+    }
+}
+
+// A history variant of the logger row: history gives the Previous column's
+// width to the editable values, while keeping the logger's tokens and save path.
+private struct HistoryWorkoutSetRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @ObservedObject var set: WorkoutSet
+
+    let index: Int
+    let trackingType: SetTrackingType
+    let onOpenPlateCalculator: () -> Void
+    let onToggleCompleted: () -> Void
+    let onDelete: () -> Bool
+    let onChanged: () -> Bool
+
+    @State private var showingRPEPicker = false
+    @State private var showingDurationPicker = false
+    @State private var showingDurationSaveError = false
+    @State private var inlineTimerStart: Date?
+    @State private var weightText = ""
+    @State private var repetitionsText = ""
+    @State private var measuredRowWidth: CGFloat = 0
+    @State private var swipeOffset: CGFloat = 0
+    @State private var swipeStartOffset: CGFloat = 0
+    @State private var isSwipingSet = false
+    @State private var isPerformingSwipeDelete = false
+    @State private var measuredRowHeight: CGFloat = 52
+    private let allowsSwipeToDelete = true
+    private let openSwipeSetID: Binding<NSManagedObjectID?> = .constant(nil)
+    @State private var completionBounce = 0
+    @State private var completionFeedback = 0
+    @State private var selectionFeedback = 0
+    @State private var checkReveal: CGFloat = 0
+    @FocusState private var focusedField: EntryField?
+
+    private let deleteActionWidth: CGFloat = 76
+    private let deleteActionGap: CGFloat = 8
+
+    private var openSwipeOffset: CGFloat {
+        -(deleteActionWidth + deleteActionGap + InlineWorkoutSetLayout.completedChromeExpansion)
+    }
+
+    private var fullSwipeDeleteThreshold: CGFloat {
+        effectiveRowWidth * 0.55
+    }
+
+    private var effectiveRowWidth: CGFloat {
+        if measuredRowWidth > 0 {
+            return measuredRowWidth
+        }
+        return max(
+            deleteActionWidth,
+            UIScreen.main.bounds.width - (IronTheme.horizontalPadding * 2)
+        )
+    }
+
+    private enum EntryField: Hashable {
+        case weight
+        case repetitions
+    }
+
+    private var valueColor: Color {
+        return set.isCompleted ? IronTheme.primaryText : IronTheme.secondaryText
+    }
+
+    private var badgeColor: Color {
+        if set.isCompleted { return IronTheme.setFill(for: set.tagValue).tint }
+        return set.tagValue == .warmUp ? IronTheme.metricSets : IronTheme.secondaryText
+    }
+
+    private var badgeFill: Color {
+        if set.isCompleted {
+            switch set.tagValue {
+            case .warmUp: return IronTheme.setWarmUpContainer
+            case .dropSet: return IronTheme.setDropContainer
+            case .failure: return IronTheme.setFailureContainer
+            case nil: return IronTheme.accentSoft
+            }
+        }
+        return set.tagValue == .warmUp ? IronTheme.metricSetsContainer : IronTheme.field
+    }
+
+    private var completionImage: some View {
+        Image(systemName: set.isCompleted ? "checkmark.circle.fill" : "circle")
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(
+                set.isCompleted ? IronTheme.onAccent : IronTheme.tertiaryText,
+                IronTheme.accent
+            )
+            .font(.system(size: 28, weight: .semibold))
+    }
+
+    @ViewBuilder
+    private var completionSymbol: some View {
+        if reduceMotion {
+            completionImage.contentTransition(.opacity)
+        } else {
+            ZStack {
+                // Keep the blue disc visible while the symbol's white check draws in.
+                Circle()
+                    .fill(IronTheme.accent)
+                    .opacity(set.isCompleted ? 1 : 0)
+                completionImage
+                    .contentTransition(.symbolEffect(.replace))
+                    .symbolEffect(.bounce, options: .nonRepeating, value: completionBounce)
+                    .mask {
+                        Rectangle()
+                            .scaleEffect(x: set.isCompleted ? checkReveal : 1, anchor: .leading)
+                    }
+            }
+            .frame(width: 28, height: 28)
+        }
+    }
+
+    /// Timed sets can be run like a stopwatch instead of dialling in a target
+    /// first: tap to start, tap to bank the elapsed time.
+    @ViewBuilder
+    private var durationControl: some View {
+        if settingsStore.inlineSetTimer, !set.isCompleted {
+            TimelineView(.periodic(from: Date(), by: 0.5)) { context in
+                Button {
+                    selectionFeedback += 1
+                    toggleInlineTimer()
+                } label: {
+                    durationLabel(
+                        text: inlineTimerText(now: context.date),
+                        isRunning: inlineTimerStart != nil
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(inlineTimerStart == nil ? "Start set timer" : "Stop set timer")
+            }
+            .contextMenu {
+                Button("Enter Duration", systemImage: "keyboard") { showingDurationPicker = true }
+            }
+        } else {
+            Button(action: { showingDurationPicker = true }) {
+                durationLabel(
+                    text: set.durationValue.map(SetTrackingType.durationText) ?? (set.isCompleted ? "—" : "1:00"),
+                    isRunning: false
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Set duration")
+        }
+    }
+
+    private func durationLabel(text: String, isRunning: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: isRunning ? "stop.fill" : "stopwatch")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(
+                    isRunning ? IronTheme.danger : (set.isCompleted ? IronTheme.metricTime : IronTheme.secondaryText)
+                )
+            Text(text)
+                .font(.ironMetric(.title3, weight: .semibold))
+                .foregroundColor(valueColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: text)
+        }
+        .frame(maxWidth: .infinity, minHeight: 40)
+    }
+
+    private func inlineTimerText(now: Date) -> String {
+        guard let inlineTimerStart else {
+            return SetTrackingType.durationText(set.durationValue ?? 0)
+        }
+        let elapsed = max(0, now.timeIntervalSince(inlineTimerStart))
+        return restTimerDurationFormatter.string(from: elapsed) ?? "0:00"
+    }
+
+    private func toggleInlineTimer() {
+        if let inlineTimerStart {
+            set.durationValue = max(1, (Date().timeIntervalSince(inlineTimerStart)).rounded())
+            self.inlineTimerStart = nil
+            _ = onChanged()
+        } else {
+            inlineTimerStart = Date()
+        }
+    }
+
+    private var weightTextBinding: Binding<String> {
+        Binding(
+            get: { weightText },
+            set: { proposedValue in
+                let sanitizedValue = sanitizedDecimalInput(proposedValue)
+                guard proposedValue.isEmpty || !sanitizedValue.isEmpty else { return }
+                weightText = sanitizedValue
+
+                guard let displayValue = weightFormatter.number(from: sanitizedValue)?.doubleValue else {
+                    if sanitizedValue.isEmpty, set.weightValue != 0 {
+                        set.weightValue = 0
+                        _ = onChanged()
+                    }
+                    return
+                }
+
+                let metricValue = min(
+                    max(WeightUnit.convert(weight: displayValue, from: settingsStore.weightUnit, to: .metric), 0),
+                    WorkoutSet.MAX_WEIGHT
+                )
+                if abs(set.weightValue - metricValue) > 0.000_001 {
+                    set.weightValue = metricValue
+                    _ = onChanged()
+                }
+            }
+        )
+    }
+
+    private var repetitionsTextBinding: Binding<String> {
+        Binding(
+            get: { repetitionsText },
+            set: { proposedValue in
+                let sanitizedValue = sanitizedIntegerInput(proposedValue)
+                guard proposedValue.isEmpty || !sanitizedValue.isEmpty else { return }
+                repetitionsText = sanitizedValue
+
+                let value = min(
+                    max(Int(sanitizedValue) ?? 0, 0),
+                    Int(WorkoutSet.MAX_REPETITIONS)
+                )
+                if set.repetitionsValue != Int16(value) {
+                    set.repetitionsValue = Int16(value)
+                    _ = onChanged()
+                }
+            }
+        )
+    }
+
+    private var weightFormatter: NumberFormatter {
+        settingsStore.weightUnit.numberFormatter
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            swipeableRow
+            let additional = set.additionalTrackingTitle(weightUnit: settingsStore.weightUnit)
+            if !additional.isEmpty {
+                Text(additional)
+                    .font(.ironMetric(.footnote, weight: .semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+            }
+        }
+        .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in settingsStore.workoutHaptics }
+        .sensoryFeedback(.success, trigger: completionFeedback) { _, _ in settingsStore.workoutHaptics }
+        .onAppear {
+            synchronizeEntryText()
+            checkReveal = set.isCompleted ? 1 : 0
+        }
+        .onChange(of: set.isCompleted) { _, completed in
+            if focusedField != .weight { weightText = formattedWeight }
+            if completed {
+                completionBounce += 1
+                withAnimation(IronMotion.preferred(IronMotion.snappy.delay(0.12), reduceMotion: reduceMotion)) {
+                    checkReveal = 1
+                }
+            } else {
+                checkReveal = 0
+            }
+            if completed, inlineTimerStart != nil { toggleInlineTimer() }
+        }
+        .onChange(of: set.weightValue) { _, _ in
+            if focusedField != .weight { weightText = formattedWeight }
+        }
+        .onChange(of: set.repetitionsValue) { _, _ in
+            if focusedField != .repetitions { repetitionsText = formattedRepetitions }
+        }
+        .onChange(of: settingsStore.weightUnit) { _, _ in
+            if focusedField != .weight { weightText = formattedWeight }
+        }
+        .onChange(of: focusedField) { _, newValue in
+            weightText = formattedWeight
+            if newValue != .repetitions { repetitionsText = formattedRepetitions }
+        }
+        .toolbar {
+            if focusedField != nil {
+                ToolbarItemGroup(placement: .keyboard) {
+                    if focusedField == .weight, settingsStore.showPlateCalculator {
+                        Button("Plate Calculator", systemImage: "plusminus", action: openPlateCalculator)
+                            .labelStyle(.iconOnly)
+                            .accessibilityHint("Calculates the plates to load for this set")
+                    }
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                        .fontWeight(.semibold)
+                        .accessibilityLabel("Dismiss number pad")
+                }
+            }
+        }
+        .sheet(isPresented: $showingRPEPicker) {
+            HistorySetRPEPickerSheet(set: set, onChanged: onChanged)
+        }
+        .sheet(isPresented: $showingDurationPicker) {
+            IronDurationPickerSheet(
+                initialDuration: set.durationValue ?? 60,
+                shouldDismiss: { !showingDurationSaveError }
+            ) { duration in
+                set.durationValue = duration
+                showingDurationSaveError = !onChanged()
+            }
+            .alert("Duration Not Saved", isPresented: $showingDurationSaveError) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Your duration could not be saved. Keep this sheet open and try again.")
+            }
+        }
+    }
+
+    private var swipeableRow: some View {
+        ZStack(alignment: .trailing) {
+            if allowsSwipeToDelete, deleteRevealWidth > 0.5 {
+                swipeDeleteAction
+            }
+
+            Group {
+                if needsExpandedCompactLayout {
+                    accessibleCompactRow
+                } else {
+                    regularCompactRow
+                }
+            }
+            // Keep sweep state and success feedback alive across presentation changes.
+            .ironSetCompletion(
+                isComplete: set.isCompleted, feedbackEnabled: false,
+                tint: IronTheme.setFill(for: set.tagValue).tint,
+                settledOpacity: IronTheme.setFill(for: set.tagValue).settled,
+                peakOpacity: IronTheme.setFill(for: set.tagValue).peak
+            )
+            .padding(.horizontal, -InlineWorkoutSetLayout.completedChromeExpansion)
+            .animation(
+                IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion),
+                value: set.isCompleted
+            )
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { measuredRowHeight = proxy.size.height }
+                        .onChange(of: proxy.size.height) { _, height in measuredRowHeight = height }
+                }
+            }
+            .allowsHitTesting(swipeOffset == 0)
+            .accessibilityHidden(swipeOffset < 0)
+            .overlay {
+                if swipeOffset < 0 {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: closeSwipe)
+                        .padding(.horizontal, -InlineWorkoutSetLayout.completedChromeExpansion)
+                        .accessibilityLabel("Close delete action")
+                        .accessibilityAddTraits(.isButton)
+                }
+            }
+            .padding(.vertical, 2)
+            .offset(x: swipeOffset)
+        }
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        measuredRowWidth = proxy.size.width
+                    }
+                    .onChange(of: proxy.size.width) { _, width in
+                        measuredRowWidth = width
+                    }
+            }
+        )
+        .contentShape(Rectangle())
+        .historySetRowSwipe(
+            enabled: allowsSwipeToDelete,
+            legacy: swipeDeleteGesture,
+            onChanged: handleSwipeChanged,
+            onEnded: handleSwipeEnded
+        )
+        .onChange(of: openSwipeSetID.wrappedValue) { _, id in
+            if id != set.objectID, !isPerformingSwipeDelete { closeSwipe() }
+        }
+    }
+
+    private var needsExpandedCompactLayout: Bool { dynamicTypeSize.isAccessibilitySize }
+
+    @ViewBuilder
+    private func measurementField(_ column: SetTrackingType.Column) -> some View {
+        switch column {
+        case .weight:
+            setField(isFocused: focusedField == .weight) {
+                TextField("0", text: weightTextBinding)
+                    .keyboardType(.decimalPad).focused($focusedField, equals: .weight)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityLabel("\(trackingType == .assistedBodyweight ? "Assistance" : "Weight") in \(settingsStore.weightUnit.unit.symbol)")
+            }
+        case .reps:
+            setField(isFocused: focusedField == .repetitions) {
+                TextField("0", text: repetitionsTextBinding)
+                    .keyboardType(.numberPad).focused($focusedField, equals: .repetitions)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityLabel("Repetitions")
+            }
+        case .duration: setField { durationControl }
+        case .distance:
+            setField {
+                Text(set.distanceValue.map { WorkoutSet.distanceDisplayValue($0, weightUnit: settingsStore.weightUnit).formatted(.number.precision(.fractionLength(2))) } ?? "—")
+                    .accessibilityLabel("Distance in \(WorkoutSet.distanceUnit(settingsStore.weightUnit))")
+                    .accessibilityValue(set.distanceValue.map { WorkoutSet.distanceTitle($0, weightUnit: settingsStore.weightUnit) } ?? "Not entered")
+            }
+        }
+    }
+
+    private var accessibleSetActionsLayout: AnyLayout {
+        dynamicTypeSize >= .accessibility3
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+            : AnyLayout(HStackLayout(spacing: 10))
+    }
+
+    private func toggleCompletion() {
+        let wasCompleted = set.isCompleted
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+            onToggleCompleted()
+        }
+        if !wasCompleted, set.isCompleted { completionFeedback += 1 }
+        if wasCompleted, !set.isCompleted { selectionFeedback += 1 }
+    }
+
+    private var accessibleCompactRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            accessibleSetActionsLayout {
+                Menu { setTypeMenuItems } label: {
+                    Text(set.tagValue == nil ? "Set \(index + 1)" : "\(setLabel) · Set \(index + 1)")
+                        .font(.headline)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(badgeColor)
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: IronTheme.controlHeight)
+                        .background(badgeFill, in: Capsule())
+                }
+                .accessibilityLabel("Set type")
+                .accessibilityValue(set.tagValue?.title ?? "Normal set")
+                .accessibilityHint("Change set type")
+                if settingsStore.logRPE {
+                    Button { showingRPEPicker = true } label: {
+                        Text(set.rpeValue.map { "RPE " + String(format: "%g", $0) } ?? "RPE")
+                            .font(.ironMetric(.subheadline, weight: .semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .foregroundStyle(IronTheme.metricEffort)
+                            .frame(minWidth: IronTheme.controlHeight, minHeight: IronTheme.controlHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(rpeAccessibilityLabel)
+                    .accessibilityHint("Opens the effort selector")
+                }
+                Button(action: toggleCompletion) {
+                    completionSymbol
+                        .frame(width: IronTheme.controlHeight, height: IronTheme.controlHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(set.isCompleted ? "Set \(index + 1) completed" : "Mark set \(index + 1) complete")
+                .accessibilityValue(set.isCompleted ? "Completed" : "Not completed")
+                .accessibilityAddTraits(set.isCompleted ? .isSelected : [])
+            }
+            ForEach(trackingType.columns) { column in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(trackingType.header(for: column, weightUnit: settingsStore.weightUnit.unit.symbol,
+                                             distanceUnit: WorkoutSet.distanceUnit(settingsStore.weightUnit)))
+                        .font(.caption).foregroundStyle(IronTheme.secondaryText)
+                    measurementField(column)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, InlineWorkoutSetLayout.completedChromeExpansion)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var regularCompactRow: some View {
+        HStack(spacing: InlineWorkoutSetLayout.spacing) {
+            Menu {
+                setTypeMenuItems
+            } label: {
+                Text(setLabel)
+                    .font(.ironMetric(.callout, weight: .semibold))
+                    .foregroundStyle(badgeColor)
+                    .frame(width: 30, height: 30)
+                    .background(badgeFill, in: Circle())
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "chevron.down.circle.fill")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(badgeColor, IronTheme.surface)
+                            .offset(x: 4, y: 4)
+                            .accessibilityHidden(true)
+                    }
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                    .frame(width: InlineWorkoutSetLayout.setWidth)
+            }
+            .accessibilityLabel("Set type")
+            .accessibilityValue(set.tagValue?.title ?? "Normal set")
+            .accessibilityHint("Change set type")
+
+            ForEach(trackingType.columns) { column in measurementField(column) }
+
+            if settingsStore.logRPE {
+                Button(action: { showingRPEPicker = true }) {
+                    Group {
+                        if let rpe = set.rpeValue {
+                            Text(String(format: "%g", rpe))
+                        } else if set.isCompleted {
+                            Text("–")
+                        } else {
+                            Image(systemName: "gauge.with.dots.needle.50percent")
+                        }
+                    }
+                    .font(.ironMetric(.subheadline, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .foregroundStyle(set.rpeValue != nil ? IronTheme.metricEffort : IronTheme.secondaryText)
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                    .frame(width: InlineWorkoutSetLayout.rpeWidth)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(rpeAccessibilityLabel)
+                .accessibilityHint("Opens the effort selector")
+            }
+
+            Button(action: toggleCompletion) {
+                completionSymbol
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                    .frame(width: InlineWorkoutSetLayout.completionWidth)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                set.isCompleted
+                    ? "Set \(index + 1) completed"
+                    : "Mark set \(index + 1) complete"
+            )
+            .accessibilityValue(set.isCompleted ? "Completed" : "Not completed")
+            .accessibilityRemoveTraits(.isSelected)
+            .accessibilityAddTraits(set.isCompleted ? .isSelected : [])
+        }
+        // Keep a 52 pt compact row while preserving its columns and 44 pt targets.
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, minHeight: 52)
+        .padding(.horizontal, InlineWorkoutSetLayout.completedChromeExpansion)
+    }
+
+    private var rpeAccessibilityLabel: String {
+        guard let rpe = set.rpeValue else { return "Set RPE" }
+        return "RPE \(String(format: "%g", rpe))"
+    }
+
+    @ViewBuilder
+    private var setTypeMenuItems: some View {
+        Picker("Set Type", selection: setTagBinding) {
+            Label("Normal Set", systemImage: "number").tag(WorkoutSetTag?.none)
+            ForEach(WorkoutSetTag.allCases, id: \.self) { tag in
+                Label(tag.title.capitalized, systemImage: setTypeIcon(for: tag))
+                    .tag(WorkoutSetTag?.some(tag))
+            }
+        }
+
+        Section {
+            Button("Delete Set", systemImage: "trash", role: .destructive) {
+                _ = onDelete()
+            }
+        }
+    }
+
+    private var setTagBinding: Binding<WorkoutSetTag?> {
+        Binding(
+            get: { set.tagValue },
+            set: {
+                guard set.tagValue != $0 else { return }
+                set.tagValue = $0
+                if onChanged() { selectionFeedback += 1 }
+            }
+        )
+    }
+
+    private func setTypeIcon(for tag: WorkoutSetTag) -> String {
+        switch tag {
+        case .warmUp: return "flame"
+        case .dropSet: return "arrow.down.right"
+        case .failure: return "bolt.fill"
+        }
+    }
+
+    private var setLabel: String {
+        switch set.tagValue {
+        case .warmUp: return "W"
+        case .dropSet: return "D"
+        case .failure: return "F"
+        case nil: return "\(index + 1)"
+        }
+    }
+
+    private var formattedWeight: String {
+        let displayValue = WeightUnit.convert(
+            weight: set.weightValue,
+            from: .metric,
+            to: settingsStore.weightUnit
+        )
+        let formatter = focusedField == .weight ? weightFormatter : settingsStore.weightUnit.displayNumberFormatter
+        return formatter.string(from: NSNumber(value: displayValue)) ?? "0"
+    }
+
+    private var formattedRepetitions: String {
+        String(Int(set.repetitionsValue))
+    }
+
+    private func synchronizeEntryText() {
+        weightText = formattedWeight
+        repetitionsText = formattedRepetitions
+    }
+
+    private func sanitizedDecimalInput(_ proposedValue: String) -> String {
+        let decimalSeparator = weightFormatter.decimalSeparator
+            ?? Locale.current.decimalSeparator
+            ?? "."
+        let maximumFractionDigits = settingsStore.weightUnit.maximumFractionDigits
+        var result = ""
+        var hasDecimalSeparator = false
+        var fractionDigitCount = 0
+
+        for character in proposedValue {
+            if let digit = character.wholeNumberValue {
+                if hasDecimalSeparator {
+                    guard fractionDigitCount < maximumFractionDigits else { continue }
+                    fractionDigitCount += 1
+                }
+                result.append(contentsOf: String(digit))
+            } else if (character == "." || character == "," || String(character) == decimalSeparator),
+                      maximumFractionDigits > 0,
+                      !hasDecimalSeparator {
+                if result.isEmpty {
+                    result = "0"
+                }
+                result.append(contentsOf: decimalSeparator)
+                hasDecimalSeparator = true
+            }
+        }
+
+        if let value = weightFormatter.number(from: result)?.doubleValue {
+            let maximumDisplayWeight = WeightUnit.convert(
+                weight: WorkoutSet.MAX_WEIGHT,
+                from: .metric,
+                to: settingsStore.weightUnit
+            )
+            if value > maximumDisplayWeight {
+                return weightFormatter.string(from: NSNumber(value: maximumDisplayWeight)) ?? result
+            }
+        }
+        return result
+    }
+
+    private func sanitizedIntegerInput(_ proposedValue: String) -> String {
+        let digits = proposedValue.compactMap(\.wholeNumberValue).map(String.init).joined()
+        guard let value = Int(digits) else { return "" }
+        return String(min(value, Int(WorkoutSet.MAX_REPETITIONS)))
+    }
+
+    private func openPlateCalculator() {
+        focusedField = nil
+        DispatchQueue.main.async(execute: onOpenPlateCalculator)
+    }
+
+    private func setField<Content: View>(
+        width: CGFloat? = nil,
+        isFocused: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .font(.ironMetric(.title3, weight: .semibold))
+            .foregroundColor(valueColor)
+            .multilineTextAlignment(.center)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .frame(minWidth: 0, maxWidth: width == nil ? .infinity : nil, minHeight: 40)
+            .frame(width: width)
+            .background(
+                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
+                    .fill(isFocused ? IronTheme.accentSoft : IronTheme.tertiaryFill)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
+                            .strokeBorder(isFocused ? IronTheme.accent : IronTheme.outline.opacity(set.isCompleted ? 0.5 : 1), lineWidth: isFocused ? 2 : 0.5)
+                    }
+            )
+            .frame(minHeight: IronTheme.controlHeight)
+            .contentShape(Rectangle())
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isFocused)
+    }
+    private var swipeDeleteAction: some View {
+        Button(action: performSwipeDelete) {
+            HStack(spacing: 6) {
+                Image(systemName: "trash.fill")
+                    .font(.system(size: 14, weight: .bold))
+                if revealedActionWidth >= 52 {
+                    Text("Delete")
+                        .font(.system(size: 12, weight: .bold))
+                }
+            }
+            .fixedSize()
+            .foregroundStyle(IronTheme.onMedia)
+            .opacity(min(revealedActionWidth / 52, 1))
+            .scaleEffect(reduceMotion ? 1 : 0.82 + 0.18 * min(revealedActionWidth / 52, 1))
+            .frame(width: revealedActionWidth, height: measuredRowHeight)
+            .background(IronTheme.danger, in: RoundedRectangle(
+                cornerRadius: IronTheme.compactCornerRadius, style: .continuous
+            ))
+            .clipped()
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .allowsHitTesting(revealedActionWidth >= deleteActionWidth * 0.8)
+        .accessibilityLabel("Delete set \(index + 1)")
+        .accessibilityHidden(revealedActionWidth < deleteActionWidth * 0.8)
+    }
+
+    private var revealedActionWidth: CGFloat {
+        // With row width W, reveal R and chrome expansion E, the row ends at
+        // W - R + E. The action begins at W - (R - 8 - E), exactly 8 pt later.
+        // This holds for every offset and for compact, timed and focused rows.
+        max(0, deleteRevealWidth - deleteActionGap - InlineWorkoutSetLayout.completedChromeExpansion)
+    }
+
+    private func closeSwipe() {
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+            swipeOffset = 0
+            isSwipingSet = false
+            if openSwipeSetID.wrappedValue == set.objectID { openSwipeSetID.wrappedValue = nil }
+        }
+    }
+
+    private var deleteRevealWidth: CGFloat {
+        max(0, -swipeOffset)
+    }
+
+    /// iOS 17 fallback only. On iOS 18+ a SwiftUI drag inside the logger's
+    /// ScrollView competes with scrolling, so `setRowSwipe` uses a UIKit pan
+    /// that begins only for horizontal movement instead.
+    private var swipeDeleteGesture: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+            .onChanged { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                handleSwipeChanged(value.translation.width)
+            }
+            .onEnded { value in
+                handleSwipeEnded(value.translation.width, value.predictedEndTranslation.width)
+            }
+    }
+
+    private func handleSwipeChanged(_ horizontal: CGFloat) {
+        guard allowsSwipeToDelete else { return }
+        guard horizontal < 0 || swipeOffset < 0 || isSwipingSet else { return }
+
+        if !isSwipingSet {
+            isSwipingSet = true
+            swipeStartOffset = swipeOffset
+            openSwipeSetID.wrappedValue = set.objectID
+            focusedField = nil
+        }
+
+        swipeOffset = min(
+            0,
+            max(-effectiveRowWidth, swipeStartOffset + horizontal)
+        )
+    }
+
+    private func handleSwipeEnded(_ horizontal: CGFloat, _ predictedHorizontal: CGFloat) {
+        guard allowsSwipeToDelete else { return }
+        guard isSwipingSet else { return }
+        let projectedOffset = swipeStartOffset + predictedHorizontal
+        isSwipingSet = false
+
+        if swipeOffset <= -fullSwipeDeleteThreshold {
+            performSwipeDelete()
+        } else {
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                swipeOffset = projectedOffset < -deleteActionWidth * 0.42
+                    ? openSwipeOffset
+                    : 0
+            }
+        }
+    }
+
+    private func performSwipeDelete() {
+        guard !isPerformingSwipeDelete else { return }
+        isPerformingSwipeDelete = true
+        focusedField = nil
+
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+            swipeOffset = -effectiveRowWidth
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
+                if onDelete() {
+                    if openSwipeSetID.wrappedValue == set.objectID { openSwipeSetID.wrappedValue = nil }
+                } else {
+                    swipeOffset = 0
+                    isPerformingSwipeDelete = false
+                }
+            }
+        }
+    }
+}
+
+private struct HistorySetRPEPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var exerciseStore: ExerciseStore
+    @ObservedObject var set: WorkoutSet
+    let onChanged: () -> Bool
+
+    @State private var selection: Double
+    @State private var isScrubbing = false
+    @State private var showingSaveError = false
+    @State private var contentHeight: CGFloat = 280
+    @ScaledMetric(relativeTo: .footnote) private var graphLabelHeight: CGFloat = 20
+    private let graphHeight: CGFloat = 108
+    private let setNumber: Int
+
+    init(set: WorkoutSet, onChanged: @escaping () -> Bool) {
+        self.set = set
+        self.onChanged = onChanged
+        let sets = set.workoutExercise?.workoutSets?.array as? [WorkoutSet] ?? []
+        let index = sets.firstIndex(of: set) ?? 0
+        setNumber = index + 1
+        let previousRPE = index > 0 ? sets[index - 1].rpeValue : nil
+        _selection = State(initialValue: set.rpeValue ?? previousRPE ?? 8)
+    }
+
+    private var valueTitle: String { String(format: "%g", selection) }
+
+    private var title: String {
+        let exercise = set.workoutExercise?.exercise(in: exerciseStore.exercises)
+        return "Set \(setNumber) · \(exercise?.title ?? "Exercise")"
+    }
+
+    private var effortDescription: String {
+        if selection >= 10 { return "RPE · max effort" }
+        let remaining = String(format: "%g", 10 - selection)
+        return "RPE · about \(remaining) \(selection == 9 ? "rep" : "reps") left"
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                sheetHeader
+                effortReadout
+                effortGraph
+                Text("Tap a bar to save. Drag to scrub.")
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 22) // A two-line title must clear the drag indicator.
+            .padding(.bottom, 12)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0.rounded(.up) }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .presentationDetents(dynamicTypeSize.isAccessibilitySize ? [.large] : [.height(contentHeight)])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(IronTheme.surface)
+        .sensoryFeedback(.selection, trigger: selection) { _, _ in SettingsStore.shared.workoutHaptics }
+        .alert("Effort Not Saved", isPresented: $showingSaveError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Your effort change has not been saved. Try applying it again before closing.")
+        }
+    }
+
+    private var sheetHeader: some View {
+        HStack(spacing: 10) {
+            if set.rpeValue != nil {
+                Button("Clear") { save(nil) }
+                    .font(.body)
+                    .foregroundStyle(IronTheme.accent)
+                    .frame(minWidth: IronTheme.controlHeight, minHeight: IronTheme.controlHeight)
+                    .accessibilityLabel("Clear RPE")
+            }
+            Text(title)
+                .font(.headline)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
+                .accessibilityAddTraits(.isHeader)
+            if set.rpeValue != nil {
+                Color.clear
+                    .frame(width: IronTheme.controlHeight, height: 1)
+                    .accessibilityHidden(true)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var effortReadout: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
+        return layout {
+            Text(valueTitle)
+                .font(.ironMetric(.largeTitle))
+                .foregroundStyle(IronTheme.metricEffort)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .fixedSize()
+            Text(effortDescription)
+                .font(.body)
+                .foregroundStyle(IronTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(minHeight: 56, alignment: .leading)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selection)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var effortGraph: some View {
+        VStack(spacing: 6) {
+            GeometryReader { proxy in
+                HStack(alignment: .bottom, spacing: 5) {
+                    ForEach(0..<11) { index in
+                        effortBar(index: index)
+                    }
+                }
+                .frame(height: graphHeight, alignment: .bottom)
+                .contentShape(Rectangle())
+                .ironHorizontalScrub { location in
+                    guard proxy.size.width > 0 else { return }
+                    let index = min(max(Int(location.x / proxy.size.width * 11), 0), 10)
+                    isScrubbing = true
+                    selection = 5 + Double(index) * 0.5
+                } onEnded: {
+                    guard isScrubbing else { return }
+                    isScrubbing = false
+                    save(selection)
+                }
+            }
+            .frame(height: graphHeight)
+
+            GeometryReader { proxy in
+                let barWidth = max(0, (proxy.size.width - 50) / 11)
+                ForEach(0..<6) { index in
+                    Text("\(5 + index)")
+                        .font(.ironMetric(.footnote, weight: .regular))
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .position(
+                            x: CGFloat(index * 2) * (barWidth + 5) + barWidth / 2,
+                            y: graphLabelHeight / 2
+                        )
+                }
+            }
+            .frame(height: graphLabelHeight)
+            .accessibilityHidden(true)
+        }
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selection)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Set RPE")
+        .accessibilityValue("RPE \(valueTitle), \(effortDescription)")
+        .accessibilityHint("Swipe up or down to adjust by half a point. Double tap to save, or use the Save action.")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: selection = min(selection + 0.5, 10)
+            case .decrement: selection = max(selection - 0.5, 5)
+            @unknown default: break
+            }
+        }
+        .accessibilityAction { save(selection) }
+        .accessibilityAction(named: Text("Save")) { save(selection) }
+    }
+
+    private func effortBar(index: Int) -> some View {
+        let value = 5 + Double(index) * 0.5
+        let tint = value <= selection
+            ? (value == selection ? IronTheme.metricEffort : IronTheme.metricEffort.opacity(0.45))
+            : IronTheme.solidTrack
+        return RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(tint)
+            .frame(maxWidth: .infinity)
+            .frame(height: CGFloat(34 + index * 7))
+            .frame(height: graphHeight, alignment: .bottom)
+    }
+
+    private func save(_ value: Double?) {
+        set.rpeValue = value
+        if onChanged() {
+            dismiss()
+        } else {
+            showingSaveError = true
+        }
+    }
+}
+
+/// A pan that begins only when the drag is mostly horizontal, so vertical drags
+/// that start on a set row scroll the page instead of being swallowed.
+@available(iOS 18.0, *)
+private struct HistorySetHorizontalSwipeRecognizer: UIGestureRecognizerRepresentable {
+    let onChanged: (CGFloat) -> Void
+    /// Translation and a velocity-projected end translation, both horizontal.
+    let onEnded: (CGFloat, CGFloat) -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let recognizer = UIPanGestureRecognizer()
+        recognizer.delegate = context.coordinator
+        return recognizer
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        let translation = recognizer.translation(in: recognizer.view).x
+        switch recognizer.state {
+        case .changed:
+            onChanged(translation)
+        case .ended, .cancelled, .failed:
+            // Roughly where a flick would carry the row, like predictedEndTranslation.
+            let velocity = recognizer.velocity(in: recognizer.view).x
+            onEnded(translation, translation + velocity * 0.18)
+        default:
+            break
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            return abs(velocity.x) > abs(velocity.y)
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func historySetRowSwipe<Legacy: Gesture>(
+        enabled: Bool,
+        legacy: Legacy,
+        onChanged: @escaping (CGFloat) -> Void,
+        onEnded: @escaping (CGFloat, CGFloat) -> Void
+    ) -> some View {
+        if !enabled {
+            self
+        } else if #available(iOS 18.0, *) {
+            gesture(HistorySetHorizontalSwipeRecognizer(onChanged: onChanged, onEnded: onEnded))
+        } else {
+            simultaneousGesture(legacy)
         }
     }
 }

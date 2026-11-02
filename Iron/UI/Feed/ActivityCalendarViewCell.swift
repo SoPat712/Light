@@ -25,7 +25,7 @@ struct ActivityCalendarViewCell: View {
                 Spacer()
                 
                 if let workoutsLast28Days = workoutsLast28Days {
-                    Text("\(workoutsLast28Days) workouts")
+                    Text("^[\(workoutsLast28Days) workout](inflect: true)")
                         .foregroundColor(.secondary)
                 }
             }

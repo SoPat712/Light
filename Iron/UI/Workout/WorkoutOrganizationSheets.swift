@@ -86,7 +86,7 @@ struct WorkoutSupersetSheet: View {
     private var previewItems: [WorkoutSetOrderPreviewItem] {
         guard !selectedPartnerIDs.isEmpty else { return [] }
         let members = selectedMembers
-        let maximumSetCount = min(members.map { setCount(for: $0) }.max() ?? 0, 2)
+        let maximumSetCount = members.map { setCount(for: $0) }.max() ?? 0
         guard maximumSetCount > 0 else { return [] }
 
         return (0..<maximumSetCount).flatMap { roundIndex in
@@ -107,7 +107,8 @@ struct WorkoutSupersetSheet: View {
                 Section("Starting Exercise") {
                     WorkoutOrganizationExerciseInfo(
                         workoutExercise: source,
-                        exercise: source.exercise(in: exerciseStore.exercises)
+                        exercise: source.exercise(in: exerciseStore.exercises),
+                        marker: marker(for: source)
                     )
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(startingExerciseAccessibilityLabel)
@@ -118,7 +119,7 @@ struct WorkoutSupersetSheet: View {
                         Text(selectedPartnerIDs.isEmpty
                              ? "Choose a partner to preview the alternating order."
                              : "Add target sets to preview the alternating order.")
-                            .font(.footnote)
+                            .font(.body)
                             .foregroundStyle(IronTheme.secondaryText)
                             .frame(minHeight: IronTheme.controlHeight, alignment: .leading)
                     } else {
@@ -149,34 +150,29 @@ struct WorkoutSupersetSheet: View {
 
                 if onRemove != nil {
                     Section {
-                        Button("Remove from Superset", role: .destructive) {
-                            removeSuperset()
+                        Button(role: .destructive, action: removeSuperset) {
+                            Label("Remove from Superset", systemImage: "link")
+                                .font(.body)
+                                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                                .contentShape(Rectangle())
                         }
-                        .frame(minHeight: IronTheme.controlHeight, alignment: .leading)
                     }
                 }
             }
             .listStyle(.insetGrouped)
-            .sensoryFeedback(.selection, trigger: selectedPartnerIDs)
-            .safeAreaInset(edge: .bottom) {
-                Button { save() } label: {
-                    Text(actionTitle)
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.capsule)
-                .controlSize(.large)
-                .disabled(selectedPartnerIDs.isEmpty)
-                .padding(.horizontal, IronTheme.horizontalPadding)
-                .padding(.vertical, 12)
-                .background(.bar)
-            }
+            .contentMargins(.horizontal, 10, for: .scrollContent)
+            .sensoryFeedback(.selection, trigger: selectedPartnerIDs) { _, _ in SettingsStore.shared.workoutHaptics }
             .navigationTitle("Superset")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save", action: save)
+                        .fontWeight(.semibold)
+                        .disabled(selectedPartnerIDs.isEmpty)
+                        .accessibilityLabel(actionTitle)
                 }
             }
         }
@@ -193,10 +189,9 @@ struct WorkoutSupersetSheet: View {
             HStack(spacing: 8) {
                 WorkoutOrganizationExerciseInfo(
                     workoutExercise: candidate,
-                    exercise: candidate.exercise(in: exerciseStore.exercises)
+                    exercise: candidate.exercise(in: exerciseStore.exercises),
+                    marker: marker(for: candidate)
                 )
-
-                Spacer(minLength: 4)
 
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.title3.weight(.semibold))
@@ -205,46 +200,44 @@ struct WorkoutSupersetSheet: View {
                     .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
                     .accessibilityHidden(true)
             }
+            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
             .contentShape(Rectangle())
-            .frame(minHeight: IronTheme.controlHeight)
         }
         .buttonStyle(.plain)
-        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .accessibilityValue(isSelected ? "Selected, exercise \(marker(for: candidate) ?? "")" : "Not selected")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityHint(selectionHint(for: candidate))
     }
 
+    /// Names once in a legend, then the whole alternating order as short
+    /// A1 · B1 · A2 chips, so long exercise names never wrap inside the sequence.
     private var previewSequence: some View {
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                // A separate, eager layout also replaces offscreen grid cells when
-                // Dynamic Type changes while this List row is already visible.
-                VStack(alignment: .leading, spacing: 8) {
-                    previewChips
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(selectedMembers.enumerated()), id: \.offset) { index, member in
+                    HStack(spacing: 8) {
+                        WorkoutSupersetLetterBadge(letter: memberMarker(for: index), memberIndex: index)
+                        Text(member.exercise(in: exerciseStore.exercises)?.title ?? "Unknown Exercise")
+                            .font(.subheadline)
+                            .foregroundStyle(IronTheme.primaryText)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                    }
                 }
-            } else {
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 2),
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    previewChips
+            }
+
+            ExerciseChipFlowLayout(spacing: 6) {
+                ForEach(Array(previewItems.enumerated()), id: \.offset) { _, item in
+                    WorkoutSetOrderPreviewChip(
+                        marker: memberMarker(for: item.memberIndex),
+                        memberIndex: item.memberIndex,
+                        setNumber: item.setNumber
+                    )
                 }
             }
         }
+        .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(previewAccessibilityLabel)
-    }
-
-    private var previewChips: some View {
-        ForEach(Array(previewItems.enumerated()), id: \.offset) { _, item in
-            WorkoutSetOrderPreviewChip(
-                marker: memberMarker(for: item.memberIndex),
-                setNumber: item.setNumber,
-                title: item.title
-            )
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
     }
 
     private var previewAccessibilityLabel: String {
@@ -257,7 +250,8 @@ struct WorkoutSupersetSheet: View {
     private var startingExerciseAccessibilityLabel: String {
         let title = source.exercise(in: exerciseStore.exercises)?.title ?? "Unknown Exercise"
         let count = setCount(for: source)
-        return "Starting exercise, \(title), \(count) \(count == 1 ? "set" : "sets")"
+        let order = marker(for: source).map { ", exercise \($0)" } ?? ""
+        return "Starting exercise, \(title), \(count) \(count == 1 ? "set" : "sets")\(order)"
     }
 
     private func selectionHint(for candidate: WorkoutExercise) -> String {
@@ -266,6 +260,12 @@ struct WorkoutSupersetSheet: View {
             return "Selects or removes the entire existing superset."
         }
         return "Adds or removes this exercise from the superset."
+    }
+
+    private func marker(for exercise: WorkoutExercise) -> String? {
+        guard !selectedPartnerIDs.isEmpty,
+              let index = selectedMembers.firstIndex(where: { $0.objectID == exercise.objectID }) else { return nil }
+        return memberMarker(for: index)
     }
 
     private func memberMarker(for index: Int) -> String {
@@ -357,7 +357,9 @@ struct WorkoutArrangeExercisesSheet: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .contentMargins(.horizontal, 10, for: .scrollContent)
             .environment(\.editMode, .constant(.active))
+            .sensoryFeedback(.selection, trigger: orderedIDs) { _, _ in SettingsStore.shared.workoutHaptics }
             .navigationTitle("Arrange Exercises")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -452,6 +454,11 @@ private struct WorkoutOrganizationExerciseInfo: View {
 
     let workoutExercise: WorkoutExercise
     let exercise: Exercise?
+    var marker: String? = nil
+
+    private var markerIndex: Int {
+        marker.flatMap { $0.first?.asciiValue }.map { Int($0) - 65 } ?? 0
+    }
 
     private var setCount: Int {
         workoutExercise.workoutSets?.array
@@ -462,7 +469,7 @@ private struct WorkoutOrganizationExerciseInfo: View {
 
     private var equipmentTitle: String? {
         guard let exercise, !exercise.equipment.isEmpty else { return nil }
-        return exercise.equipment.map { $0.capitalized }.joined(separator: ", ")
+        return exercise.equipment.map(\.equipmentTitle).joined(separator: ", ")
     }
 
     var body: some View {
@@ -479,56 +486,58 @@ private struct WorkoutOrganizationExerciseInfo: View {
                 }
             }
         }
-        .frame(minHeight: IronTheme.controlHeight, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+    }
+
+    private var metaTitle: String {
+        let sets = setCount == 1 ? "1 set" : "\(setCount) sets"
+        return [sets, equipmentTitle].compactMap { $0 }.joined(separator: " · ")
     }
 
     private var details: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(exercise?.title ?? "Unknown Exercise")
-                .font(.headline)
-                .foregroundStyle(IronTheme.primaryText)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("\(setCount)")
-                    .font(.ironMetric(.subheadline, weight: .semibold))
-                    .foregroundStyle(IronTheme.metricSets)
-                Text(setCount == 1 ? "set" : "sets")
-                    .font(.caption)
-                    .foregroundStyle(IronTheme.secondaryText)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let marker {
+                    WorkoutSupersetLetterBadge(letter: marker, memberIndex: markerIndex)
+                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 5 }
+                }
+                Text(exercise?.title ?? "Unknown Exercise")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(IronTheme.primaryText)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            if let equipmentTitle {
-                Text(equipmentTitle)
-                    .font(.caption)
-                    .foregroundStyle(IronTheme.secondaryText)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-            }
+            Text(metaTitle)
+                .font(.subheadline)
+                .foregroundStyle(IronTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
 
-            if workoutExercise.supersetUuid != nil {
+            if marker == nil, workoutExercise.supersetUuid != nil {
                 Label("Superset", systemImage: "link")
-                    .font(.caption2.weight(.semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(IronTheme.accent)
             }
         }
     }
 
-    @ViewBuilder
     private var thumbnail: some View {
-        if let exercise {
-            ExerciseDiagramThumbnail(exercise: exercise, size: 52)
-        } else {
-            Circle()
-                .fill(IronTheme.tertiaryFill)
-                .frame(width: 52, height: 52)
-                .overlay {
-                    Image(systemName: "figure.strengthtraining.traditional")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(IronTheme.secondaryText)
-                }
-                .accessibilityHidden(true)
+        Group {
+            if let exercise {
+                ExerciseDiagramThumbnail(exercise: exercise, size: 40)
+            } else {
+                Circle()
+                    .fill(IronTheme.tertiaryFill)
+                    .frame(width: 40, height: 40)
+                    .overlay {
+                        Image(systemName: "figure.strengthtraining.traditional")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(IronTheme.secondaryText)
+                    }
+            }
         }
+        .accessibilityHidden(true)
     }
 }
 
@@ -538,29 +547,44 @@ private struct WorkoutSetOrderPreviewItem {
     let title: String
 }
 
-private struct WorkoutSetOrderPreviewChip: View {
-    let marker: String
-    let setNumber: Int
-    let title: String
+/// The first member reads in accent, later members in neutral fill, so the
+/// alternation is visible at a glance without inventing extra colors.
+private func supersetMemberIsLead(_ memberIndex: Int) -> Bool {
+    memberIndex % 2 == 0
+}
+
+private struct WorkoutSupersetLetterBadge: View {
+    @ScaledMetric(relativeTo: .footnote) private var size: CGFloat = 22
+    let letter: String
+    let memberIndex: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(marker)\(setNumber)")
-                .font(.ironMetric(.caption, weight: .bold))
-                .foregroundStyle(IronTheme.accent)
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(IronTheme.primaryText)
-                .lineLimit(2)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .frame(minHeight: IronTheme.controlHeight, alignment: .leading)
-        .background(
-            IronTheme.accentSoft,
-            in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(marker)\(setNumber), \(title)")
+        Text(letter)
+            .font(.footnote.weight(.bold))
+            .foregroundStyle(supersetMemberIsLead(memberIndex) ? IronTheme.onAccent : IronTheme.primaryText)
+            .frame(width: size, height: size)
+            .background(
+                supersetMemberIsLead(memberIndex) ? IronTheme.accent : IronTheme.tertiaryFill,
+                in: Circle()
+            )
+            .accessibilityHidden(true)
+    }
+}
+
+private struct WorkoutSetOrderPreviewChip: View {
+    let marker: String
+    let memberIndex: Int
+    let setNumber: Int
+
+    var body: some View {
+        Text("\(marker)\(setNumber)")
+            .font(.ironMetric(.subheadline, weight: .semibold))
+            .foregroundStyle(supersetMemberIsLead(memberIndex) ? IronTheme.accent : IronTheme.primaryText)
+            .padding(.horizontal, 10)
+            .frame(minWidth: 44, minHeight: 30)
+            .background(
+                supersetMemberIsLead(memberIndex) ? IronTheme.accentSoft : IronTheme.tertiaryFill,
+                in: Capsule()
+            )
     }
 }

@@ -13,9 +13,12 @@ import CoreData
 import WorkoutDataKit
 
 struct DeveloperSettings: View {
+    @Environment(\.managedObjectContext) private var managedObjectContext
     @State private var activityItems: [Any]?
     @State private var showingPlanConfirmation = false
     @State private var statusMessage: String?
+    @State private var showingPPLResult = false
+    @State private var pplResultMessage = ""
 
     var body: some View {
         List {
@@ -26,7 +29,7 @@ struct DeveloperSettings: View {
                             .labelStyle(.iconOnly)
                     } label: {
                         Label(statusMessage, systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
+                            .foregroundStyle(IronTheme.success)
                     }
                 }
             }
@@ -46,6 +49,16 @@ struct DeveloperSettings: View {
             }
 
             Section {
+                Button("Add PPL Program (5 workouts)", systemImage: "plus") {
+                    addPPLProgram()
+                }
+            } header: {
+                Text("Sample Programs")
+            } footer: {
+                Text("Adds the beginner Push/Pull/Legs workouts with rep targets, rest timers, and progression notes. Enter your own weights. Existing workout names are skipped.")
+            }
+
+            Section {
                 LabeledContent("Database", value: databaseSummary)
                 Button("Share Database Snapshot", systemImage: "square.and.arrow.up") {
                     shareFile(url: WorkoutDataStorage.groupStoreURL)
@@ -59,6 +72,11 @@ struct DeveloperSettings: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Developer")
         .ironActivitySheet(activityItems: $activityItems)
+        .alert("PPL Program", isPresented: $showingPPLResult) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(pplResultMessage)
+        }
         .sheet(isPresented: $showingPlanConfirmation) {
             IronConfirmationSheet(
                 title: "Create sample workouts?",
@@ -94,6 +112,227 @@ struct DeveloperSettings: View {
 
     private func shareFile(url: URL) {
         self.activityItems = [url]
+    }
+}
+
+private extension DeveloperSettings {
+    func addPPLProgram() {
+        do {
+            pplResultMessage = try PPLSampleProgram.add(in: managedObjectContext)
+        } catch {
+            pplResultMessage = "The PPL workouts could not be saved. Try again. \(error.localizedDescription)"
+        }
+        showingPPLResult = true
+    }
+}
+
+/// Uses the same factories, ordered relationships, and reversible save boundary
+/// as the saved-workout editor. No completed workouts or custom catalog data are created.
+private enum PPLSampleProgram {
+    private enum Movement {
+        case deadlift, pulldown, cableRow, facePull, hammerCurl, dumbbellCurl
+        case barbellRow, bench, overheadPress, inclinePress, pushdown, lateralRaise
+        case tricepsExtension, squat, romanianDeadlift, legPress, legCurl, calfRaise
+
+        var names: [String] {
+            switch self {
+            case .deadlift:
+                return ["Deadlift (Barbell)", "Barbell Deadlift", "Deadlift: Barbell"]
+            case .pulldown:
+                return ["Lat Pulldown", "Lat Pulldown (Cable)", "Pulldown (Overhand)", "Cable Pulldown", "Pull-up", "Chin-up"]
+            case .cableRow:
+                return ["Seated Cable Row", "Seated Row (Cable)", "Cable Low Seated Row", "Cable Straight Back Seated Row", "Chest Supported Row"]
+            case .facePull:
+                return ["Face Pull", "Face Pulls", "Cable Standing Face Pull"]
+            case .hammerCurl:
+                return ["Hammer Curl", "Hammer Curl (Dumbbell)", "Dumbbell Hammer Curl"]
+            case .dumbbellCurl:
+                return ["Dumbbell Curl", "Bicep Curl (Dumbbell)", "Bicep Curl, Dumbbell", "Dumbbell Biceps Curl", "Biceps Curl: Dumbbell"]
+            case .barbellRow:
+                return ["Barbell Row", "Bent Over Row (Barbell)", "Bent Over Row, Barbell", "Barbell Bent Over Row"]
+            case .bench:
+                return ["Bench Press (Barbell)", "Barbell Bench Press", "Bench Press: Barbell"]
+            case .overheadPress:
+                return ["Overhead Press (Barbell)", "Overhead Press: Barbell", "Barbell Overhead Press", "Overhead Press"]
+            case .inclinePress:
+                return ["Incline Dumbbell Press", "Incline Bench Press (Dumbbell)", "Dumbbell Incline Bench Press", "Bench Press: Dumbbell (Incline)"]
+            case .pushdown:
+                return ["Triceps Pushdown (Cable)", "Triceps Pushdown: Cable", "Cable Triceps Pushdown"]
+            case .lateralRaise:
+                return ["Lateral Raise (Dumbbell)", "Dumbbell Lateral Raise", "Side Raise: Dumbbell", "Lateral Raise"]
+            case .tricepsExtension:
+                return ["Overhead Triceps Extension", "Triceps Extension (Dumbbell)", "Dumbbell Seated Triceps Extension", "Barbell Seated Overhead Triceps Extension"]
+            case .squat:
+                return ["Squat (Barbell)", "Barbell Back Squat", "Squat: Barbell", "Barbell Squat"]
+            case .romanianDeadlift:
+                return ["Romanian Deadlift (Barbell)", "Barbell Romanian Deadlift", "Romanian Deadlift"]
+            case .legPress:
+                return ["Leg Press", "Leg Press (Machine)"]
+            case .legCurl:
+                return ["Leg Curl (Lying)", "Lying Leg Curl", "Leg Curl (Seated)", "Seated Leg Curl"]
+            case .calfRaise:
+                return ["Calf Raise: Machine (Standing)", "Standing Calf Raise (Machine)", "Calf Raise: Machine (Seated)", "Seated Calf Raise", "Standing Calf Raise"]
+            }
+        }
+    }
+
+    private struct ExerciseSpec {
+        let movement: Movement
+        let sets: Int
+        var minReps: Int16 = 8
+        var maxReps: Int16 = 12
+        var isMainLift = false
+        var superset: Int? = nil
+
+        var note: String {
+            if isMainLift {
+                let progression = "Last set AMRAP (5+), good form. Add 5 lb next session (deadlift 10 lb). Fail 3× in a row → deload 10%."
+                return sets == 1 ? "One top set. \(progression)" : progression
+            }
+            return "\(minReps)–\(maxReps) reps. When you hit \(sets)×\(maxReps) with good form, add weight."
+        }
+    }
+
+    private struct WorkoutSpec {
+        let title: String
+        let exercises: [ExerciseSpec]
+    }
+
+    private static var workouts: [WorkoutSpec] {
+        let pullAccessories = [
+            ExerciseSpec(movement: .pulldown, sets: 3),
+            ExerciseSpec(movement: .cableRow, sets: 3),
+            ExerciseSpec(movement: .facePull, sets: 5, minReps: 15, maxReps: 20),
+            ExerciseSpec(movement: .hammerCurl, sets: 4),
+            ExerciseSpec(movement: .dumbbellCurl, sets: 4)
+        ]
+        let pushAccessories = [
+            ExerciseSpec(movement: .inclinePress, sets: 3),
+            ExerciseSpec(movement: .pushdown, sets: 3, superset: 0),
+            ExerciseSpec(movement: .lateralRaise, sets: 3, minReps: 15, maxReps: 20, superset: 0),
+            ExerciseSpec(movement: .tricepsExtension, sets: 3, superset: 1),
+            ExerciseSpec(movement: .lateralRaise, sets: 3, minReps: 15, maxReps: 20, superset: 1)
+        ]
+        return [
+            WorkoutSpec(title: "Pull A (Deadlift)", exercises: [
+                ExerciseSpec(movement: .deadlift, sets: 1, minReps: 5, maxReps: 5, isMainLift: true)
+            ] + pullAccessories),
+            WorkoutSpec(title: "Pull B (Row)", exercises: [
+                ExerciseSpec(movement: .barbellRow, sets: 5, minReps: 5, maxReps: 5, isMainLift: true)
+            ] + pullAccessories),
+            WorkoutSpec(title: "Push A (Bench)", exercises: [
+                ExerciseSpec(movement: .bench, sets: 5, minReps: 5, maxReps: 5, isMainLift: true),
+                ExerciseSpec(movement: .overheadPress, sets: 3)
+            ] + pushAccessories),
+            WorkoutSpec(title: "Push B (OHP)", exercises: [
+                ExerciseSpec(movement: .overheadPress, sets: 5, minReps: 5, maxReps: 5, isMainLift: true),
+                ExerciseSpec(movement: .bench, sets: 3)
+            ] + pushAccessories),
+            WorkoutSpec(title: "Legs", exercises: [
+                ExerciseSpec(movement: .squat, sets: 3, minReps: 5, maxReps: 5, isMainLift: true),
+                ExerciseSpec(movement: .romanianDeadlift, sets: 3),
+                ExerciseSpec(movement: .legPress, sets: 3),
+                ExerciseSpec(movement: .legCurl, sets: 3),
+                ExerciseSpec(movement: .calfRaise, sets: 5)
+            ])
+        ]
+    }
+
+    private struct CatalogLookup {
+        var titles = [String: Exercise]()
+        var aliases = [String: Exercise]()
+
+        init(_ exercises: [Exercise]) {
+            // Preserve catalog precedence when multiple entries share a name.
+            for exercise in exercises.reversed() {
+                titles[ExerciseCatalogMetadata.nameKey(exercise.title)] = exercise
+                for alias in exercise.alias {
+                    aliases[ExerciseCatalogMetadata.nameKey(alias)] = exercise
+                }
+            }
+        }
+    }
+
+    private static func match(_ movement: Movement, in catalog: CatalogLookup) -> Exercise? {
+        let names = movement.names.map(ExerciseCatalogMetadata.nameKey)
+        // Prefer exact bundled titles, then reviewed catalog aliases. Only reuse
+        // a custom exercise if none of the supplied built-in variants exists.
+        for name in names {
+            if let exercise = catalog.titles[name] { return exercise }
+        }
+        for name in names {
+            if let exercise = catalog.aliases[name] { return exercise }
+        }
+        return nil
+    }
+
+    static func add(in context: NSManagedObjectContext) throws -> String {
+        let existing = try context.fetch(WorkoutRoutine.fetchRequest())
+        let existingNames = Set(existing.compactMap(\.title).map(ExerciseCatalogMetadata.nameKey))
+        let specifications = workouts
+        let missing = specifications.filter { !existingNames.contains(ExerciseCatalogMetadata.nameKey($0.title)) }
+        let skipped = specifications.filter { existingNames.contains(ExerciseCatalogMetadata.nameKey($0.title)) }
+        guard !missing.isEmpty else {
+            return "Already added. All five workout names exist in Saved Workouts."
+        }
+
+        let store = ExerciseStore.shared
+        let builtInCatalog = CatalogLookup(store.builtInExercises)
+        let customCatalog = CatalogLookup(store.customExercises)
+        var unmatched = [String]()
+        let plans = try context.fetch(WorkoutPlan.fetchRequest())
+        try context.persistMutation(save: { try context.save() }) {
+            let folder = plans.first { ExerciseCatalogMetadata.nameKey($0.title ?? "") == "ppl" }
+                ?? WorkoutPlan.create(context: context)
+            folder.title = "PPL"
+            for specification in missing {
+                let routine = WorkoutRoutine.create(context: context)
+                routine.title = specification.title
+                routine.workoutPlan = folder
+                var members = [(ExerciseSpec, WorkoutRoutineExercise)]()
+                for spec in specification.exercises {
+                    guard let catalogExercise = match(spec.movement, in: builtInCatalog)
+                        ?? match(spec.movement, in: customCatalog) else {
+                        unmatched.append("\(specification.title): \(spec.movement.names[0])")
+                        continue
+                    }
+                    let exercise = WorkoutRoutineExercise.create(context: context)
+                    exercise.exerciseUuid = catalogExercise.uuid
+                    exercise.comment = spec.note
+                    exercise.restTimerDurationValue = spec.isMainLift ? 180 : 90
+                    let sets = (0..<spec.sets).map { index -> WorkoutRoutineSet in
+                        let set = WorkoutRoutineSet.create(context: context)
+                        let isAMRAP = spec.isMainLift && index == spec.sets - 1
+                        set.minRepetitionsValue = spec.minReps
+                        set.maxRepetitionsValue = isAMRAP ? nil : spec.maxReps
+                        set.weightValue = nil
+                        if isAMRAP { set.comment = "AMRAP (5+), good form." }
+                        return set
+                    }
+                    exercise.workoutRoutineSets = NSOrderedSet(array: sets)
+                    members.append((spec, exercise))
+                }
+                for group in Set(members.compactMap { $0.0.superset }) {
+                    let partners = members.filter { $0.0.superset == group }
+                    guard partners.count > 1 else { continue }
+                    let id = UUID()
+                    for (_, exercise) in partners {
+                        exercise.supersetUuid = id
+                        exercise.restTimerDurationValue = 60
+                    }
+                }
+                routine.workoutRoutineExercises = NSOrderedSet(array: members.map { $0.1 })
+            }
+        }
+
+        var report = ["Added to PPL:\n" + missing.map(\.title).joined(separator: "\n")]
+        if !skipped.isEmpty {
+            report.append("Already added (skipped):\n" + skipped.map(\.title).joined(separator: "\n"))
+        }
+        report.append(unmatched.isEmpty
+            ? "All exercises matched. Weights are empty."
+            : "Exercises not matched (skipped):\n" + unmatched.joined(separator: "\n"))
+        return report.joined(separator: "\n\n")
     }
 }
 

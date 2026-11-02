@@ -1,5 +1,233 @@
 # Iron: handoff to the next lead agent
 
+## Repo renamed to Light (2026-11-02)
+The GitHub repo is now `SoPat712/Light` (`origin` updated). The folder is `~/Projects/Light`
+and the project is `Light.xcodeproj`; the scheme and targets are still named `Iron`.
+`~/Projects/Iron` is a symlink to the new folder so older scripts keep working.
+
+## Customizable Home (2026-11-02, simulator only, not installed)
+Build 70 is on both devices. Since then, uncommitted and not yet on a device:
+- This Week card styles: Rings (default), Pace, Muscles, Bars, from the card's ••• menu or
+  Customize Home. Muscle Focus is now average weekly sets per group against a target band
+  (default 10–20, adjustable). Sections can be hidden and reordered. See DESIGN_SYSTEM §15.2.
+- Code: `Iron/UI/Components/HomeWeekViews.swift` (new), `FeedView.swift`; tests in
+  `IronTests/ThisWeekWidgetDataTests.swift` (`HomeWeekSummaryTests`); 462/462 pass.
+- Debug flags `-ironInspectCustomizeHome` and `-ironInspectHomeSections` open those screens.
+- The shared phone simulator stopped accepting simhid taps and drags on 2026-11-02, and
+  Simulator.app is not installed with this Xcode. Check lower Home sections by writing
+  `home.sectionOrder` (for example `muscles,week`) with `simctl spawn … defaults write`.
+- Not seen working: the ••• menu and taps in Customize Home (no touch input in the simulator).
+
+## Build 57 RPE-first flow (2026-10-31)
+
+- After Log Set, RPE opens first and slides to the rest screen on ✓ or after 5 s untouched. Rest has a back button to RPE; that return, and RPE opened by hand, wait for ✓.
+- Fixed RPE spreading across sets: opening the page saved the suggestion copied from the previous set, which then became the next suggestion. Opening never saves now.
+- Rest screen: −15/Skip/+15 are larger in-page capsules instead of the native bottom bar, and the ring shrinks to clear them (§22.0). Weight and reps digits roll up or down with the scroll wheel.
+- Checked by timed simulator shots at 40 mm and Ultra (`~/.local/share/light/screens/flow/`). Rolling digits and the real wrist timing need a workout; simulator shots can't show them. Unit suite not rerun: only Watch view and navigation code changed, and `IronTests` doesn't cover them.
+- Build 58: removed the Edit Set row from the Now page at the owner's request; its other rows were already there. The set editor stays reachable from the exercise's set list and as a VoiceOver action, and it's the only place with Mark as Done / Not Done.
+
+- Build 60: the green bar beside the scroll wheel on value controls is gone by using continuous rotation. Disassembling `CrownSequencer.update(with:)` in the Watch's 27.0.1 SwiftUI (`~/Library/Developer/Xcode/watchOS DeviceSupport`) shows the bar is only enabled when `isContinuous` is false; `.digitalCrownAccessory(.hidden)` doesn't reach it. `watchCrownRotation` in `WatchDesign.swift` pads the range and holds values at their limits, because continuous rotation wraps. Build 59's root `.scrollIndicators(.hidden)` was the wrong theory and was reverted. The wheel can't be exercised here: this Mac has no Simulator.app and Xcode 27's test connection hangs (throwaway probe in `~/.local/share/light/crown-ui`), so limits and feel need checking on the Watch.
+
+- Build 61: tapping a selected tile again now hands the scroll wheel back to the page on the Now page and plate calculator (`watchReturnsCrown`); before, the wheel did nothing until a finger scroll. Owner confirmed build 60 removed the green bar. The wheel can't be tested here, so the owner needs to confirm this too. The full set editor still keeps the wheel on its value and has no deselect.
+- Build 62: Watch lists now end 6 pt (small Watches) or 10 pt (larger) from the screen edge instead of about 49–70 pt; the Exercises page keeps its clearance for the page dots. On 2026-11-01 Light stopped launching on the iPhone because its signing certificate was revoked and Xcode showed No Accounts. The owner signed back in at Xcode > Settings > Accounts, Xcode issued a new certificate, and build 62 is installed on both devices.
+- Build 63: the owner found build 61's wheel hand-back did nothing. `watchReturnsCrown` now rebuilds the ScrollView when a field stops editing, because watchOS only gives a ScrollView the wheel when it appears or is touched. Moving focus to it, directly or with `resetFocus`, failed. The rebuild returns the page to the top. Wheel behavior can now be tested in the Watch simulator: `~/.local/share/light/crown/simhid <udid> crown <delta> [count]` sends real wheel input (delta 3 × 15 is a good start) and `tap`/`drag` send touches, using ratios of the screen.
+- Build 64: build 63 froze the app (100% CPU layout loop) when a NavigationLink was tapped with a box selected, because opening the link ended editing and rebuilt the ScrollView holding the link. `watchReturnsCrown` now only rebuilds while on screen. The Bar Weight page also owns its editing state, since a NavigationLink destination never saw the parent's change. Checked with real wheel and touch input on Ultra and 40 mm: edit, confirm, scroll, re-select, switch boxes, Log Set from a selected box, and links opened with a box selected. Confirming on Bar Weight then scrolling was checked on Ultra only. A device check by the owner is still needed.
+- Build 65: the rest ring's next-exercise line is limited to the circle's width at that height, so it no longer touches the ring. Most names lose the "Next ·" prefix and very long names truncate. 40 mm still hides this line because its ring is under 120 pt.
+- Build 66: Watch notes are text only, with no audio kept. Note rows say "Add Note" or preview the note, and an empty plan note has no row because it can only be written on iPhone. The note page has no Edit, Dictate, Save or Cancel buttons: tapping the note box opens the system text input with the note filled in, Done saves and Cancel changes nothing. The box is drawn over a TextField because a Watch TextField shows one truncated line in its own box. The Watch list's bottom clearance went from 6/10 pt to 8/14 pt at the owner's request.
+- Next build, not yet installed: the Siri extensions are shelved (see Signing below). A cold launch with a workout in progress now starts the Live Activity with no taps, because `sceneDidBecomeActive` starts it instead of SwiftUI's scene phase. Old black-and-white exercise diagrams are gone from thumbnails: `legacy-art.json` gives 116 of the 117 legacy exercises the reviewed picture of the same movement, and Supermans has no match so it shows the neutral figure. OpenGym text moved to revision `b6cfe2b`, which changed the equipment of 46 entries. Default exercise lists now show 1,383 of 5,749 built-ins, and search or "Show N More Exercises" reaches the rest; nothing is deleted. See `docs/EXERCISE_CATALOG_AUDIT.md`.
+- Build 69: History row badges no longer compress, which had wrapped "1 PR" one letter per line. The iPhone effort graph now draws ten separate bars, one per level, instead of masking four tier shapes with a moving hard edge.
+- Build 68: the logger's collapsed pill adds live heart rate and calories while the Watch is sending them, and "1 set" is now singular. The session bar shows a 1 pt gap between sets and 4 pt between exercises. The Watch rest screen moves the ring beside a vertical column of buttons, which flips for the right wrist, with the full exercise and weight × reps along the bottom. The RPE sheet fits its content on an opaque background with solid bars. Change plates draw shorter on both devices. The plate calculator's Use row is gone: Done saves a changed target and swiping down leaves the set alone. Add Exercise keeps Cancel and Add visible during search and prepares its list once, so a keystroke only filters. Recent Workouts rows put Repeat beside the text, with the other actions on a long press. Logging a set keeps it at the top with the rest timer and next set under it. Tapping a weight or reps box selects the value, and a number the user changed reads brighter than one that was filled in. The Live Activity now starts before copying its artwork, because leaving the foreground during that wait lost the request, and a dismissed activity no longer counts as running. Setting RPE before logging no longer reopens the RPE page on either device, and new sets start unrated. The Watch reserves room for its clock, which watchOS removes when the toolbar is crowded, and lines the vitals up with it. The finish screen's session card is now a per-exercise, per-set table, and effort moved above it. Finish matches the timer's height.
+- Build 67: the iPhone exercise page's note row now updates after Save. It kept an `@AppStorage` value it never read, so the save was stored but the row stayed stale until the page reopened; it now observes `ExerciseNotes.cache` like the logger. The iPhone effort graph lights only up to the chosen number, the caption that disagreed with the tier name is gone, and the workout detail's effort text uses the same tier names. The Watch home list adds 6 pt of bottom padding.
+
+## Build 56 Watch restore (2026-10-31)
+
+- Claude took orchestration back after the owner stopped the Codex session on build 54 ("absolutely butchered the watch display"). Root cause: the rejected "native first" retheme.
+- Restored the approved Now, set editor, rest picker, controls, warm-up and plate components from pre-retheme snapshots in `~/.local/share/light/pre-wr/`, then re-applied only the owner's requests. `b54-*.swift` there are backups of the state before this repair. See `docs/DESIGN_SYSTEM.md` §22.0, which replaces the native-first rule.
+- New: one full-width blue glass primary button (`WatchPrimaryButtonStyle`), fixed-size value tiles, `WatchContentList` as a flat ScrollView, controls filling down to the page dots, RPE number/graph/description layout, no visible Test mode text.
+- Verified by simulator screenshots at 40 mm and Ultra (`~/.local/share/light/approved/` refreshed). Unit suite not rerun: only Watch view code changed since 453/453, and the suite doesn't cover those views. Crown feel, auto-accept timing and the freeze fix need a real workout.
+- Rest Timer picker is one screen: scroll wheel and Done only. Presets and −15/+15 removed for the owner's no-scroll rule; bring presets back only if they still fit one screen.
+- The owner calls the Digital Crown the "scroll wheel"; use that word with them.
+- Overland's orchestrator is now a Claude Code session; coordinate with `SendMessage` (coord README rule 1).
+
+## Build 54 flat scrolling — installed on both devices (2026-10-31)
+
+- Owner explicitly rejects shrinking list items at the top/bottom. Changed the common row container from carousel to plain; root applies plain style to native settings/catalog/editor lists too. Constant width/scale, current colors/radii and title-free Home are required. No other layout/action changes.
+- **Light 1.6 (54) installed and normally launched on the iPhone and Watch; both installed versions read back as 54.** Fresh Watch install followed the owner manually uninstalling it to clear a conflicting installation. iPhone launch initially needed an unlock; Watch network tunnel and process-scoped installation conflicts were resolved before verification.
+- Focused Home/options/settings and end-of-list captures passed on Ultra. Five sampled rows retain x=4…417 (414 px / 207 pt) boundaries; last Home card has 42.5 pt of bottom clearance. Source colors/radii and value-editor layout remain unchanged. No full unit-suite repeat for this list-style correction. Receipts/evidence: `docs/qa/watch-flat-54/`.
+- Shared slots released; the one Watch simulator is off, no phone simulator booted. Signed build guard mean 32.8%, peak 99.1%, three samples above 80%, 37 throttle intervals; simulator startup/capture sampled up to 100%. The guard is throttling, not a hard aggregate ceiling.
+
+## Build 53 scrolling width and title-free Home — superseded by 54 (2026-10-31)
+
+- Owner reports Home/custom scrolling pages are too narrow compared with native Settings. Converted their ScrollView/stack containers to native carousel List sizing through `WatchContentList`; preserved build 52 row colors, radii and actions. Native List owns first/last-row clearance instead of narrowing the whole page with dial-style scene padding.
+- Scope: Home; saved/history lists and details; saved and active supersets; exercise list/detail/options; set-type and plate-choice lists; finish summary. Now/editor, RPE, effort, running rest and rest-length picker retain their existing layout.
+- Idle Home omits the app-name title, putting New Workout first beneath native clock chrome.
+- Focused native-list checks passed on Ultra and 40 mm, including reachable Home endpoints (painted-card bottom clearance 42.5 pt / 21 pt). Title removal checked on both. Eight value-page component bodies match build 52 exactly; evidence is in `docs/qa/watch-width-53/`.
+- **Light 1.6 (53) installed and normally launched on both the physical iPhone and Watch.** Signatures verified, both installed versions read back as 53. Receipts are in `docs/qa/watch-width-53/`. No new unit-suite run for this UI correction; build 51 passed 453 tests. No physical Crown gesture or new Health workout was exercised for QA.
+- Compiler/check leases released; both Watches shut down after serial checks, no phone simulator booted. Signed build guard mean 25.4%, peak 75.4%, zero samples above 80%, 34 throttle intervals. Simulator startup/checks had higher sampled peaks (up to 100%); this guard is not a hard aggregate CPU ceiling.
+
+## Build 52 surface restoration — prior build, superseded by 53 (2026-10-31)
+
+- Owner rejected build 51's pill-shaped saved workouts and brighter system-gray fills. Restored approved flat Watch surfaces: saved/history/recorded exercise cards, settings symbol wells, selected/current/completed states, Now/editor tiles and control-grid colors. Restored 13 pt card / 15 pt hero corners from the pre-retheme implementation. The metric RGB palette itself had not changed; native button backgrounds had replaced the semantic fills.
+- Keep build 51's behavior/layout fixes: narrower weight split, measured read-only Previous, native toolbar actions, hidden Crown/scroll accessories and five-second automatic RPE. No data/sync/Health changes in this correction.
+- **Light 1.6 (52) installed and normally launched on both the physical iPhone and Watch.** Both app signatures verified, then both installed versions read back as 52. Receipts and fresh screenshots: `docs/qa/watch-restoration-52/`. Eight affected Ultra states inspected; simulator and signed builds passed. No full test-suite repeat for this visual correction; the build 51 run passed 453 tests. Wrist Crown/interaction testing remains with the owner.
+- Shared resources released, Watch simulator shut down; no phone simulator booted for this check. CPU guard did throttle owned work but did not impose a hard aggregate ceiling: signed build mean 28.0%, peak 100.0%, seven samples above 80%, 39 throttle intervals. Detailed simulator samples are in the QA readme.
+
+## Build 51 — prior owner-testing build, superseded by 52 (uncommitted)
+
+- Owner rejected the WR Watch appearance after seeing simulator captures: glossy/gradient-looking data tiles and content rows do not match the phone. Follow the phone's flat semantic fields and compact corners, with restrained native Liquid Glass chrome/actions. The WR captures are evidence of the rejected state, not new approvals.
+- Owner requested ten percentage points more width for reps: Weight/Reps is now 50/50 on compact Watches and approximately 54/46 on larger Watches, independent of live values.
+- Previous must be fully visible on the first screen. It is read-only text, not an entry to a duplicate weight/reps editor. A measured footer now reserves space before hero sizing. The older below-fold rule is superseded.
+- Hide the green Crown accessory on main weight/reps as well as RPE and other editors; the main/editor ScrollViews also hide their accessory/scroll indicators. Running rest remains ±15/Skip only. Automatic RPE is five seconds; manual RPE requires confirmation.
+- Fresh standalone IronTests completed at 00:40 on October 31: **453/453, zero failures/skips**, including all 18 Watch-store concurrency tests. The final view-navigation adjustment was then compiled and checked separately on the Ultra simulator; no full suite was repeated after the CPU-headroom request.
+- **Installed and launched on both physical devices: Light 1.6 (51).** Both versions were queried directly after installation. Phone install sequence 2584; Watch sequence 888. Both bundle signatures verified before installation. Receipts, version queries and launch results are in `docs/qa/watch-native-2026-10-30/`. The current Watch CoreDevice identifier is `B252916C-22C3-5EF9-9137-6432DB27276B` (hardware UDID `00008320-001F472A2160000A`).
+- Now/full editor use the native top trailing checkmark on all sizes. Measured Ultra editor height was 129 pt; a 55.5 pt content action plus Previous left only 25.3 pt for tiles. Moving confirmation to the toolbar restores large values without clipping Previous. This supersedes the larger-Watch content-button rule.
+- Simulator-only plates/tracking routes were hanging in SwiftUI layout. Replacing the derived Boolean debug destination with item navigation after a task yield makes both screens render; physical navigation/actions are unchanged.
+- Automatic RPE now uses native item navigation rather than a modal, removing watchOS's automatic close X. Targeted captures show only ✓, automatic return to rest, and manual RPE still open after nine seconds. The main value fields hide both their Crown accessory and surrounding scroll indicators. Previous is plain text and does not navigate.
+- A broad pass captured 54 fresh default/large-text/timing frames on 40 mm and Ultra before the final presentation-only correction; that correction received a focused Ultra check. Simulator fixtures are demo data and never sensor evidence. No workout was started, finished or discarded on a physical device for QA.
+- **Resource rules changed during this run:** keep one shared phone booted, currently Overland Regression `42FA2C2F-F66C-41DB-A33C-A018165BB0D7`; use one Watch only when essential and shut that Watch down afterward. Serialize with `coord.py` and communicate directly with Overland. Old Light scripts hard-code the former phone and shutdown behavior: adapt them to the new shared-phone rule before reuse.
+- Idle-runtime exception: Overland found both iOS 27 phone runtimes consumed high CPU with the app closed, and shut down the replacement as well. Do not keep an unhealthy idle runtime running merely to preserve a boot. Coordinate shutdown and wait for a safe baseline; never boot a second phone as a workaround.
+- CPU guard is `Overland-iOS/ci_scripts/resource_guard.py`, used inside the coordinator with specific DerivedData roots. Use jobs1 and the agreed conservative 50% pause / 35% resume thresholds; simulator app monitoring also needs its exact installed executable via `--process-path`. It is sampled throttling, not a hard global ceiling. The signed build reported peak 88.6% and 76 throttle intervals; do not claim it stayed below 80%.
+- Next is the owner's direct wrist check: weight/reps Crown indicator, tapping Previous, and the log → RPE → rest flow. Fresh sensors, a completed Health save and end-to-end device sync were not exercised in this session. All Iron build/check jobs have finished and resource claims are released; Overland continues separately.
+
+## Round 8 and Watch Round 6 built (2026-10-27, uncommitted)
+
+- Watch Round 6 rebuild (spec: `docs/WATCH_DESIGN.md`). The vitals row is pinned under the toolbar on a solid background; the rest ring keeps ±15 beside it; the Crown adjusts rest. Verified on the 42 mm simulator. Ultra size and always-on are not checked yet. Average BPM still needs `WorkoutSessionManager.averageHeartRate`.
+- Effort and RPE: Apple-style slanted graphs on iPhone and Watch (`Shared/UI/SwiftUI/SlantedBarShape.swift`, `EffortRatingGraph`, `RPEGraph`, `WatchEffortViews.swift`). A tap on an RPE bar selects it, unfilled bars use `systemFill`, and the disabled Set RPE button is neutral.
+- Round 8, owner-approved (`docs/design/phone-past-workout-r8.dc.html`, `phone-settings-r8.dc.html`):
+  - The past workout (`WorkoutDetailView`) keeps the same information in logger-style cards, with read-only dates and a zoom transition from History.
+  - Settings keeps the same rows, adds colored icon tiles and a header card.
+- Imported Data tools (remove imported workouts, replace with a new export) are in `BackupAndExportView`.
+
+### 2026-10-30 overnight: simulators only (uncommitted, not on devices yet)
+
+- **Sync and finish lifecycle fixes** (review lane RV, fixed by SY2, each with a regression test in `WatchCompanionSyncTests`):
+  - The worst bug: finishing early on the Watch with unlogged sets was rejected by the phone's Core Data validation (`Workout.validate` code 5). The finish was never acknowledged, so every later sync event stayed blocked in the Watch's ordered outbox. The fix prunes unfinished rows, as the legacy path did.
+  - Also fixed:
+    - a duplicate finish discarding the Health recording;
+    - a relaunch during finalization stranding the Watch;
+    - a stale phone context restarting a finished workout (bounded terminal tombstones);
+    - Health-failure handling overwriting phone edits;
+    - a queued Watch finish resurrecting a phone-discarded workout;
+    - phone completion dropping queued Watch value edits;
+    - a Watch finish overwriting a newer phone title.
+- **Second review round** (RV2, fixed by SY3 and SY3B, with tests):
+  - Recovery no longer reopens a discarded workout, and it no longer finalizes a live one because of an editable end date.
+  - Post-finish phone corrections now win over older delayed Watch patches, field by field, using bounded finalization baselines. Untouched fields still accept them.
+  - The warm-up insert dismisses only after a durable save.
+- **RPE sheet idle timer** (FL4): every Crown event, including at the 5/10 limits, and every tap now resets the 4 s auto-accept.
+- **Preference merge clocks** for plates, notes and tracking types now persist across restarts (lane PC). The hidden-exercise cache refreshes at catalog request boundaries, which catches writes from other processes.
+- **Watch one-screen pickers** (lane FIT):
+  - The set editor and the Rest Timer picker now follow §22: a one-line header, a hero value sized from the leftover height, and Log Set or Done pinned at the bottom. Their −/+ rows, presets and settings sit below the fold.
+  - The header truncates the exercise name, never "Set 1/3".
+- **Warm-up sets on the Watch** (lane WU):
+  - The Exercise Options → Warm-up Sets row opens a one-screen list with a pinned "Add N Sets" button.
+  - The math lives in `Shared/Data/WarmupPlan.swift`, shared with the iPhone calculator. With a plate setup it rounds to weights that setup can actually load; without one, results are unchanged.
+- **This Week widget** (lane WK): small, medium, Lock Screen rectangular and circular families. It uses Home's computed history, so the widget and Home agree. Its visuals are not verified yet, because the simulator can't place widgets from a script.
+- **Tests:** 453/453 pass. The 10 Watch-store concurrency tests are now enabled: `WatchWorkoutStoreConcurrencyTests` compiles the real store into IronTests.
+- **Simulator limits:**
+  - On iOS 27, paired-simulator WatchConnectivity is broken: phone `wcd` fails `fetchInstalledApplicationsForPairedDevice` with `NSXPCConnectionInvalid`, so the Watch sees `companionAppInstalled: NO`, even after re-pairing. Verify sync with unit tests and on devices.
+  - Use `-ironSkipHealthAuthorization` (DEBUG) for iPhone screenshot runs.
+  - `~/.local/share/light/phone-screens.sh` takes `LIGHT_PHONE_ROUTES` (`logger` or any `-ironInspect…` suffix). Approved Watch shots are in `~/.local/share/light/approved/`.
+
+### 2026-10-29 afternoon: Codex lanes P–PR2 (uncommitted, on both devices)
+
+- **Plate calculator** (iPhone + Watch), in `Shared/Data/PlateLoadout.swift`:
+  - Setup modes are Bar, No Bar and Machine, with a starting weight, plus Both or One side.
+  - Users choose their available plates, and each exercise keeps its own setup. Both sync both ways.
+  - On the Watch, the target is the editable hero tile, using Now-page steps.
+  - The machine diagram is a front view.
+- **Set tracking types:** eight types in `Shared/Data/SetTrackingType.swift`.
+  - They drive logger columns, Previous, volume, records/PR badges, history, backups (v5) and saved-workout export (v2).
+  - Each exercise can override its type; overrides sync with the Watch.
+  - The file is internal and compiled into six targets. In tests that import both modules, use a module-qualified name (`Iron.` or `WorkoutDataKit.`).
+- **Sync:** a Watch-started workout is no longer deferred behind an empty phone placeholder. The phone shows "Workout running on Apple Watch", with an "Open on iPhone" action. Ack retries have been added.
+- **Live Activity:**
+  - The rest bar is a self-updating `ProgressView(timerInterval:)`, with "of M:SS" for the total.
+  - Paused rest keeps its interval, and Watch adjustments keep the original start.
+  - Incomplete-set squares are visible.
+- **Haptics and sounds:** there's an iPhone audit; `RestTimerStore.adjust(by:feedback:)` ticks only for user actions. The Watch uses WatchKit paired cues, which follow Silent Mode, and has a Haptics toggle. The Watch owns rest alerts when it drives the workout.
+- **Watch layout:** the rest controls are in the bottom toolbar. The Now page scrolls under the page dots. The weight/reps split is fixed per field, never per live value.
+- **iPhone:** the set rows are polished (6 pt gaps, 40 pt badge), and the heart-rate chart scrubs with press-and-hold.
+- **Tests:** 368/368 pass. Xcode 27's `xcodebuild test` hangs at the runner handshake, so use `~/Library/Caches/Light/standalone/build-and-test.sh` through `coord.py run check Light ...`. It's adapted from Overland's in-app runner.
+
+### Build 50 and Watch follow-ups (2026-10-29, uncommitted)
+
+- Build 50 is on the iPhone and Watch. It adds the scrolling Watch Now page (tiles change color only; Set Options below the fold), Health test mode with no HKWorkoutSession, and the R1/R2 review fixes.
+- Watch-only fixes after 50, on the Watch with no new version number:
+  - Weight tile takes 1.75/2.75 of the row and scales to 0.55, so "173.5" fits next to "12".
+  - The controls page grid is Pause | Exercise over Discard | Finish. Large heart-rate and kcal values head the page, followed by sets and volume.
+  - The plate calculator draws a mirrored barbell with gym-colored plates (`IronTheme.plate*`), an each-side list with swatches, and a note for any weight that can't be loaded.
+- Not yet run on build 50: the unit tests, test mode on a device, and the Crown handoff on a device.
+
+### Build 49 (2026-10-28, uncommitted)
+- Add Exercise sheet: the bottom-bar filters are icon-only again (`figure.arms.open`, `dumbbell`, `plus`), tinted accent when a filter is active, matching the Exercises tab.
+- Superset sheet: one-line rows (letter badge + name, then "N sets · Equipment"), a legend plus a wrapping A1 · B1 · A2 chip sequence showing every round, and Save in the toolbar instead of a full-width button.
+- Workout pill: live Watch heart rate and active kcal on the title row (`ActiveWorkoutPillVitals` observes `liveMetrics` on its own); the inline accessory shows heart rate only.
+- Workout detail: a new "Heart Rate" card (`Iron/UI/History/WorkoutVitalsSection.swift`) reads heart rate samples and summed active energy from Apple Health for the workout's time window: Average, Maximum, Active kcal, plus a line chart with an average rule. It asks for read access the first time and hides itself when Health has no data. In DEBUG, `-ironDemoVitals` draws synthetic data.
+
+### Round 10, build 48 (2026-10-28, uncommitted)
+
+Five Codex lanes (W10, W11, P10, S10, H10) carried the Round 9 style to the remaining screens.
+
+- **Watch:**
+  - Home, saved workouts, history and settings got larger type and full-width rows, with the primary action at the top.
+  - The full set editor reuses the Now tiles and puts Save right under them.
+  - Exercise options, set type, superset, the RPE page and the rest picker got bigger full-width rows.
+  - On 40 mm the Now header is one line: the name, then "1/3".
+- **iPhone:**
+  - Unrated RPE opens blank.
+  - Set badges show a menu cue.
+  - Superset and reorder sheets have full-width rows.
+  - The Finish sheet has a pinned Save.
+  - The expanded set editor has larger values.
+  - Settings subpages use the root's icon-tile cards, and rest lengths are set on the inline ruler.
+  - Past-workout exercise editing uses the logger's rows.
+  - RestLengthRuler spreads its labels over any range and drops leading zeros ("2:30").
+
+### Round 9 "fill the screen", build 47 (2026-10-28, uncommitted)
+
+The owner approved this round on the canvas page "Round 9 · Fill the screen, smoother flows". Their decision: **keep the iPhone Previous column**.
+
+- **Watch:**
+  - The active workout is now three pages: Controls | Now | Exercises.
+  - Now shows large weight and reps tiles. Tap a tile, then use the Crown (0.5 lb steps) or ± (5 lb or 2.5 kg) to edit in place, and log from the same page.
+  - Rest uses a full-width ring with a −15 · Skip · +15 row.
+  - The exercise page moves rest and superset into ⋯.
+  - A new workout goes straight to the "First exercise" picker.
+  - Now, Rest and Controls ignore the bottom safe area, which is free screen on a page view.
+  - The page `accessibilityLabel`s were removed, because they masked every child's label.
+  - Plural fixes.
+- **iPhone:**
+  - Logger: wider cards; the name on one line with "Equipment · Rest 3:00" under it; a slimmer Previous column; wider weight and reps boxes; a superset rail with A/B badges; the idle "Watch not paired" line is hidden.
+  - RPE sheet: tap a bar to save.
+  - The empty workout lists five recent exercises you can add in one tap.
+  - The library and Add Exercise rows give names the full width, with a "Muscle · Equipment · date" line under the name.
+  - The exercise detail chart has round y-axis ticks and a fitted range, and its actions sit in a ⋯ menu.
+- **Not verified:** the Crown on a device, and the Watch Home → New Workout → picker push.
+
+### QA polish pass, build 46 (2026-10-27, uncommitted)
+
+Walked every screen on the Ultra 49 mm and a temporary 40 mm Watch simulator, and on a temporary iPhone 17 Pro simulator (light and dark). Build 46 is installed on the owner's Watch.
+
+- **Watch:**
+  - A black fade under the toolbar keeps the vitals legible when you scroll (`watchHardTopEdge`); system scroll edge effects did nothing on watchOS.
+  - Finish summary tiles: `Grid` rows at equal height, one-line labels with short forms ("Avg HR", "Calories"), and values that never truncate.
+  - Plurals go through `WatchNumber.count`.
+  - Text joined with " · " wraps after the dot (`WatchNumber.joinedForWrapping`).
+  - "Move Up/Down" fall back to "Up/Down".
+  - The superset row name uses the full width.
+  - The RPE and effort pages use `scenePadding` with standard button labels.
+  - The rest ring text fits on 40 mm; ±15 is 32 pt below 180 pt widths.
+  - The header has a two-line fallback; "UP NEXT · SUPERSET" falls back to a link glyph.
+  - The Health failure copy is plain language.
+- **iPhone:**
+  - Inflected plurals ("1 Workout", "1 set", "1 rep").
+  - `String.equipmentTitle` ("EZ Curl Bar", not "Ez-Curl-Bar") everywhere equipment shows.
+  - The 1RM change caption reads "past 3 months".
+  - The Insights duration axis uses whole hours, and compact values drop ".0".
+  - The rest ruler no longer labels 0:30 (it collided with 1:00).
+  - The Health settings tile has a visible edge.
+
 ## Owner checkpoint: Watch app needs revision (2026-10-26)
 
 The owner rejected the current Watch result and explicitly stopped development. They then
@@ -459,9 +687,10 @@ default, at most one bounded independent child, no grandchildren, and isolated t
 with `fork_turns="none"`. The historical command below is reference, not permission to exceed
 those limits or to commit.
 
-- Workers: `codex exec -m gpt-6-astra -c model_reasoning_effort='"xhigh"' -c
-  service_tier='"priority"' -c approval_policy='"never"' -s workspace-write --add-dir /tmp
-  --add-dir /private/tmp -C <repo> -o <result.md> - < <brief.md>`.
+- Workers: `codex exec -m gpt-6.1-sol -c model_reasoning_effort='"xhigh"' -c
+  approval_policy='"never"' -s workspace-write --add-dir /tmp --add-dir /private/tmp -C <repo>
+  -o <result.md> - < <brief.md>`. The owner uses **gpt-6.1-sol only**: xhigh by default and max
+  for the hardest tasks. Use the default service tier, never fast or priority, and never astra.
 - **`workspace-write` cannot run xcodebuild** (`sandbox_apply: Operation not permitted`).
   Either the lead builds after workers finish, or the owner allows `-s danger-full-access`.
 - Each brief: role, lane, exact items (point at backlog IDs), files owned exclusively, "do not
@@ -700,6 +929,13 @@ still a good, unrejected idea; propose it.**
 - **Signing:** the IronIntentsUI target uses personal-team entitlements in Debug
   (`IronIntentsUI/IronIntentsUIPersonalTeam.entitlements`); don't reintroduce upstream app
   groups there.
+- **Siri extensions shelved (2026-11-01, owner's call):** the free signing team allows 10 App IDs
+  per 7 days and Overland shares it, so the Iron target no longer embeds or depends on `IronIntents`
+  and `IronIntentsUI`. Both targets and their code remain. **Before a real release, restore them:**
+  add `8A60439A239C4DBB00CFB7C0` and `8A604397239C4DBB00CFB7C0` back to the Iron target's Embed
+  Foundation Extensions phase, add `8A604396239C4DBB00CFB7C0` and `8A604399239C4DBB00CFB7C0` back to
+  its dependencies, and set `Shortcuts.isAvailable` to true. Live Activity buttons use App Intents
+  in `Shared/WidgetKit/WidgetKind.swift` and don't depend on these extensions.
 - **Canvas:** the design canvas is a claude.ai artifact
   (<https://claude.ai/artifact/XwxfzWTFvH2PNZWqMRpihv>; pages Round 1–5). Agents without the
   Artifact tool can't edit it. Use SwiftUI previews and screenshots for design proposals

@@ -13,11 +13,14 @@ import os.log
 
 enum IronBackup {
     static let bodyMeasurementsStorageKey = "iron.bodyMeasurements.v1"
-    private static let currentVersion = 4
+    private static let currentVersion = 6
 
     enum RestoreValidationError: LocalizedError {
         case unsupportedVersion(Int)
         case invalidBodyMeasurements
+        case invalidTrackingPreferences
+        case invalidExerciseNotes
+        case invalidRoutineNoteLinks
         case duplicateIdentifier(UUID)
         case missingIdentifier
         case conflictingRetainedCustomExercise(UUID)
@@ -28,6 +31,12 @@ enum IronBackup {
                 return "This backup version (\(version)) is not supported."
             case .invalidBodyMeasurements:
                 return "The backup contains invalid body measurements."
+            case .invalidTrackingPreferences:
+                return "The backup contains invalid set tracking preferences."
+            case .invalidExerciseNotes:
+                return "The backup contains invalid exercise notes."
+            case .invalidRoutineNoteLinks:
+                return "The backup contains invalid saved-workout note links."
             case .duplicateIdentifier(let identifier):
                 return "The backup contains the duplicate identifier \(identifier.uuidString)."
             case .missingIdentifier:
@@ -47,8 +56,10 @@ enum IronBackup {
          Version 2: workout UUIDs
          Version 3: workout plans, all entities have mandatory UUIDs
          Version 4: body measurements
+         Version 5: set tracking types and saved-workout distance targets
+         Version 6: exercise notes and saved-workout note links
          */
-        var version: Int = 4 // var not let so it can be overwritten by decodable
+        var version: Int = 6 // var not let so it can be overwritten by decodable
         let date: Date
         let customExercises: [Exercise]
         let workoutPlans: [WorkoutPlan]
@@ -56,6 +67,9 @@ enum IronBackup {
         /// Opaque JSON from the app-group measurement store. Keeping this as
         /// data lets the shared backup model remain independent of HealthKit.
         let bodyMeasurementsData: Data?
+        let trackingPreferences: SetTrackingPreferences?
+        let exerciseNotes: ExerciseNotes?
+        let routineNoteLinks: WorkoutRoutineNoteLinks?
         
         // MARK: - Codable
         
@@ -66,6 +80,9 @@ enum IronBackup {
             case workoutPlans
             case workouts
             case bodyMeasurementsData
+            case trackingPreferences
+            case exerciseNotes
+            case routineNoteLinks
         }
         
         init(
@@ -73,13 +90,19 @@ enum IronBackup {
             customExercises: [Exercise],
             workoutPlans: [WorkoutPlan],
             workouts: [Workout],
-            bodyMeasurementsData: Data?
+            bodyMeasurementsData: Data?,
+            trackingPreferences: SetTrackingPreferences?,
+            exerciseNotes: ExerciseNotes?,
+            routineNoteLinks: WorkoutRoutineNoteLinks?
         ) {
             self.date = date
             self.customExercises = customExercises
             self.workoutPlans = workoutPlans
             self.workouts = workouts
             self.bodyMeasurementsData = bodyMeasurementsData
+            self.trackingPreferences = trackingPreferences
+            self.exerciseNotes = exerciseNotes
+            self.routineNoteLinks = routineNoteLinks
         }
         
         init(from decoder: Decoder) throws {
@@ -91,6 +114,9 @@ enum IronBackup {
             // workout plans must be decoded before workouts
             workouts = try container.decode([Workout].self, forKey: .workouts)
             bodyMeasurementsData = try container.decodeIfPresent(Data.self, forKey: .bodyMeasurementsData)
+            trackingPreferences = try container.decodeIfPresent(SetTrackingPreferences.self, forKey: .trackingPreferences)
+            exerciseNotes = try container.decodeIfPresent(ExerciseNotes.self, forKey: .exerciseNotes)
+            routineNoteLinks = try container.decodeIfPresent(WorkoutRoutineNoteLinks.self, forKey: .routineNoteLinks)
         }
         
 //        public func encode(to encoder: Encoder) throws {
@@ -106,7 +132,9 @@ enum IronBackup {
     static func createBackupData(
         managedObjectContext: NSManagedObjectContext,
         exerciseStore: ExerciseStore,
-        userDefaults: UserDefaults = .appGroup
+        userDefaults: UserDefaults = .appGroup,
+        trackingDefaults: UserDefaults = .standard,
+        notesDefaults: UserDefaults = .standard
     ) throws -> Data
     {
         let workoutRequest: NSFetchRequest<Workout> = Workout.fetchRequest()
@@ -123,7 +151,10 @@ enum IronBackup {
             customExercises: exerciseStore.customExercises,
             workoutPlans: workoutPlans,
             workouts: workouts,
-            bodyMeasurementsData: userDefaults.data(forKey: bodyMeasurementsStorageKey)
+            bodyMeasurementsData: userDefaults.data(forKey: bodyMeasurementsStorageKey),
+            trackingPreferences: SetTrackingPreferences.load(defaults: trackingDefaults),
+            exerciseNotes: ExerciseNotes.load(defaults: notesDefaults),
+            routineNoteLinks: WorkoutRoutineNoteLinks.load(defaults: notesDefaults)
         )
         
         let encoder = JSONEncoder()
@@ -141,6 +172,8 @@ enum IronBackup {
         managedObjectContext: NSManagedObjectContext,
         exerciseStore: ExerciseStore,
         userDefaults: UserDefaults = .appGroup,
+        trackingDefaults: UserDefaults = .standard,
+        notesDefaults: UserDefaults = .standard,
         saveParent: ((NSManagedObjectContext) throws -> Void)? = nil
     ) throws {
         let previousCustomExercises = exerciseStore.customExercises
@@ -202,6 +235,12 @@ enum IronBackup {
             )
         }
 
+        let activeExerciseIDs = try managedObjectContext.performAndWait {
+            Set(try managedObjectContext.fetch(Workout.currentWorkoutFetchRequest).flatMap { workout in
+                (workout.workoutExercises?.array as? [WorkoutExercise] ?? []).compactMap { $0.exerciseUuid?.uuidString }
+            })
+        }
+
         // Persist custom exercises before the Core Data commit so any storage
         // failure leaves the parent untouched. The defer restores these if the
         // subsequent parent save fails.
@@ -233,6 +272,47 @@ enum IronBackup {
                 userDefaults.removeObject(forKey: bodyMeasurementsStorageKey)
             }
         }
+        // Defaults are outside Core Data's undo transaction. Restore them only
+        // after the parent save, and retain the active workout's measurement types.
+        // Missing metadata in older archives leaves existing preferences intact.
+        // Install plan-row links before notifications can trigger a sync snapshot.
+        if let archived = workoutDataBackup.routineNoteLinks {
+            WorkoutRoutineNoteLinks.load(defaults: notesDefaults).merging(archived).save(defaults: notesDefaults)
+        }
+        if let archived = workoutDataBackup.trackingPreferences {
+            let stored = SetTrackingPreferences.load(defaults: trackingDefaults)
+            var restored = stored
+            let now = Date().timeIntervalSince1970
+            for (key, value) in archived.overrides where !activeExerciseIDs.contains(key) {
+                restored.overrides[key] = .init(type: value.type,
+                    updatedAt: max(now, (stored.overrides[key]?.updatedAt ?? 0) + 0.001))
+            }
+            for (key, value) in archived.routineDistances {
+                restored.routineDistances[key] = .init(meters: value.meters,
+                    updatedAt: max(now, (stored.routineDistances[key]?.updatedAt ?? 0) + 0.001))
+            }
+            restored.save(defaults: trackingDefaults)
+            if restored != stored {
+                NotificationCenter.default.post(name: SetTrackingPreferences.didChangeNotification, object: trackingDefaults)
+            }
+        }
+        if let archived = workoutDataBackup.exerciseNotes {
+            let stored = ExerciseNotes.load(defaults: notesDefaults)
+            var restored = stored
+            let now = Date().timeIntervalSince1970
+            for (key, value) in archived.entries {
+                // Restoring is a new local edit. It must supersede both a newer
+                // on-device note and the archive's old note on the other device.
+                let previousTimestamp = max(value.updatedAt, stored.entries[key]?.updatedAt ?? 0)
+                let nextTimestamp = previousTimestamp.nextUp
+                restored.entries[key] = .init(text: value.text,
+                    updatedAt: max(now, nextTimestamp.isFinite ? nextTimestamp : previousTimestamp))
+            }
+            restored.save(defaults: notesDefaults)
+            if restored != stored {
+                NotificationCenter.default.post(name: ExerciseNotes.didChangeNotification, object: notesDefaults)
+            }
+        }
         success = true
         os_log("Successfully restored backup data", log: .backup, type: .info)
     }
@@ -240,6 +320,20 @@ enum IronBackup {
     private static func validate(_ backup: IronBackup) throws {
         guard (1...currentVersion).contains(backup.version) else {
             throw RestoreValidationError.unsupportedVersion(backup.version)
+        }
+
+        if let tracking = backup.trackingPreferences {
+            guard SetTrackingPreferences(payload: tracking.dictionaryRepresentation) != nil,
+                  tracking.overrides.keys.allSatisfy({ UUID(uuidString: $0) != nil }),
+                  tracking.routineDistances.keys.allSatisfy({ UUID(uuidString: $0) != nil }) else {
+                throw RestoreValidationError.invalidTrackingPreferences
+            }
+        }
+        if let notes = backup.exerciseNotes, !notes.isValid {
+            throw RestoreValidationError.invalidExerciseNotes
+        }
+        if let links = backup.routineNoteLinks, !links.isValid {
+            throw RestoreValidationError.invalidRoutineNoteLinks
         }
 
         var identifiers = Set<UUID>()

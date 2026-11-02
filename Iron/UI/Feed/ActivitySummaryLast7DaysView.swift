@@ -49,8 +49,8 @@ struct ActivitySummaryLast7DaysView: View {
     }
     
     var totalWeight: (weight: Double, difference: Double) {
-        let totalWeightSevenDaysAgo = workoutsFromSevenDaysAgo.map { $0.totalCompletedWeight ?? 0 }.reduce(0, +)
-        let totalWeightFourteenDaysAgo = workoutsFromFourteenDaysAgo.map { $0.totalCompletedWeight ?? 0 }.reduce(0, +)
+        let totalWeightSevenDaysAgo = workoutsFromSevenDaysAgo.map { $0.trackedCompletedVolume }.reduce(0, +)
+        let totalWeightFourteenDaysAgo = workoutsFromFourteenDaysAgo.map { $0.trackedCompletedVolume }.reduce(0, +)
         
         var weightPercent = totalWeightSevenDaysAgo == 0 ? 0 : (totalWeightSevenDaysAgo / totalWeightFourteenDaysAgo) - 1
         weightPercent = abs(weightPercent) < 0.001 ? 0 : weightPercent

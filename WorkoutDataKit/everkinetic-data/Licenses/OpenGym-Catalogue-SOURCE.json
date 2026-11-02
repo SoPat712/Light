@@ -1,7 +1,7 @@
 {
   "project": "OpenGym exercise text catalog",
   "repository": "https://github.com/DuarteSantos8/openGym",
-  "revision": "042c9ee42282756ab0e6e86a1cd5c710efaecee6",
+  "revision": "b6cfe2bbd3f099523ffbf2677438864e9a09a06f",
   "source": "catalogue/exercises/*.json (canonical entries only)",
   "canonicalCount": 5632,
   "purpose": "Update the main library and enrich imported/custom definitions; retain all existing UUIDs and legacy entries; no OpenGym media copied",
@@ -12,7 +12,7 @@
   "generator": "scripts/import_opengym_catalogue.py",
   "outputs": {
     "opengym-text-templates.json": {
-      "sha256": "cd3e372c853efe12510517cc2a38a67d0ed7b53966204562c8d3fd5cd7d6a8c0"
+      "sha256": "b8fc71e84bbd5c48f774c2ae1872ec87fed943ed4a519832078cf8386edf321a"
     },
     "opengym-source-ids.json": {
       "sha256": "3fd2d80abca18fc457eb6a194e8266b39492b1910da4970ccd018702618d6a1c"

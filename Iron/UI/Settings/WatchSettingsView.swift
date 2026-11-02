@@ -109,37 +109,26 @@ struct WatchSettingsView: View {
                 LabeledContent("Connection", value: connection.isReachable ? "Live" : "Standby")
 
                 Button(action: openWatchSetup) {
-                    Label(connectionState.setupActionTitle, systemImage: "applewatch")
+                    SettingsSubpageLabel(connectionState.setupActionTitle, systemImage: "applewatch", tint: IronTheme.mediaBackdrop)
                 }
+                .buttonStyle(.plain)
                 .accessibilityHint("Opens the Watch app on this iPhone")
 
                 Button(action: refreshConnectionStatus) {
-                    HStack(spacing: 8) {
-                        if isRefreshing {
-                            ProgressView()
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        Text(isRefreshing ? "Checking…" : "Refresh watch status")
+                    HStack(spacing: 12) {
+                        SettingsSubpageLabel(isRefreshing ? "Checking…" : "Refresh watch status", systemImage: "arrow.clockwise")
+                        if isRefreshing { ProgressView() }
                     }
                 }
+                .buttonStyle(.plain)
                 .disabled(isRefreshing)
             }
 
             Section {
                 Toggle(isOn: watchCompanionBinding) {
-                    Label {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Launch with workouts")
-                                .foregroundColor(IronTheme.primaryText)
-                            Text("Start the watch workout when logging begins on iPhone.")
-                                .font(.caption)
-                                .foregroundColor(IronTheme.secondaryText)
-                        }
-                    } icon: {
-                        Image(systemName: "applewatch")
-                            .foregroundColor(displayedWatchCompanion ? IronTheme.accent : IronTheme.secondaryText)
-                    }
+                    SettingsSubpageLabel("Launch with workouts",
+                                         detail: "Start the watch workout when logging begins on iPhone.",
+                                         systemImage: "applewatch", tint: IronTheme.mediaBackdrop)
                 }
                 .toggleStyle(.switch)
                 .tint(IronTheme.accent)
@@ -161,17 +150,20 @@ struct WatchSettingsView: View {
                 featureRow(
                     icon: "checkmark.circle.fill",
                     title: "Log complete sets",
-                    detail: "Edit weight, reps and RPE, then mark sets complete."
+                    detail: "Edit weight, reps and RPE, then mark sets complete.",
+                    tint: IronTheme.accent
                 )
                 featureRow(
                     icon: "timer",
                     title: "Keep rest time visible",
-                    detail: "Rest timers and the selected set stay aligned across devices."
+                    detail: "Rest timers and the selected set stay aligned across devices.",
+                    tint: IronTheme.metricTime
                 )
                 featureRow(
                     icon: "heart.fill",
                     title: "Capture workout metrics",
-                    detail: "See live heart rate and estimated active calories."
+                    detail: "See live heart rate and estimated active calories.",
+                    tint: IronTheme.metricHeartRate
                 )
             }
 
@@ -204,31 +196,49 @@ struct WatchSettingsView: View {
     private var connectionStatusRow: some View {
         let state = connectionState
 
-        return Label {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
-                    Text(state.title)
-                        .font(.headline)
-                        .foregroundColor(IronTheme.primaryText)
-                    Text(state.badge)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(state.tint)
+        return HStack(spacing: 12) {
+            SettingsSubpageIconTile(systemImage: "applewatch.radiowaves.left.and.right", tint: IronTheme.mediaBackdrop)
+            VStack(alignment: .leading, spacing: 4) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        connectionTitle(state).fixedSize()
+                        connectionBadge(state).fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        connectionTitle(state)
+                        connectionBadge(state)
+                    }
                 }
                 Text(state.detail)
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundColor(IronTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
-        } icon: {
-            Image(systemName: "applewatch.radiowaves.left.and.right")
-                .font(.title3.weight(.semibold))
-                .foregroundColor(state.tint)
-                .frame(width: 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func connectionTitle(_ state: ConnectionState) -> some View {
+        Text(state.title)
+            .font(.headline)
+            .foregroundStyle(IronTheme.primaryText)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func connectionBadge(_ state: ConnectionState) -> some View {
+        Text(state.badge)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(state.tint)
     }
 
     private var companionDetail: String {
+        #if DEBUG
+        if settingsStore.healthTestMode {
+            return "Test mode is on. Watch workouts don't record heart rate or calories or save to Apple Health."
+        }
+        #endif
         if !isCompanionAvailable {
             return "Pair an Apple Watch and install Light before enabling the workout companion."
         }
@@ -239,23 +249,8 @@ struct WatchSettingsView: View {
     }
 
     private var offlineContinuityRow: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(offlineContinuityTitle)
-                    .font(.body)
-                    .foregroundColor(IronTheme.primaryText)
-                Text(offlineContinuityDetail)
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } icon: {
-            Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.body.weight(.semibold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 28)
-        }
-        .padding(.vertical, 2)
+        SettingsSubpageLabel(offlineContinuityTitle, detail: offlineContinuityDetail,
+                             systemImage: "arrow.triangle.2.circlepath")
     }
 
     private var offlineContinuityTitle: String {
@@ -274,24 +269,8 @@ struct WatchSettingsView: View {
         return "If the phone disconnects, Light stores the current workout and queues your edits locally. Changes reconcile automatically when the connection returns."
     }
 
-    private func featureRow(icon: String, title: String, detail: String) -> some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.body)
-                    .foregroundColor(IronTheme.primaryText)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } icon: {
-            Image(systemName: icon)
-                .font(.body.weight(.semibold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 28)
-        }
-        .padding(.vertical, 2)
+    private func featureRow(icon: String, title: String, detail: String, tint: Color) -> some View {
+        SettingsSubpageLabel(title, detail: detail, systemImage: icon, tint: tint)
     }
 
     private func refreshConnectionStatus() {

@@ -47,7 +47,7 @@ struct TrainingDayRecapView: View {
             Section {
                 let columns = Array(repeating: GridItem(.flexible(), alignment: .leading), count: dynamicTypeSize.isAccessibilitySize ? 1 : 2)
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
-                    metric("Workouts", value: "\(sessions.count)", tint: IronTheme.accent)
+                    metric(sessions.count == 1 ? "Workout" : "Workouts", value: "\(sessions.count)", tint: IronTheme.accent)
                     metric("Completed Sets", value: "\(sets)", tint: IronTheme.metricSets)
                     metric("Training Time", value: duration, tint: IronTheme.metricTime)
                     metric("Volume", value: WeightUnit.convert(weight: volume, from: .metric, to: settings.weightUnit).formatted(.number.precision(.fractionLength(0))), unit: settings.weightUnit.unit.symbol, tint: IronTheme.metricVolume)

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Past workout restyled</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 440px; min-height: 1900px; background: {{t.bg}}; color: {{t.label}}; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif; -webkit-font-smoothing: antialiased; padding: 56px 16px 48px; box-sizing: border-box">
+  <div style="display: flex; justify-content: space-between">
+    <button aria-label="Back" style="width: 44px; height: 44px; border: 0; border-radius: 22px; background: {{t.glass}}; color: {{t.label}}; display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>
+    </button>
+    <button aria-label="Workout actions" style="width: 44px; height: 44px; border: 0; border-radius: 22px; background: {{t.glass}}; color: {{t.label}}; display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9.5"></circle><circle cx="7.8" cy="12" r="1.2" fill="currentColor" stroke="none"></circle><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"></circle><circle cx="16.2" cy="12" r="1.2" fill="currentColor" stroke="none"></circle></svg>
+    </button>
+  </div>
+  <h1 style="margin: 10px 4px 2px; font-size: 34px; font-weight: 700; letter-spacing: -0.4px; line-height: 1.12">Late Night Chest + Arms</h1>
+  <div style="margin: 0 4px; font-size: 15px; color: {{t.label2}}">Tuesday, October 27, 2026 · 12:29 – 1:39 AM</div>
+
+  <!-- Summary: the logger header's metric anatomy -->
+  <div style="margin-top: 16px; padding: 16px 18px; border-radius: 24px; background: {{t.card}}; display: flex; align-items: center">
+    <div style="flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px">
+      <div><div style="font-size: 15px; font-weight: 600; color: {{t.cyan}}">Duration</div><div style="font-size: 30px; font-weight: 700; color: {{t.cyan}}; font-variant-numeric: tabular-nums">1h 10m</div></div>
+      <div><div style="font-size: 15px; font-weight: 600; color: {{t.green}}">Volume</div><div style="font-size: 30px; font-weight: 700; color: {{t.green}}; font-variant-numeric: tabular-nums">11,400<span style="font-size: 15px; color: {{t.label2}}"> lb</span></div></div>
+      <div><div style="font-size: 15px; font-weight: 600; color: {{t.orange}}">Sets</div><div style="font-size: 30px; font-weight: 700; color: {{t.orange}}; font-variant-numeric: tabular-nums">15</div></div>
+    </div>
+    <div role="img" aria-label="Muscle map, chest and arms" style="display: flex; gap: 4px; flex-shrink: 0">
+      <svg width="30" height="64" viewBox="0 0 30 64" aria-hidden="true"><circle cx="15" cy="6" r="5" fill="{{t.body}}"></circle><rect x="7" y="13" width="16" height="22" rx="6" fill="{{t.body}}"></rect><rect x="8.5" y="14.5" width="6" height="7" rx="3" fill="{{t.blue}}"></rect><rect x="15.5" y="14.5" width="6" height="7" rx="3" fill="{{t.blue}}"></rect><rect x="1" y="14" width="5" height="20" rx="2.5" fill="{{t.blue}}"></rect><rect x="24" y="14" width="5" height="20" rx="2.5" fill="{{t.blue}}"></rect><rect x="8" y="36" width="6" height="27" rx="3" fill="{{t.body}}"></rect><rect x="16" y="36" width="6" height="27" rx="3" fill="{{t.body}}"></rect></svg>
+      <svg width="30" height="64" viewBox="0 0 30 64" aria-hidden="true"><circle cx="15" cy="6" r="5" fill="{{t.body}}"></circle><rect x="7" y="13" width="16" height="22" rx="6" fill="{{t.body}}"></rect><rect x="1" y="14" width="5" height="20" rx="2.5" fill="{{t.blue}}"></rect><rect x="24" y="14" width="5" height="20" rx="2.5" fill="{{t.blue}}"></rect><rect x="8" y="36" width="6" height="27" rx="3" fill="{{t.body}}"></rect><rect x="16" y="36" width="6" height="27" rx="3" fill="{{t.body}}"></rect></svg>
+    </div>
+  </div>
+
+  <!-- Session: same three facts as today, as a card of rows -->
+  <div style="margin: 22px 16px 8px; font-size: 15px; font-weight: 600; color: {{t.label2}}">Session</div>
+  <div style="border-radius: 24px; background: {{t.card}}; padding: 4px 16px">
+    <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; box-shadow: inset 0 -0.5px 0 {{t.sep}}">
+      <div style="font-size: 17px; flex: 1">Effort</div>
+      <svg width="64" height="20" viewBox="0 0 64 20" aria-hidden="true"><path d="{{e.g0}}" fill="{{t.effBase}}"></path><path d="{{e.g1}}" fill="{{t.effBase}}"></path><path d="{{e.g2}}" fill="{{t.effBase}}"></path><path d="{{e.g3}}" fill="{{t.effBase}}"></path></svg>
+      <div style="font-size: 17px; color: {{t.label2}}">Not Rated</div>
+    </div>
+    <div style="display: flex; align-items: center; min-height: 52px; box-shadow: inset 0 -0.5px 0 {{t.sep}}">
+      <div style="font-size: 17px; flex: 1">Saved Workout</div>
+      <div style="font-size: 17px; color: {{t.label2}}">One-Off Workout</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px; min-height: 48px; font-size: 15px; color: {{t.label2}}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"></rect><path d="M10.5 18.5h3"></path></svg>Sample data · Not sent
+    </div>
+  </div>
+
+  <!-- Details: read-only text, edit stays one tap away -->
+  <div style="margin: 22px 16px 8px; font-size: 15px; font-weight: 600; color: {{t.label2}}">Details</div>
+  <div style="border-radius: 24px; background: {{t.card}}; padding: 4px 16px">
+    <sc-for list="{{details}}" as="d" hint-placeholder-count="3">
+      <div style="display: flex; align-items: center; min-height: 52px; box-shadow: inset 0 -0.5px 0 {{t.sep}}">
+        <div style="font-size: 17px; flex: 1">{{d.k}}</div>
+        <div style="font-size: 17px; color: {{t.label2}}; font-variant-numeric: tabular-nums">{{d.v}}</div>
+      </div>
+    </sc-for>
+    <button style="display: flex; align-items: center; gap: 10px; min-height: 52px; width: 100%; border: 0; background: transparent; color: {{t.accent}}; font: inherit; font-size: 17px; padding: 0; cursor: pointer">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20l1-4.5L16 4.5l3.5 3.5L8.5 19z"></path></svg>Edit Workout Details
+    </button>
+  </div>
+  <div style="margin: 8px 16px 0; font-size: 13px; color: {{t.label2}}">No notes for this workout.</div>
+
+  <!-- Exercises: logger cards, read-only -->
+  <div style="margin: 22px 16px 8px; font-size: 15px; font-weight: 600; color: {{t.label2}}">Exercises</div>
+  <div style="display: flex; flex-direction: column; gap: 14px">
+    <sc-for list="{{ex}}" as="x" hint-placeholder-count="3">
+      <div style="padding: 16px 14px 12px; border-radius: 24px; background: {{t.card}}">
+        <div style="display: flex; align-items: center; gap: 14px; padding: 0 4px">
+          <div aria-hidden="true" style="width: 48px; height: 48px; border-radius: 24px; background: #FFFFFF; display: flex; align-items: center; justify-content: center; color: #8E8E93; flex-shrink: 0">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11"></path></svg>
+          </div>
+          <div style="flex: 1; min-width: 0">
+            <div style="font-size: 17px; font-weight: 600">{{x.name}}</div>
+            <div style="font-size: 15px; color: {{t.label2}}">{{x.meta}}</div>
+          </div>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{{t.chev}}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"></path></svg>
+        </div>
+        <div style="display: grid; grid-template-columns: 44px minmax(0, 1fr) minmax(0, 1fr) 44px 36px; gap: 6px; align-items: center; padding: 14px 4px 6px; font-size: 13px; color: {{t.label2}}">
+          <div style="text-align: center">Set</div><div style="text-align: center">lb</div><div style="text-align: center">Reps</div><div style="text-align: center">RPE</div><div style="text-align: center">✓</div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px">
+          <sc-for list="{{x.sets}}" as="s" hint-placeholder-count="5">
+            <div style="display: grid; grid-template-columns: 44px minmax(0, 1fr) minmax(0, 1fr) 44px 36px; gap: 6px; align-items: center; height: 46px; padding: 0 4px; border-radius: 14px; background: {{s.fill}}">
+              <div style="justify-self: center; width: 30px; height: 30px; border-radius: 15px; background: {{s.badgeBg}}; color: {{s.badgeFg}}; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600">{{s.label}}</div>
+              <div style="height: 36px; border-radius: 10px; background: {{t.field}}; display: flex; align-items: center; justify-content: center; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums">{{s.w}}</div>
+              <div style="height: 36px; border-radius: 10px; background: {{t.field}}; display: flex; align-items: center; justify-content: center; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums">{{s.r}}</div>
+              <div style="text-align: center; font-size: 15px; font-weight: 600; color: {{s.rpeColor}}">{{s.rpe}}</div>
+              <svg width="26" height="26" viewBox="0 0 24 24" role="img" aria-label="Completed" style="justify-self: center"><circle cx="12" cy="12" r="11" fill="{{t.blue}}"></circle><path d="M7 12.5l3.2 3.2L17 9" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+  <button style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; height: 56px; margin-top: 16px; border: 0; border-radius: 28px; background: {{t.accentWash}}; color: {{t.accent}}; font: inherit; font-size: 17px; font-weight: 600; cursor: pointer">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add Exercises
+  </button>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":440,"height":1900}}'>
+function slantPath(x0, x1, yl, yr, yb, r) {
+  var s = (yl - yr) / (x1 - x0);
+  var f = function (n) { return n.toFixed(1); };
+  return 'M' + f(x0) + ',' + f(yb - r) + ' L' + f(x0) + ',' + f(yl + r) + ' Q' + f(x0) + ',' + f(yl) + ' ' + f(x0 + r) + ',' + f(yl - s * r) +
+    ' L' + f(x1 - r) + ',' + f(yr + s * r) + ' Q' + f(x1) + ',' + f(yr) + ' ' + f(x1) + ',' + f(yr + r) + ' L' + f(x1) + ',' + f(yb - r) +
+    ' Q' + f(x1) + ',' + f(yb) + ' ' + f(x1 - r) + ',' + f(yb) + ' L' + f(x0 + r) + ',' + f(yb) + ' Q' + f(x0) + ',' + f(yb) + ' ' + f(x0) + ',' + f(yb - r) + 'Z';
+}
+class Component extends DCLogic {
+  renderVals() {
+    var dark = this.props.dark ?? true;
+    var t = dark ? {
+      bg: '#000000', card: '#1C1C1E', glass: 'rgba(58,58,60,0.85)', label: '#FFFFFF', label2: 'rgba(235,235,245,0.6)', sep: 'rgba(84,84,88,0.6)', chev: 'rgba(235,235,245,0.3)',
+      field: 'rgba(255,255,255,0.08)', accent: '#409CFF', accentWash: 'rgba(10,132,255,0.18)', blue: '#0A84FF', cyan: '#64D2FF', green: '#30D158', orange: '#FF9F0A', pink: '#FF375F', body: '#3A3A3C', effBase: '#3A3A3C',
+      fN: 'rgba(10,132,255,0.18)', fW: 'rgba(255,159,10,0.18)', fD: 'rgba(94,92,230,0.24)', fF: 'rgba(255,69,58,0.18)',
+      bN: 'rgba(10,132,255,0.35)', bW: 'rgba(255,159,10,0.35)', bD: 'rgba(94,92,230,0.42)', bF: 'rgba(255,69,58,0.35)', cN: '#64B5FF', cW: '#FF9F0A', cD: '#A5A3FF', cF: '#FF6961'
+    } : {
+      bg: '#F2F2F7', card: '#FFFFFF', glass: 'rgba(255,255,255,0.9)', label: '#000000', label2: 'rgba(60,60,67,0.6)', sep: 'rgba(60,60,67,0.18)', chev: 'rgba(60,60,67,0.3)',
+      field: 'rgba(118,118,128,0.12)', accent: '#007AFF', accentWash: 'rgba(0,122,255,0.12)', blue: '#007AFF', cyan: '#0A84B8', green: '#248A3D', orange: '#C93400', pink: '#D30F45', body: '#D1D1D6', effBase: '#E3E3E8',
+      fN: 'rgba(0,122,255,0.10)', fW: 'rgba(255,149,0,0.14)', fD: 'rgba(88,86,214,0.14)', fF: 'rgba(255,59,48,0.12)',
+      bN: 'rgba(0,122,255,0.18)', bW: 'rgba(255,149,0,0.22)', bD: 'rgba(88,86,214,0.22)', bF: 'rgba(255,59,48,0.2)', cN: '#0062CC', cW: '#C93400', cD: '#5856D6', cF: '#D70015'
+    };
+    var groups = [[0.22, 0.385, 3], [0.48, 0.64, 3], [0.74, 0.82, 2], [0.905, 1, 2]];
+    var W = 64, H = 20, gap = 3, unit = (W - 3 * gap) / 10, x = 0, e = {};
+    groups.forEach(function (g, i) { var w = unit * g[2]; e['g' + i] = slantPath(x, x + w, H - g[0] * H, H - g[1] * H, H, 3); x += w + gap; });
+    var row = function (k, label, w, r, rpe) {
+      return { label: label, w: w, r: r, rpe: rpe || '–', rpeColor: rpe ? t.pink : t.label2, fill: t['f' + k], badgeBg: t['b' + k], badgeFg: t['c' + k] };
+    };
+    var ex = [
+      { name: 'Barbell Bench Press', meta: 'Barbell', sets: [row('N', '1', '115', '4'), row('N', '2', '120', '5'), row('W', 'W', '125', '6'), row('D', 'D', '130', '7', '8'), row('F', 'F', '135', '8', '9.5')] },
+      { name: 'Flyes: Cable', meta: 'Cable', sets: [row('N', '1', '115', '4'), row('N', '2', '120', '5'), row('N', '3', '125', '6')] },
+      { name: 'Triceps Pushdown: Cable (Rope)', meta: 'Cable', sets: [row('N', '1', '115', '4'), row('N', '2', '120', '5')] }
+    ];
+    var details = [{ k: 'Title', v: 'Late Night Chest + Arms' }, { k: 'Started', v: 'Oct 27, 2026 · 12:29 AM' }, { k: 'Finished', v: 'Oct 27, 2026 · 1:39 AM' }];
+    return { t: t, e: e, ex: ex, details: details };
+  }
+}
+</script>
+</body>
+</html>

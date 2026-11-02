@@ -1,0 +1,408 @@
+[
+  {
+    "uuid": "0E2E4708-35DC-4128-8B32-718FF68B5491",
+    "title": "Bench Press: Barbell (Decline, Wide Grip)",
+    "keep": "EBA85913-FFEA-5FA9-8FE6-233823890458",
+    "keepTitle": "Barbell Decline Wide-grip Press",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "039D6D33-98FD-4CC7-A7AD-C96FAA0135AE",
+    "title": "Bench Press: Barbell (Wide Grip)",
+    "keep": "47CA2F5D-AFC1-58FC-9201-B4F13DF683AE",
+    "keepTitle": "Barbell Wide Bench Press",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "5999199F-0BC8-414A-96FD-FA3377AFA5EF",
+    "title": "Bench Press: Dumbbell (Incline, Hammer Grip)",
+    "keep": "6742B498-7DD9-5DDE-8EE1-36F5BE21E672",
+    "keepTitle": "Dumbbell Incline Hammer Press",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "41CA09C9-E88C-42DF-997E-7D6FEA4A765E",
+    "title": "Bench Press: Machine (Decline)",
+    "keep": "BCB104D0-BA0D-5FDF-891C-879F9BBF21CF",
+    "keepTitle": "Lever Decline Chest Press",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "98D2649B-4616-455B-A0FA-481ECD780035",
+    "title": "Bench Press: Machine (Incline)",
+    "keep": "4D2B52E7-66B0-5084-A8C9-DA5F5C84DB92",
+    "keepTitle": "Lever Incline Chest Press",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "AA58E724-D2BC-43BC-9AF5-BED923FF67D9",
+    "title": "Bench Press: Smith Machine",
+    "keep": "23B5B032-D77F-5BE7-8C32-359142AFC46D",
+    "keepTitle": "Smith Bench Press",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "E420336A-82DA-4EB8-B821-9F29BB1A8D28",
+    "title": "Bench Press: Smith Machine (Close Grip)",
+    "keep": "5E568C7C-BB63-53B8-B316-180E82D4F1B5",
+    "keepTitle": "Smith Close-grip Bench Press",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "A367C0FE-49B8-484A-B296-6D5EB723E0B2",
+    "title": "Bench Press: Smith Machine (Incline)",
+    "keep": "66C8761B-C059-5E2D-9569-D9FC61DAC43B",
+    "keepTitle": "Smith Incline Bench Press",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "EEBD10DB-1C6D-44CE-BB9A-EBC981CF95EB",
+    "title": "Biceps Curl: Cable",
+    "keep": "A78E4DC9-588C-55E7-A1C4-FFC91A72850B",
+    "keepTitle": "Cable Curl",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "42ED76CF-ABF6-42CD-8D2E-B9DDCED4AEC6",
+    "title": "Biceps Curl: Cable (Overhead)",
+    "keep": "1E0BCCCC-848C-5CFC-AAF3-BB8264C0700C",
+    "keepTitle": "Cable Overhead Curl",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "1A3DFD15-984D-4EDE-BD34-B4DA7129B9B6",
+    "title": "Biceps Curl: Dumbbell (Hammer)",
+    "keep": "12B56DE3-59FF-5E83-A6BE-42504807DD75",
+    "keepTitle": "Dumbbell Hammer Curl",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "405E1A53-1383-4DF9-9368-86E3CCF38012",
+    "title": "Biceps Curl: EZ Curl Bar",
+    "keep": "2F977DD7-1E38-5458-A181-7DDF38BE321F",
+    "keepTitle": "EZ Barbell Curl",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "E24A1E1E-D71C-40F5-8296-9B85E758337D",
+    "title": "Calf Raise: Machine (Seated)",
+    "keep": "88905769-7BD2-59ED-B8F9-A463DD4D1D35",
+    "keepTitle": "Lever Seated Calf Raise",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "4A5CE1F5-EF10-436C-8ACB-1D6D5928AEC3",
+    "title": "Calf Raise: Machine (Standing)",
+    "keep": "A4746CE2-CF39-53C4-BE5B-C5D98B0994AE",
+    "keepTitle": "Lever Standing Calf Raise",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "734F6CD7-9787-45BF-91B2-EB61A9C05575",
+    "title": "Deadlift: Smith Machine",
+    "keep": "AC1D15B4-D65B-5C65-A2EF-7757CB69224B",
+    "keepTitle": "Smith Deadlift",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "721F71AE-879A-4F6A-87DB-09C7A6906D60",
+    "title": "Flyes: Cable (Incline)",
+    "keep": "334EB075-2629-5B8D-9742-02EACDDAE0DB",
+    "keepTitle": "Cable Incline Fly",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "61C900C2-8920-47BC-91E4-DC249F5C6127",
+    "title": "Flyes: Cable (Lying)",
+    "keep": "D2903F54-53CB-542F-9239-B64C10015963",
+    "keepTitle": "Cable Lying Fly",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "C28FA94C-D311-450F-B208-6366A2992837",
+    "title": "Flyes: Dumbbell",
+    "keep": "7C07D9F3-1C0D-5955-9194-882393665630",
+    "keepTitle": "Dumbbell Fly",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "0DB5A1D0-91D7-4A7E-8537-8F1199B3FC0A",
+    "title": "Flyes: Dumbbell (Decline)",
+    "keep": "8A5A5806-7E56-5403-8C1B-C1D674344AE7",
+    "keepTitle": "Dumbbell Decline Fly",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "635746F0-1E44-4DAA-B2FA-81D1933F3EB3",
+    "title": "Flyes: Dumbbell (Incline)",
+    "keep": "6470F4DA-91A7-5118-B276-801F4927E158",
+    "keepTitle": "Dumbbell Incline Fly",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "D00DE650-3FA1-4A3E-87F7-E512820EB2FE",
+    "title": "Front Raises: Barbell",
+    "keep": "A357E1E2-E141-5C9B-BB65-67DE44DF42C7",
+    "keepTitle": "Barbell Front Raise",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "5CF92AB3-67F6-444C-A9B3-D4812B6CB06E",
+    "title": "Front Raises: Cable",
+    "keep": "C008333D-EDDF-5063-88D7-C2257424066F",
+    "keepTitle": "Cable Front Raise",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "9C3417E1-2B6F-4E2D-9F49-0BF256CCC88D",
+    "title": "Front Raises: Dumbbell",
+    "keep": "3B45D0FA-DAC3-5798-BC1D-7257F61EB50D",
+    "keepTitle": "Dumbbell Front Raise",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "3391381C-A3C2-4105-B9A9-9610FFF1912D",
+    "title": "Good Mornings: Barbell",
+    "keep": "B07A0665-0E4D-5EC1-9BA4-66F073F5D33C",
+    "keepTitle": "Barbell Good Morning",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "4C200AB4-2298-4879-A059-46BB1536DF4D",
+    "title": "Hack Squat: Smith Machine",
+    "keep": "7DF3E755-1EBB-5EEF-94EA-BE41E86DEA27",
+    "keepTitle": "Smith Hack Squat",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "D645140E-5761-4096-AD31-8E66A8D6A562",
+    "title": "Lunges: Barbell",
+    "keep": "9D2DC3E3-C550-5361-85D6-1AEE5250E452",
+    "keepTitle": "Barbell Lunge",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "D3BE22C1-9276-4EF9-9888-2E98D76DC618",
+    "title": "Lunges: Dumbbell",
+    "keep": "644F945C-D8BC-58D1-90EA-2DB37847378D",
+    "keepTitle": "Dumbbell Lunge",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "0C6E6F9F-B09E-4640-8FE6-4AD1374FA0C7",
+    "title": "Preacher Curl: Machine",
+    "keep": "D51A0273-88BE-5C22-897F-582210258F33",
+    "keepTitle": "Lever Preacher Curl",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "D39C7398-C0DB-4501-95A3-67E8B27C7921",
+    "title": "Rear Deltoid Row: Barbell",
+    "keep": "40173500-6C7D-5202-9A86-B5E26CD5C801",
+    "keepTitle": "Barbell Rear Delt Row",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "0926F2D0-B09A-4D74-9EDF-3654D79A4CDF",
+    "title": "Rear Deltoid Row: Smith Machine",
+    "keep": "530CDAF2-389D-5E77-BAC2-79D7F74D09B5",
+    "keepTitle": "Smith Rear Delt Row",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "794F1BDB-9F8C-487E-866D-D6E54E28A522",
+    "title": "Row: Barbell (Bent Over, Reverse)",
+    "keep": "632928A0-17AB-561D-BD56-AE921F165431",
+    "keepTitle": "Barbell Reverse Grip Bent Over Row",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "44694EFA-7D2E-4C7F-AB7D-DC4F66CAFB60",
+    "title": "Row: T-Bar",
+    "keep": "469310F6-1D58-5670-8D3F-CC3AD2B382B8",
+    "keepTitle": "Lever T Bar Row",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "C736BCEB-4699-4FFF-BE53-0D56336BA137",
+    "title": "Shrugs: Barbell",
+    "keep": "1D56666B-EE95-5A1B-909B-2D8B3006015E",
+    "keepTitle": "Barbell Shrug",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "BDD44C1A-EDC3-48AE-89BC-DE1CB540BBFD",
+    "title": "Shrugs: Cable",
+    "keep": "6C30A7C8-99A2-58BD-99C1-6AE439B4132F",
+    "keepTitle": "Cable Shrug",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "242C1F11-54FE-4EB9-B350-3ED2814E9E2D",
+    "title": "Shrugs: Dumbbell",
+    "keep": "521AA2F0-A263-557B-B997-B6FD2B8079B7",
+    "keepTitle": "Dumbbell Shrug",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "9A268413-B96A-4943-94BC-C36FC0C91E07",
+    "title": "Shrugs: Smith Machine",
+    "keep": "1D07F6E3-2F6C-5DAE-86EE-1347E44F3814",
+    "keepTitle": "Smith Shrug",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "3B587709-4111-495D-BC4C-0658BCEE4145",
+    "title": "Squat: Barbell (Wide Stance)",
+    "keep": "AC77BC8D-9D4E-5555-BCD4-52321A57B455",
+    "keepTitle": "Barbell Wide Squat",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "9D96C412-5D6C-4FDD-9781-1B89AF31EE3D",
+    "title": "Squat: Smith Machine",
+    "keep": "9C225FAF-1121-52C0-8068-C4757199AD6C",
+    "keepTitle": "Smith Squat",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "5222009B-95E5-4A40-BB40-004B24E89BAE",
+    "title": "Triceps Extension: EZ Curl Bar (Decline)",
+    "keep": "DB43F297-3071-5C0B-95BF-80F1935C5232",
+    "keepTitle": "EZ Barbell Decline Triceps Extension",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "B0D44296-A4D5-49D9-8494-99A3F76543E4",
+    "title": "Triceps Extension: EZ Curl Bar (Incline)",
+    "keep": "8728EE3C-06F4-522A-905B-7F5EDBF46E9E",
+    "keepTitle": "EZ Barbell Incline Triceps Extension",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "B0958E4A-4C6E-405D-B89A-31528ED773E0",
+    "title": "Triceps Extension: EZ Curl Bar (Lying, Close Grip, Behind the Head)",
+    "keep": "906EE08B-9DC6-5EBE-AE98-5195F35E5B94",
+    "keepTitle": "EZ Bar Lying Close Grip Triceps Extension Behind Head",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "AA02F3FC-AE87-4C44-BAF6-E6AD2FB46015",
+    "title": "Triceps Extension: Machine",
+    "keep": "FE5072A8-E1FA-5DD1-95AA-5DF5307459CC",
+    "keepTitle": "Lever Triceps Extension",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "CDD01DA1-B5EF-44BD-BAE4-9A76EAC19078",
+    "title": "Triceps Pushdown: Cable (Reverse)",
+    "keep": "B52E5242-53BF-5847-B453-0B5562142152",
+    "keepTitle": "Cable Reverse-grip Pushdown",
+    "reason": "older name for the same exercise"
+  },
+  {
+    "uuid": "803FC12C-DD8B-5B9B-A1AD-A0E189B81CD3",
+    "title": "Sled 45° Leg Press (side Pov)",
+    "keep": "12929E5E-541E-5F2F-B17A-9CA36A50BC0A",
+    "keepTitle": "Sled 45° Leg Press",
+    "reason": "same exercise, different camera angle or figure"
+  },
+  {
+    "uuid": "82F5F8C6-2DFB-553A-9584-F2E39A00A334",
+    "title": "Sled 45° Leg Press (back Pov)",
+    "keep": "12929E5E-541E-5F2F-B17A-9CA36A50BC0A",
+    "keepTitle": "Sled 45° Leg Press",
+    "reason": "same exercise, different camera angle or figure"
+  },
+  {
+    "uuid": "DF7464C2-636A-52C0-AA2B-EFA82601742B",
+    "title": "Barbell Full Squat (back Pov)",
+    "keep": "9FC30CFD-92E4-5652-9E90-5324D8EDB437",
+    "keepTitle": "Barbell Full Squat",
+    "reason": "same exercise, different camera angle or figure"
+  },
+  {
+    "uuid": "A7AEC802-0945-5833-9B30-DE522B7D3973",
+    "title": "Barbell Full Squat (side Pov)",
+    "keep": "9FC30CFD-92E4-5652-9E90-5324D8EDB437",
+    "keepTitle": "Barbell Full Squat",
+    "reason": "same exercise, different camera angle or figure"
+  },
+  {
+    "uuid": "DDD41B08-07A2-53CC-9DE0-F452D2961BAD",
+    "title": "Dumbbell Upright Row (back Pov)",
+    "keep": "63D1C9A7-0848-5CB6-8794-8CD68103CEE6",
+    "keepTitle": "Dumbbell Upright Row",
+    "reason": "same exercise, different camera angle or figure"
+  },
+  {
+    "uuid": "9349878F-086A-5759-BDEE-48574F2558A3",
+    "title": "Barbell Sitted Alternate Leg Raise (female)",
+    "keep": "DDACFB0E-1D3A-511F-A145-F82E2BEA8B28",
+    "keepTitle": "Barbell Sitted Alternate Leg Raise",
+    "reason": "same exercise, different camera angle or figure"
+  },
+  {
+    "uuid": "C042C6E1-39FC-5C76-AF76-04B00276AF92",
+    "title": "Twisted Leg Raise (female)",
+    "keep": "32D75FD1-200C-5E8B-9EF0-C869AE2C876F",
+    "keepTitle": "Twisted Leg Raise",
+    "reason": "same exercise, different camera angle or figure"
+  },
+  {
+    "uuid": "AE3664F9-C905-5D2D-AFB8-E1DC95313F0C",
+    "title": "Dumbbell Standing One Arm Curl Over Incline Bench",
+    "keep": "3BFDD915-5EC9-5D61-8BD3-25881068033D",
+    "keepTitle": "Dumbbell Standing One Arm Curl (over Incline Bench)",
+    "reason": "same name spelled differently"
+  },
+  {
+    "uuid": "A2783B22-B136-572F-A5A5-30D88EAE5C81",
+    "title": "Dumbbell Close Grip Press",
+    "keep": "7D31D1DD-3369-5586-9317-851235440287",
+    "keepTitle": "Dumbbell Close-grip Press",
+    "reason": "same name spelled differently"
+  },
+  {
+    "uuid": "248B7FCF-3D32-57E0-9BAE-E879B5478D14",
+    "title": "Self Assisted Inverse Leg Curl",
+    "keep": "44549093-EC98-5CA6-9ABD-D71A067BED5D",
+    "keepTitle": "Self Assisted Inverse Leg Curl",
+    "reason": "exact same name"
+  },
+  {
+    "uuid": "A66F4D3A-20BE-521A-826F-85BEC68E1DA7",
+    "title": "Push-up (on Stability Ball)",
+    "keep": "41F40F0E-5A8E-5549-AFB3-C0697FBB5C2C",
+    "keepTitle": "Push-up (on Stability Ball)",
+    "reason": "exact same name"
+  },
+  {
+    "uuid": "EA54292B-97A3-52A5-AD82-40C951EDA5D3",
+    "title": "Barbell Seated Calf Raise",
+    "keep": "6F0C54FC-88A8-56A3-A2D7-B10C6FD2DF48",
+    "keepTitle": "Barbell Seated Calf Raise",
+    "reason": "exact same name"
+  },
+  {
+    "uuid": "A507D45E-0ADD-537A-90DA-830073F43742",
+    "title": "EZ Barbell Spider Curl",
+    "keep": "D6331F98-A9CF-53F9-A04B-EDF76D9B3BD1",
+    "keepTitle": "EZ Barbell Spider Curl",
+    "reason": "exact same name"
+  },
+  {
+    "uuid": "3B48E9D0-4E74-5405-AF3A-1D0C633B3B61",
+    "title": "Smith Reverse Calf Raises",
+    "keep": "30B30FC4-D50D-53E7-9EED-40C5A70F7099",
+    "keepTitle": "Smith Reverse Calf Raises",
+    "reason": "exact same name"
+  },
+  {
+    "uuid": "9AB99461-0310-5429-87CB-F0BE3DD1C6A0",
+    "title": "Lever Chest Press",
+    "keep": "1A82AA33-5B44-5A5E-83B6-E86D5452BB8B",
+    "keepTitle": "Lever Chest Press",
+    "reason": "exact same name"
+  }
+]

@@ -169,7 +169,7 @@ struct ExerciseHistorySetRow: View {
                 + metricText("\(set.repetitionsValue)", color: IronTheme.metricSets)
         }
         if set.repetitionsValue > 0 {
-            return metricText("\(set.repetitionsValue)", color: IronTheme.metricSets) + unitText("reps")
+            return metricText("\(set.repetitionsValue)", color: IronTheme.metricSets) + unitText(set.repetitionsValue == 1 ? "rep" : "reps")
         }
         return Text("—").foregroundColor(IronTheme.secondaryText)
     }

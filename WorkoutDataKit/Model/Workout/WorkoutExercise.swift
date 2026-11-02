@@ -74,13 +74,20 @@ public class WorkoutExercise: NSManagedObject, Codable {
     }
 
     public var totalCompletedWeight: Double? {
-        workoutSets?
+        // The pure Swift policy is also compiled into WorkoutDataKit so every
+        // aggregate consumer uses the same dimensions and assistance rule.
+        let preferred = SetTrackingPreferences.override(for: exerciseUuid) ?? .weightReps
+        return workoutSets?
             .compactMap { $0 as? WorkoutSet }
-            .reduce(0, { (weight, workoutSet) -> Double in
-                weight + (workoutSet.isCompleted ? workoutSet.weightValue * Double(workoutSet.repetitionsValue) : 0)
-            })
+            .reduce(0) { total, set in
+                guard set.isCompleted else { return total }
+                let data = SetTrackingType.SetData(weight: set.weightValue,
+                    reps: Int(set.repetitionsValue), duration: set.durationValue, distance: set.distanceValue)
+                let type = SetTrackingType.resolved(preferred, from: data)
+                return total + type.volume(weight: set.weightValue, reps: Int(set.repetitionsValue))
+            }
     }
-    
+
     // MARK: - Codable
     private enum CodingKeys: String, CodingKey {
         case uuid

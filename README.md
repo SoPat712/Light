@@ -79,7 +79,7 @@ The current working tree is verified with **Xcode 27 beta 6**. The iPhone app/wi
 require iOS 17 or later; the Watch app targets watchOS 10 or later. Some features require newer
 systems.
 
-1. Open `Iron.xcodeproj` and select the `Iron` scheme.
+1. Open `Light.xcodeproj` and select the `Iron` scheme.
 2. Select your Apple development team for the app, Watch app, and extensions.
 3. For your own distribution, configure consistent bundle/companion IDs, entitlements, app
    groups, and containers before building.
@@ -87,7 +87,7 @@ systems.
    [workspace build guide](docs/DESIGN_BACKLOG.md#03-build-and-install) for local commands.
 
 ```sh
-xcodebuild -project Iron.xcodeproj -scheme Iron \
+xcodebuild -project Light.xcodeproj -scheme Iron \
   -destination 'generic/platform=iOS Simulator' \
   -derivedDataPath /tmp/light-dd build CODE_SIGNING_ALLOWED=NO
 ```

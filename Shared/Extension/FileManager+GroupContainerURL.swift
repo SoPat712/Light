@@ -12,7 +12,12 @@ extension FileManager {
     static var appGroupIdentifier = "group.com.kabouzeid.Iron"
     
     var appGroupContainerURL: URL {
-        if let containerURL = containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier) {
+        Self.cachedAppGroupContainerURL
+    }
+
+    private static let cachedAppGroupContainerURL: URL = {
+        let manager = FileManager.default
+        if let containerURL = manager.containerURL(forSecurityApplicationGroupIdentifier: FileManager.appGroupIdentifier) {
             return containerURL
         }
 
@@ -20,11 +25,11 @@ extension FileManager {
         // Personal Team and simulator builds cannot always carry App Group entitlements.
         // Keep development data inside the app sandbox while production builds continue to
         // require the configured shared container for widgets and extensions.
-        let fallbackURL = urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let fallbackURL = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Development App Group", isDirectory: true)
-            .appendingPathComponent(Self.appGroupIdentifier, isDirectory: true)
+            .appendingPathComponent(FileManager.appGroupIdentifier, isDirectory: true)
         do {
-            try createDirectory(at: fallbackURL, withIntermediateDirectories: true)
+            try manager.createDirectory(at: fallbackURL, withIntermediateDirectories: true)
             return fallbackURL
         } catch {
             fatalError("development shared container could not be created: \(error)")
@@ -32,10 +37,14 @@ extension FileManager {
         #else
         fatalError("shared container could not be created")
         #endif
-    }
+    }()
     
     var appGroupContainerApplicationSupportURL: URL {
-        let directory = appGroupContainerURL
+        Self.cachedAppGroupContainerApplicationSupportURL
+    }
+
+    private static let cachedAppGroupContainerApplicationSupportURL: URL = {
+        let directory = cachedAppGroupContainerURL
             .appendingPathComponent("Library")
             .appendingPathComponent("Application Support")
         
@@ -46,5 +55,5 @@ extension FileManager {
         }
         
         return directory
-    }
+    }()
 }

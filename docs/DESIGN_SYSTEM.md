@@ -346,23 +346,21 @@ it draws a 4 pt `metricTime` stroke with round caps, and it starts at 12 o'clock
 the timer. Hide it from VoiceOver when the text already announces the time.
 
 ### 8.6 `EffortRatingGraph(rating:allowsUnrated:)`
-Ten rising capsules from 18% to 100% height across a 108 pt graph, 5 pt apart. Active bars use
-the `metricEffort` gradient and inactive bars `quaternarySystemFill`; the selected bar scales
-to 1.06 with a soft glow. Set it by tap or drag, with a selection haptic per step and an
-accessibility adjustable action. The title and subtitle above read tier and value, using
-`EffortTier`: 1–2 Easy, 3–4 Light, 5–6 Moderate, 7–8 Hard, 9–10 All Out. This is **the**
-pattern for any 1-to-N intensity input; the RPE picker redesign reuses it (backlog B5).
+One slanted bar per level from 1 to 10, forming a single rising ramp like the Watch's, with wider gaps between `EffortTierPalette` tiers: 1–3 Easy, 4–6 Moderate, 7–8 Hard, 9–10 All Out. Each bar is fully lit in its tier color or fully `solidTrack`, so a rating never cuts through a bar. Numbers sit under the bars, and the readout above shows the number and tier name. Set it by tapping a column or dragging, with a selection haptic per step and an accessibility adjustable action. This is **the** pattern for any 1-to-N intensity input.
 
 ### 8.7 `IronSessionStrip`: `Iron/UI/Components/IronSessionStrip.swift`
-Session timeline. Input is `[ExerciseGroup(label:, sets: [Set(relativeVolume: 0…1, kind:
-.warmUp/.normal/.record, completedAt:, volume:, result:, rpe:)])]`.
-- **`.full`:** two lanes, a volume-bars lane and a work/rest track, plus trimmed time axis
-  labels, rest labels, exercise bands with a chip fallback, scrubbing, a legend and an
-  accessibility summary.
-- **`.compact`:** bars only, used in History rows.
+The session, exercise by exercise. Input is `[ExerciseGroup(label:, sets: [Set(kind:
+.warmUp/.normal/.record, completedAt:, duration:, volume:, result:, rpe:)])]`.
+- **Rest summary:** Total Rest, Avg Rest and Longest in `metricTime`.
+- **Each exercise:** its full name and total volume, then "4 sets · 14 min" beside a thin
+  `metricTime` bar marking when it ran, so the bars stack into the session's timeline.
+- **Each set:** set number or W, the result, a volume bar, RPE and the rest before it, under
+  SET, RESULT, VOLUME, RPE and REST column labels. Superset rounds gather under each exercise.
 
-Colors: warm-up `metricSets`, normal `accent`, record `metricRecord`, rest connectors soft
-`metricTime`. Callers own ordering and normalization.
+Volume bars scale within an exercise, so one heavy machine can't flatten the other sets. They
+are all `accent`, with warm-ups in `tertiaryText` and a W label, and records with a
+`metricRecord` trophy. Orange and yellow bars side by side failed the palette validator, so hue
+no longer carries set type. Accessibility sizes stack each set's values.
 
 ### 8.8 Sheets: `Iron/UI/SwiftUISupport.swift`
 `IronUtilitySheet` (titled utility sheet with icon, subtitle and close button),
@@ -387,8 +385,12 @@ hit testing for the app's hold-gated overlay. Do not duplicate the anatomical pa
 
 ### 8.10 Exercise art
 `ExerciseDiagramThumbnail(exercise:size:)` (in `Iron/UI/Exercises/ExercisesView.swift`) draws
-a circular white canvas with the PDF diagram or cached still fitted inside, a hairline ring and
-a 2 pt shadow. Sizes: 42 (logger header), 58 (lists), 60 (detail header).
+a circular white canvas with the cached still fitted inside, a hairline ring and a 2 pt shadow.
+Sizes: 42 (logger header), 58 (lists), 60 (detail header). Thumbnails never draw the old
+black-and-white PDF diagrams; `legacy-art.json` gives those exercises the same movement's still.
+Default lists use `ExerciseStore.listed`: built-ins with no picture and the reviewed entries in
+`catalog-duplicates.json` appear only after a search or "Show N More Exercises". Custom exercises
+and anything in a workout or saved workout always stay listed. Nothing is deleted.
 `ExerciseRemoteMediaView` plays the animated demo.
 Unknown artwork uses the neutral `figure.strengthtraining.traditional` glyph, never an
 O/initial masquerading as a picture. List stills are persisted at the original pixel size;
@@ -486,20 +488,23 @@ the row or button. For blocking work over about 3 s (imports), use the overlay p
 - **Swift Charts only.** No hand-drawn `Canvas`, `Path` or `GeometryReader` plotting and no
   third-party chart libraries. The session strip and effort graph are deliberate stack-based
   exceptions.
-- The marks are the most prominent thing. Axes are `secondaryText` `.caption2`; gridlines are
-  dashed `separator` at reduced opacity, and there are at most 3 horizontal gridlines with
-  trailing y labels.
-- **Line charts** (1RM, top weight): a 2.5 pt accent line with round joins; points are 6 pt
-  dots. An area fill under the line uses accent at about 0.15 (a flat color, never a gradient
-  wash). The latest PR point is a 9 pt `metricRecord` dot with a soft halo and a 1.5 pt card
-  stroke.
-- **Bar charts** (volume, reps): rounded bars, 4 pt corner, in the metric color (volume green,
-  reps orange).
-- **Scrubbing:** `chartXSelection`. The selected mark is full color and the others drop to 0.45
-  opacity. A 1 pt vertical rule marks the selection, and the headline above the chart switches
-  to the selected value and date. Callouts never cover marks.
-- **Axis:** about 3–4 x labels ("Aug", "Sep", "Oct", or day numbers for 1M). Use automatic
-  `AxisMarks`.
+- **Use `Iron/UI/Components/IronChartKit.swift`** for every chart, so they all read like the
+  Health app. Above the plot, `IronChartHeader` shows an uppercase caption ("Total", "Latest"),
+  the value from `IronChartText.value` in its metric color with a secondary unit, and a date or
+  period line. Values sit on `ironValueAxis` (trailing, `.caption2`, hairline `outline`
+  gridlines, 2–3 ticks). Dates sit on `ironDateAxis` (`.caption2`, a faint dashed guide per label).
+- **Line charts** (1RM, top weight, body, trends): a 2 pt line with linear interpolation,
+  so the line passes through real values, and 5 pt points. No area fill. Body measurements and
+  sparklines hug their data instead of starting at zero. The latest PR point is a 9 pt
+  `metricRecord` dot with a soft halo and a 1.5 pt card stroke.
+- **Bar charts** (volume, reps, duration): 3–4 pt corners, every bar in the metric color.
+  Don't dim older bars to highlight the current period.
+- **Scrubbing:** `chartXSelection`. The selected mark is full color and the others drop to
+  `IronChartEmphasis.dimmed`. `IronChartSelectionRule` marks the selection, and the header above
+  the chart switches to the selected value and date. Never float a callout or material box over
+  the plot, and never show "drag to inspect" hint text.
+- **Summary cards** (pinned charts): the title in the metric color with the date at the trailing
+  edge, the value, and an axis-free sparkline that ends on a dot.
 - **Color series:** one metric per chart, colored by that metric. Never encode meaning with
   hue alone.
 - **First appearance:** bars grow and lines draw in with `IronMotion.snappy`. Changing metric
@@ -552,11 +557,19 @@ Never delay a dismissal, save or navigation for an animation.
 
 | Event | Feedback |
 | --- | --- |
-| Set completed | `.success` (inside `ironSetCompletion`) |
-| Stepper tap, picker step, effort and RPE step, ruler notch, tooltip target change, segment change | `.selection` |
+| Set completed by the user | `.success` after a successful local save (`ironSetCompletion` owns the visual sweep) |
+| Stepper tap, weight/reps drag step, picker step, set-type change, effort and RPE step, ruler notch, tooltip target change, segment change | `.selection` |
+| Rest ±15 s, start, pause/resume, skip/stop, open/close rest ruler | `.selection` |
+| Inline set timer start/stop, undo set completion | `.selection` |
+| Superset membership/save, exercise/set reorder, workout accessory controls/open/minimize, session summary expand/collapse | `.selection` |
 | Rest finished | `.impact(weight: .light)` |
 | Delete committed | `.impact(weight: .medium)` |
 | Error or validation failure | `.error` |
+
+Drive control feedback from local user actions, not shared model changes, initial hydration,
+Watch sync, or Live Activity updates. Respect the workout haptics preference. Delete feedback
+belongs on a surviving parent view after a successful deletion, so a removed row does not lose
+its trigger. Live Activity extension intents never emit app haptics.
 
 ### 12.2 Sounds (`IronSoundPlayer.shared.play(.cue)`)
 
@@ -625,31 +638,51 @@ Each uses `NavigationStack` with a large title. The tab bar minimizes on scroll
 accessory: name plus a metric line (time · volume · sets) on the left, and expand and discard
 buttons on the right.
 
-### 15.2 Home (`Iron/UI/Feed/FeedView.swift`)
-Board: *Round 3 → Home*. Sections, in order:
-1. A greeting caption ("Good afternoon") in `.headline`, `secondaryText`.
-2. **Week card** (opaque neutral `IronTheme.surface`; no colored glass haze): three metric chips (Workouts in accent, Sets in `metricSets`,
-   Volume in `metricVolume`), seven daily volume bars (accent on a `tertiaryFill` track, 22 pt
-   wide capsules, today's weekday label bold accent), a "Best day Saturday at **11.4k lb**"
-   caption with the value in `metricVolume`, and a full-width Resume or Start Workout button
-   (native large `.borderedProminent` capsule, matching Quick Start inside the Workout list).
-3. A one-line comparison caption ("Volume is up 12% on last week").
-4. **Last 4 Weeks** calendar: 34 pt day circles, trained days solid accent with white numbers,
+### 15.2 Home (`Iron/UI/Feed/FeedView.swift`, `Iron/UI/Components/HomeWeekViews.swift`)
+Board: *Round 3 → Home*, revised 2026-11-02 to read like Fitness and Health, then made
+customizable. The user picks the This Week style, the weekly set target, and which sections
+show in what order (Customize Home, from the card's ••• menu or the button at the end of
+Home). Choices live in `UserDefaults` under `home.*` keys; no Core Data change. Default order:
+1. Today's date as the navigation subtitle under "Home" (iOS 26 and later). No greeting.
+2. **This Week card** (opaque neutral `IronTheme.surface`; no colored glass haze): "This Week"
+   in `.title3` semibold, the date range and a ••• menu (Show As, Customize Home) at the
+   trailing edge, then one of four styles, then a full-width Resume or Start Workout button
+   (native large `.borderedProminent` capsule).
+   - **Rings** (default): Fitness-style rings for Volume (outer, `metricVolume`), Sets
+     (`metricSets`) and Workouts (inner, accent) that close when this week matches last week;
+     tracks use each metric's container color. Beside them, each metric as "11.4k / 26.6k lb".
+     Below: a row of small daily volume rings scaled to the week's best day, and the best-day line.
+   - **Pace**: running volume this week (solid 3 pt `metricVolume`) over last week's running
+     line (dashed `tertiaryText`); the rest of the week is shaded; a translucent bar at today
+     marks the gap. Header "VOLUME SO FAR" with "7,600 lb behind last Monday". Then
+     Workouts, Sets and Time.
+   - **Muscles**: Workouts, Sets and Volume, then a grid of the six tracked groups (Legs,
+     Chest, Back, Shoulders, Arms, Core) by weekday. Dot area shows sets in `metricSets`;
+     today's column has a `tertiaryFill` lane; a trailing LAST column gives days since each
+     group was trained; one line names the most rested group.
+   - **Bars**: the original seven daily volume bars with the comparison line.
+3. **Last 4 Weeks** calendar: 34 pt day circles, trained days solid accent with white numbers,
    others `tertiaryFill` with `secondaryText`. A streak chip sits in the section header.
    Every date opens a Daily Recap, including rest days. The recap shows that day's workout,
    set, time and volume totals, all its sessions, muscle focus and any logged measurements.
    Workout detail is one level below the recap. The full calendar follows the same rule.
-5. Recent Training, Muscle Focus and Body use headline row names and the shared metric/unit
+4. Recent Training rows: the title with the date at the trailing edge, then the shared
+   `IronWorkoutMetricLine` (duration, sets, volume).
+5. **Muscle Focus**: average sets a week per tracked group over the last four weeks, ranked,
+   as `metricSets` bars over a shaded target band (default 10–20, set in Customize Home).
+   Header "N of 6 groups reach 10 sets a week"; the footer names the lowest group. Every
+   row lays out its own name, so nothing collides at large text sizes.
+6. Body and Pinned Charts use headline row names and the shared metric/unit
    hierarchy. Recent dates use subheadline metadata. Body rows use native List spacing and
    reflow vertically at accessibility sizes; never add a second minimum row height. Pinned
    chart titles use headline and chart axes use footnote.
+7. A **Customize Home** button ends the list.
 
 ### 15.3 History (`Iron/UI/History/HistoryView.swift`)
 Board: *Round 3 → History*, revised 2026-10-26. A segmented control (Workouts · Insights).
 The cached Exercise Progress index lives in the toolbar's options menu. Workouts are
 grouped by week, with headers showing the count in accent and volume in green. Each row has the
-title, PR and RPE badges, "date · muscles" metadata, the metric line and an `IronSessionStrip`
-in `.compact`. The detail view has Repeat in its toolbar menu.
+title, PR and RPE badges, "date · muscles" metadata and the metric line. The detail view has Repeat in its toolbar menu.
 
 Chart controls and their chart belong in one continuous grouped row: metric selector above,
 chart and headline together, and a labelled Period menu below. Never insert a transparent
@@ -663,11 +696,11 @@ Use `ExerciseStore.exercisesByUUID` for catalog lookups. Snapshot refreshes foll
 saves, day/time-zone changes and app activation; changing a filter does not rescan Core Data.
 
 ### 15.4 Workout tab (`Iron/UI/Workout/StartWorkoutView.swift`)
-Quick Start, Recent Workouts with one-tap Repeat, and Saved Workouts. Recent rows give their
-title, metadata and metric line the full width, with a quiet native chevron. Actions sit below:
-a bold text Repeat button with the compact rounded-rectangle border shape, and an ellipsis
-menu containing Save as Workout, Repeat with Blank Sets and View Details. Save as Workout
-opens an isolated, prefilled editor; Cancel preserves the source and Create saves a new copy.
+Quick Start, Recent Workouts with one-tap Repeat, and Saved Workouts. Recent rows put the title,
+metadata and metric line on the left and a bold text Repeat button, with the compact
+rounded-rectangle border shape, on the right. Tapping the row opens details; holding it opens Save
+as Workout, Repeat with Blank Sets and View Details. Save as Workout opens an isolated, prefilled
+editor; Cancel preserves the source and Create saves a new copy.
 
 ### 15.5 Exercises (`Iron/UI/Exercises/*`)
 - **Library** (`ExerciseMuscleGroupsView`): `.searchable`, two independent filter menus (muscle
@@ -690,9 +723,10 @@ adopts).
 Top to bottom:
 1. **Top bar:** `chevron.down` (minimize), "Log Workout" (`.headline`), the rest-timer button
    and the prominent **Finish** capsule.
-2. **Session bar** (backlog B2): a thin progress bar segmented per exercise. It stays visible
-   even when the header collapses. It belongs to the same `.bar` header surface as the toolbar
-   and expanded metrics. Use fill only: no segment outline, separate panel fill or divider rules.
+2. **Session bar** (backlog B2): a thin progress bar segmented per exercise, with a 4 pt gap
+   between exercises and a 1 pt gap between sets. It stays visible even when the header collapses.
+   It belongs to the same `.bar` header surface as the toolbar and expanded metrics. Use fill only:
+   no segment outline, separate panel fill or divider rules.
 3. **Session header** (expanded by default, controlled by the user): the watch-sync banner (dot, status text such as
    "Saved on iPhone · Install Iron on Watch", device glyph, collapse chevron), then a summary row
    with **Duration** (`metricTime`, tap to edit), **Volume** (`metricVolume` plus unit),
@@ -701,7 +735,9 @@ Top to bottom:
    column and the 54 pt muscle figures keep their own space. Elapsed time reads `m:ss` below
    one hour and `h:mm:ss` above it. Captions align at the top even if a large value scales down.
 4. **Collapsed state** (only after tapping the header chevron): the header is replaced by a
-   full-width glass pill reading "● 18:42 • 2,430 lb • 6 sets ⌄". It floats over the scroll viewport.
+   full-width glass pill reading "● 18:42 • 2,430 lb • 6 sets ⌄". While the Watch is sending current
+   readings it drops the dots and adds "♥ 132 🔥 210" in `metricHeartRate` and `metricEnergy`, so the
+   row doesn't reflow as numbers grow; large type drops the readings first. It floats over the scroll viewport.
    Reserve its measured height, 8 pt top inset and 12 pt bottom gap with scroll-content
    margins so the first item starts below it. Scrolling content passes behind transparent
    glass; do not place an opaque strip behind it. Accessibility sizing grows the clearance.
@@ -735,16 +771,17 @@ Top to bottom:
      neutral surfaces over the row color. Focus uses the accent fill and outline.
    - **Duration sets:** the compact row with an inline timer.
    - Rows swipe left to delete (§9.9).
-7. **Rest strip** under the set that started it: a `metricTimeContainer` rounded rectangle with
+7. **After logging a set**, the logger scrolls that set to the top, with the rest strip and the next set under it. Going back to an earlier set scrolls to that set instead. Tapping a weight or reps box selects its value so typing replaces it, and a number stays `secondaryText` only while it still matches what was filled in; a focused or changed number is `primaryText`.
+8. **Rest strip** under the set that started it: a `metricTimeContainer` rounded rectangle with
    `IronRestRing`, the countdown and "Rest of 2:30", then four 44 pt neutral circular buttons:
    **−15 · pause/play · +15 · skip**. Tapping the countdown opens the **inline rest-length
    ruler** (backlog B3); the old dial modal is retired.
-8. **Add Exercises:** a prominent glass capsule button, then the bottom actions.
+9. **Add Exercises:** a prominent glass capsule button, then the bottom actions.
 
 ### 15.7 Workout complete (finish editor)
 Board: *Round 3 → Workout complete*. Order: header (accent circle icon, name, date range); a
 3 × 2 metrics grid (Duration, Volume, Sets, Exercises, Avg RPE, Records, each value in its metric
-color); `IronSessionStrip(.full)`; **How hard was it?** (`EffortRatingGraph`); records list
+color); **How hard was it?** (`EffortRatingGraph`); `IronSessionStrip`; records list
 (hidden when empty); the "Update saved workout" toggle; the Apple Health row (state: will save,
 saved, waiting, imported, or not exported); notes and media; Save and Discard.
 
@@ -981,3 +1018,64 @@ Recovered builders can temporarily omit their external-ID metadata. Associate th
 paused session with the existing durable active projection locally, without rewriting live
 builder metadata or starting another collection. Actual HealthKit metadata takes precedence
 when available. Never use this fallback for inactive sessions or to replace a known identity.
+
+## 22. Watch layout contract (binding for every lane, 2026-10-29)
+
+These rules come from regressions on the owner's Watch. Every Watch UI change must follow them and **prove** them in its report.
+
+### 22.0 Approved look first (owner, 2026-10-31; replaces the 2026-10-30 "native first" rule)
+A lane that took "native first" literally removed Log Set, gave vitals their own row and shrank every value. The owner rejected it: "you absolutely butchered the watch display". The look below is the design; don't restyle it. Reference screenshots: `~/.local/share/light/approved/`.
+- **Native parts, only here:** top-corner ✓ on rating pages (`ToolbarItem` with a plain `Button` + SF Symbol, so the system draws standard glass), and the system back button where a page has no vitals.
+- **Vitals row:** heart rate and calories sit on the system clock's line in a fixed width that always leaves room for the clock, because watchOS removes the clock when a toolbar item crowds it. They shrink first, then calories drop out. There is no KCAL caption; the flame carries that meaning.
+- **Running rest screen:** back button and vitals in the toolbar row. Below it, the ring and a column of `+15 · Skip · −15` `watchNeutralCapsule()` buttons (50 pt wide below 180 pt width, 60 pt otherwise), with the column on the right, or on the left when the Watch is worn on the right wrist, because the buttons belong on the side the other hand reaches from. The next set's full exercise name and weight × reps run across the bottom, on one line when they fit and two otherwise. The ring only holds REST and the time. At accessibility type sizes the screen keeps the stacked readout with a `−15 · Skip · +15` row (44 pt tall below 180 pt width, 52 pt otherwise).
+- **After Log Set:** RPE opens first when the set needs one, then slides to the rest screen on ✓ or after 5 s untouched. Rest's back button returns to RPE, which then waits for ✓. RPE opened by hand also waits for ✓. A set that already has an RPE skips this page, and new sets start unrated rather than copying an old rating. Only a manual action saves: ✓ saves the number shown and turning the wheel saves the new value. Opening RPE or letting the 5 s pass saves nothing, so the dimmed suggestion is never recorded on its own and that set stays unrated.
+- **Vitals live in the toolbar row** beside the back button (`watchVitalsInset`). Never a separate row of their own.
+- **Primary actions** are the big full-width capsule near the bottom: `watchGlassButton(prominent: true)` / `watchPrimaryCapsule()`, Liquid Glass tinted Iron blue. Never replace one with a small toolbar ✓ to save height. Never use native `.glassProminent` directly; it stops short of full width on larger Watches, so it won't line up with the tiles.
+- **Data surfaces** are flat and dark, like the iPhone logger: set tiles and controls 15 pt radius, cards and rows 13 pt, `IronTheme.platter` fills. No glass, gloss or gradients around data. Selection changes color only.
+- **Value tiles** use one fixed font size per row, set from the width that fits "188.5", so turning the Crown never resizes the number. Weight/reps split 54/46 (50/50 below 180 pt width).
+- **Previous set** is read-only and always on the first screen; never tappable.
+- **Scrolling lists** (`WatchContentList`) are flat and full width, with no carousel scaling, even 4 pt spacing and bottom padding so the last row scrolls clear of the rounded corners.
+- **Crown:** every value control uses `watchCrownRotation`, never `digitalCrownRotation` directly. SwiftUI shows the green bar for any non-continuous rotation, and `.digitalCrownAccessory(.hidden)` doesn't affect it, so the helper uses continuous rotation and holds the value at its limits. A scrolling page with a tile that deselects uses `watchReturnsCrown(afterEditing:)`, so the wheel scrolls the page again as soon as the tile is released. Discrete scales use `sensitivity: .low`. The running rest countdown has no Crown binding; the rest-length picker does.
+- **Use the whole screen:** measure with `GeometryReader` + `.ignoresSafeArea(.container, edges: .bottom)` where the bottom row is a capsule, centered text or tiles above the page dots. "So far from the bottom" is a repeated owner complaint. Only square-cornered graphics, such as RPE bars, must clear the display corners.
+- **RPE and effort:** vitals + ✓ in the toolbar, then context line, number, rising graph, small description centered at the bottom. Auto-accept 5 s after the Crown stops only when RPE appeared by itself after Log Set; opened manually or for effort, only ✓ confirms.
+- **Notes** are text only. Rows say "Add Note" (accent) or preview two lines of the note, and an empty plan note has no row. On the note page the whole box is the control: a tap opens the system text input with the note filled in, Done saves, Cancel changes nothing. No Edit, Dictate, Save or Cancel buttons; Clear shows only when there is a note.
+- **No visible "Test mode" text** on the Watch.
+
+### 22.1 Fill the screen; design boldly
+- The first screen of every Watch page uses the whole display: no empty bands and no floating controls.
+- Primary button: **44 pt** tall at width < 180 pt, **50–52 pt** larger. Bottom clearance **6 pt** at width < 180 pt, **10 pt** larger, **16 pt** where page dots show. `WatchContentList` uses 8/14 pt from the screen edge, and Home adds 6 pt to that; a list on a dotted page passes `clearsPageDots: true`.
+- Size hero values from the height **left over** after fixed rows; never use a fixed cap, except the value-tile rule above.
+- Graphs and scales are bands at least **16 pt** tall (40 mm) and about **30 pt** (larger), never slivers.
+- Prefer one bold element over several timid ones. When unsure, make the main thing bigger, not smaller.
+
+### 22.2 Fit first, no scrolling for single-purpose pages
+- Pickers and value pages (RPE, effort, rest picker, value editors) fit one screen from 40 mm (162×197 pt) through Ultra (211×257 pt). There's no ScrollView or List in their hierarchy (check wrappers like `watchVitalsInset` too).
+- Long pages (Set Options, exercise list) may scroll, driven by the Crown, but their primary action stays on the first screen.
+- Height budgets come from a `GeometryReader` at the **page** level, never one inside a ScrollView, where the height is unbounded.
+
+### 22.3 The device is not the simulator
+- On device, the top toolbar row (the back chevron plus a title like "Test mode", and the clock) takes about 44–50 pt. Budget from the real safe area that GeometryReader reports, never from screenshot pixels or assumed chrome.
+- The Digital Crown must be focused on the value when the page appears (`.focusable()`, `@FocusState` set in `onAppear` and again in `.task`). If it isn't, the Crown scrolls the page on device even though the simulator looks fine.
+
+### 22.4 Don't regress verified screens
+- Approved screens: the Now page (Ultra), the rest screen, the set editor, the one-screen RPE and effort pages, the notes page. Reference screenshots live in `~/.local/share/light/approved/`.
+- A lane that touches a file containing an approved screen must leave that screen pixel-equivalent unless the brief asks to change it. It states in its report which approved screens it affected.
+- When fixing one screen, never change shared components (tiles, `WatchFirstScreenLayout`, the rating layout, safe-area modifiers) without listing every screen that uses them.
+
+### 22.5 Interaction
+- Minimal interaction: the app predicts the next step (set → rest → RPE → next set → next exercise → finish) and surfaces it without navigation.
+- The Crown adjusts, and there's one primary button. Remove redundant − / + and Clear when the Crown covers them.
+- Selection changes color only, never size. Widths never change while a value changes (base splits on field types and screen width, never on the live value).
+- Previous is a read-only reference, never a link to another weight/reps editor. It belongs in the measured first-screen layout below the tiles and above any content action. Reserve its full text height before sizing the tiles; never push it below the fold or let it clip.
+
+### 22.6 Required proof in every Watch lane report
+1. Layout math, in points, for 40 mm (162×197) and 46 mm/Ultra (211×257), including the device toolbar row. Give each row's height, the primary button's bottom edge against the screen bottom, and the hero value's font size.
+2. Every approved screen touched, and why it's unchanged or intentionally changed.
+3. How Crown focus is established on appear.
+
+
+### 22.7 Debug screenshot routes
+Fixtures are gated by `DEBUG && targetEnvironment(simulator)` in `IronApp.swift`. Launch with `--light-watch-demo <route>`; `--hold-watch-flow` holds automatic transitions, and `--demo-weight 135.5` seeds a weight for checking tile fit.
+
+Routes: `home`, `active`, `now`, `controls`, `exercises`, `exercise`, `set`, `options`, `catalog`, `tracking-type`, `set-type`, `superset`, `notes`, `plates`, `rest`, `rest-picker`, `warmup`, `rpe`, `rpe-manual`, `rpe-auto`, `effort`, `finish`, `discard`, `saved`, `saved-detail`, `saved-editor`, `history`, `history-detail`, `summary`, `empty`, `complete`, `after-log`, `after-rest`, `after-final-rest`.
+

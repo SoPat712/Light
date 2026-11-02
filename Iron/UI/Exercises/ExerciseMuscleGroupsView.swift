@@ -20,6 +20,7 @@ struct ExerciseMuscleGroupsView : View {
     @State private var showingCreateExercise = false
     @State private var showingHiddenExercises = false
     @State private var showingCustomExercises = false
+    @State private var showingAllExercises = false
 
     private var muscleGroups: [String] {
         Array(Set(exerciseStore.shownExercises.map { $0.muscleGroup })).sorted()
@@ -33,7 +34,7 @@ struct ExerciseMuscleGroupsView : View {
         return counts.keys.sorted { (counts[$0] ?? 0) > (counts[$1] ?? 0) }
     }
 
-    private var filteredExercises: [Exercise] {
+    private var matchingExercises: [Exercise] {
         let matches = ExerciseStore.filter(exercises: exerciseStore.shownExercises, using: search)
             .filter { selectedMuscleGroup == nil || $0.muscleGroup == selectedMuscleGroup }
             .filter { selectedEquipment == nil || $0.equipment.contains(selectedEquipment!) }
@@ -46,7 +47,9 @@ struct ExerciseMuscleGroupsView : View {
     }
 
     var body: some View {
-        let filteredExercises = filteredExercises
+        let matchingExercises = matchingExercises
+        let filteredExercises = exerciseStore.listed(matchingExercises, showingAll: showingAllExercises || !search.isEmpty)
+        let moreCount = matchingExercises.count - filteredExercises.count
         List {
             if filteredExercises.isEmpty {
                 emptyExerciseState
@@ -56,6 +59,10 @@ struct ExerciseMuscleGroupsView : View {
                         NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
                             ExerciseLibraryRow(exercise: exercise)
                         }
+                    }
+                    if moreCount > 0 {
+                        Button("Show \(moreCount.formatted()) More Exercises") { showingAllExercises = true }
+                            .foregroundStyle(IronTheme.accent)
                     }
                 } header: {
                     if hasActiveFilter {
@@ -71,13 +78,14 @@ struct ExerciseMuscleGroupsView : View {
                         }
                     }
                 } footer: {
-                    Text("\(filteredExercises.count) exercises")
+                    Text("^[\(filteredExercises.count) exercise](inflect: true)")
                         .font(.footnote)
                         .foregroundStyle(IronTheme.secondaryText)
                 }
             }
         }
         .listStyle(.insetGrouped)
+        .sensoryFeedback(.selection, trigger: [selectedMuscleGroup, selectedEquipment]) { _, _ in SettingsStore.shared.workoutHaptics }
         .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: search)
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
@@ -105,7 +113,7 @@ struct ExerciseMuscleGroupsView : View {
                     Picker("Equipment", selection: $selectedEquipment) {
                         Text("All Equipment").tag(String?.none)
                         ForEach(equipment, id: \.self) { item in
-                            Text(item.capitalized).tag(String?.some(item))
+                            Text(item.equipmentTitle).tag(String?.some(item))
                         }
                     }
                 } label: {
@@ -113,7 +121,7 @@ struct ExerciseMuscleGroupsView : View {
                         .foregroundStyle(selectedEquipment == nil ? IronTheme.primaryText : IronTheme.accent)
                 }
                 .accessibilityLabel("Filter by equipment")
-                .accessibilityValue(selectedEquipment?.capitalized ?? "All equipment")
+                .accessibilityValue(selectedEquipment?.equipmentTitle ?? "All equipment")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -179,7 +187,7 @@ struct ExerciseMuscleGroupsView : View {
     }
 
     private var activeFilterSummary: String {
-        [selectedMuscleGroup?.capitalized, selectedEquipment?.capitalized]
+        [selectedMuscleGroup?.capitalized, selectedEquipment?.equipmentTitle]
             .compactMap { $0 }
             .joined(separator: " · ")
     }
@@ -207,7 +215,7 @@ struct ExerciseMuscleGroupsView : View {
             ExerciseLibraryTag(title: selectedMuscleGroup.capitalized)
         }
         if let selectedEquipment {
-            ExerciseLibraryTag(title: selectedEquipment.capitalized)
+            ExerciseLibraryTag(title: selectedEquipment.equipmentTitle)
         }
     }
 }

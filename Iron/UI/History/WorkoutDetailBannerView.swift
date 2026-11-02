@@ -33,7 +33,7 @@ struct WorkoutDetailBannerView : View {
                 .font(.ironMetric(.title2)).foregroundColor(IronTheme.metricSets)
         ))
         let volume = WeightUnit.convert(
-            weight: workout.totalCompletedWeight ?? 0, from: .metric, to: settingsStore.weightUnit
+            weight: workout.trackedCompletedVolume, from: .metric, to: settingsStore.weightUnit
         )
         entries.append(BannerViewEntry(
             id: 2,

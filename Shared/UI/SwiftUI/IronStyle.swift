@@ -145,6 +145,8 @@ enum IronTheme {
     static let field = IronPalette.color(\.field)
     /// Quiet input fills and the rest ring's neutral track.
     static let tertiaryFill = Color(UIColor.tertiarySystemFill)
+    /// An unfilled graph bar that stays solid whatever sits behind it.
+    static let solidTrack = Color(UIColor.systemGray4)
     static let topBar = IronPalette.color(\.topBar)
     static let outline = IronPalette.color(\.outline)
     static let primaryText = IronPalette.color(\.primaryText)

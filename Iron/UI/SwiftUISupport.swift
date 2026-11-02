@@ -10,6 +10,7 @@ import SwiftUI
 import Charts
 import UIKit
 import MuscleMap
+import WorkoutDataKit
 
 // Palette and motion live in IronStyle; metric fonts live in IronMetricFont.
 
@@ -30,6 +31,15 @@ struct IronMetricValue: View {
     }
 }
 
+extension String {
+    /// Display form of a catalog equipment key: "ez-curl-bar" → "EZ Curl Bar".
+    var equipmentTitle: String {
+        let words = replacingOccurrences(of: "-", with: " ").capitalized
+        let fixes = ["Ez ": "EZ ", "T Bar": "T-Bar", "Skierg": "SkiErg", "Bosu": "BOSU"]
+        return fixes.reduce(words) { $0.replacingOccurrences(of: $1.key, with: $1.value) }
+    }
+}
+
 /// Shared inline summary for the same workout wherever it appears in a list.
 struct IronWorkoutMetricLine: View {
     let duration: String
@@ -41,7 +51,7 @@ struct IronWorkoutMetricLine: View {
         (Text(duration).foregroundColor(IronTheme.metricTime)
          + Text(" · ").foregroundColor(IronTheme.secondaryText)
          + Text("\(sets)").foregroundColor(IronTheme.metricSets)
-         + Text(" sets").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText)
+         + Text(sets == 1 ? " set" : " sets").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText)
          + Text(" · ").foregroundColor(IronTheme.secondaryText)
          + Text(volume).foregroundColor(IronTheme.metricVolume)
          + Text(" \(unit)").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText))
@@ -305,10 +315,25 @@ struct IronConfirmationButtonStyle: ButtonStyle {
 }
 
 /// Compact Cupertino chrome for workout utilities presented from the bottom.
+extension View {
+    /// Tapping a number field selects its value, so typing replaces it without a double tap.
+    func ironSelectsNumberOnFocus() -> some View {
+        onReceive(NotificationCenter.default.publisher(for: UITextField.textDidBeginEditingNotification)) { notification in
+            guard let field = notification.object as? UITextField,
+                  field.keyboardType == .decimalPad || field.keyboardType == .numberPad else { return }
+            // The tap places its caret after editing begins.
+            DispatchQueue.main.async {
+                field.selectedTextRange = field.textRange(from: field.beginningOfDocument, to: field.endOfDocument)
+            }
+        }
+    }
+}
+
 struct IronUtilitySheet<Content: View>: View {
     let title: String
     let subtitle: String
     let systemImage: String
+    let showsDone: Bool
     let onClose: () -> Void
     private let content: Content
 
@@ -316,12 +341,14 @@ struct IronUtilitySheet<Content: View>: View {
         title: String,
         subtitle: String,
         systemImage: String,
+        showsDone: Bool = true,
         onClose: @escaping () -> Void,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
         self.subtitle = subtitle
         self.systemImage = systemImage
+        self.showsDone = showsDone
         self.onClose = onClose
         self.content = content()
     }
@@ -345,8 +372,10 @@ struct IronUtilitySheet<Content: View>: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: onClose)
+                if showsDone {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done", action: onClose)
+                    }
                 }
             }
         }
@@ -572,100 +601,176 @@ struct IronDateTimePickerSheet: View {
     }
 }
 
-/// Discrete intensity input shared by session effort and set RPE.
-struct IronIntensityGraph<Value: Hashable>: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let values: [Value]
-    @Binding var selection: Value?
-    let color: Color
-    let label: (Value) -> String
-
-    private var selectedIndex: Int? { selection.flatMap { values.firstIndex(of: $0) } }
-
-    var body: some View {
-        GeometryReader { proxy in
-            let spacing: CGFloat = 5
-            let count = values.count
-            let barWidth = max(0, (proxy.size.width - spacing * CGFloat(max(count - 1, 0))) / CGFloat(max(count, 1)))
-            HStack(alignment: .bottom, spacing: spacing) {
-                ForEach(Array(values.enumerated()), id: \.element) { index, _ in
-                    let ratio = 0.18 + 0.82 * Double(index) / Double(max(count - 1, 1))
-                    let active = selectedIndex.map { index <= $0 } ?? false
-                    let selected = selectedIndex == index
-                    Capsule(style: .continuous)
-                        .fill(active ? AnyShapeStyle(color.gradient) : AnyShapeStyle(Color(.quaternarySystemFill)))
-                        .frame(width: barWidth, height: proxy.size.height * ratio)
-                        .scaleEffect(selected && !reduceMotion ? 1.06 : 1, anchor: .bottom)
-                        .shadow(color: selected ? color.opacity(0.45) : .clear, radius: 6, y: 2)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            .contentShape(Rectangle())
-            .ironHorizontalScrub { location in
-                select(at: location.x, barWidth: barWidth, spacing: spacing)
-            } onEnded: { }
-            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selection)
-        }
-        .sensoryFeedback(.selection, trigger: selection)
-        .accessibilityElement()
-        .accessibilityLabel("Intensity")
-        .accessibilityValue(selection.map(label) ?? "Not rated")
-        .accessibilityAdjustableAction { direction in
-            guard !values.isEmpty else { return }
-            let index = selectedIndex ?? -1
-            switch direction {
-            case .increment: selection = values[min(index + 1, values.count - 1)]
-            case .decrement: selection = values[max(index - 1, 0)]
-            default: break
-            }
-        }
-    }
-
-    private func select(at x: CGFloat, barWidth: CGFloat, spacing: CGFloat) {
-        guard !values.isEmpty, barWidth + spacing > 0 else { return }
-        let index = min(max(Int((x / (barWidth + spacing)).rounded(.down)), 0), values.count - 1)
-        selection = values[index]
-    }
-}
-
-/// The session readout and unrated behavior remain unchanged.
+/// Four slanted tiers, with one dot for each whole-number session rating.
 struct EffortRatingGraph: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @Binding var rating: Int
     var allowsUnrated: Bool = false
+    @ScaledMetric(relativeTo: .caption) private var levelLabelHeight: CGFloat = 18
+    @State private var selectionFeedback = 0
+    private static let levelGap: CGFloat = 4
+    private static let tierGap: CGFloat = 12
+
+    private var userRating: Binding<Int> {
+        Binding(get: { rating }, set: {
+            guard rating != $0 else { return }
+            rating = $0
+            selectionFeedback += 1
+        })
+    }
+
+    private var tier: EffortTierPalette { .tier(for: rating) }
+    private var readoutColor: Color {
+        rating == 0 ? IronTheme.secondaryText : tier.textColor(in: colorScheme)
+    }
 
     var body: some View {
         VStack(spacing: 14) {
-            VStack(spacing: 2) {
-                Text(rating == 0 ? "Not Rated" : EffortTier.tier(for: rating).title)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(rating == 0 ? IronTheme.secondaryText : IronTheme.metricEffort)
-                    .contentTransition(.opacity)
-                Text(rating == 0 ? "Drag to rate this session" : "\(rating) of 10")
-                    .font(.ironMetric(.footnote, weight: .semibold))
-                    .foregroundStyle(IronTheme.secondaryText)
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) { readout }
+                VStack(spacing: 4) { readout }
             }
-            IronIntensityGraph(
-                values: Array(1...10),
-                selection: Binding(get: { rating == 0 ? nil : rating }, set: { rating = $0 ?? 0 }),
-                color: IronTheme.metricEffort,
-                label: { "\($0) of 10, \(EffortTier.tier(for: $0).title)" }
-            )
-            .frame(height: 108)
+            .foregroundStyle(readoutColor)
             .accessibilityHidden(true)
+
+            VStack(spacing: 6) {
+                GeometryReader { proxy in
+                    let layout = EffortLevelLayout(width: proxy.size.width, levelGap: Self.levelGap, tierGap: Self.tierGap)
+                    ZStack(alignment: .leading) {
+                        EffortLevelBars(rating: rating, levelGap: Self.levelGap, tierGap: Self.tierGap,
+                                        cornerRadius: 7, inactiveColor: IronTheme.solidTrack)
+                        // Each level owns its full column, so a tap anywhere above a number picks it.
+                        HStack(spacing: 0) {
+                            ForEach(EffortLevelLayout.levels, id: \.self) { level in
+                                Button { userRating.wrappedValue = level } label: {
+                                    Color.clear.contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .frame(width: layout.barWidth + layout.gap(after: level))
+                            }
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .ironHorizontalScrub(includingTaps: false) { location in
+                        userRating.wrappedValue = layout.level(at: location.x)
+                    } onEnded: { }
+                }
+                .frame(height: 170)
+
+                GeometryReader { proxy in
+                    let layout = EffortLevelLayout(width: proxy.size.width, levelGap: Self.levelGap, tierGap: Self.tierGap)
+                    ForEach(EffortLevelLayout.levels, id: \.self) { level in
+                        Text("\(level)")
+                            .font(.ironMetric(.caption, weight: .semibold))
+                            .foregroundStyle(level == rating ? IronTheme.primaryText : IronTheme.secondaryText)
+                            .position(x: layout.minX(of: level) + layout.barWidth / 2, y: proxy.size.height / 2)
+                    }
+                }
+                .frame(height: levelLabelHeight)
+            }
         }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: rating)
-        .accessibilityElement()
+        .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Session effort")
-        .accessibilityValue(rating == 0 ? "Not rated" : "\(rating) of 10, \(EffortTier.tier(for: rating).title)")
+        .accessibilityValue(rating == 0 ? "Not rated" : "\(rating) of 10, \(tier.title)")
+        .accessibilityHint("Swipe up or down to adjust")
         .accessibilityAdjustableAction { direction in
             switch direction {
-            case .increment: rating = min(rating + 1, 10)
-            case .decrement: rating = max(rating - 1, allowsUnrated ? 0 : 1)
+            case .increment: userRating.wrappedValue = min(rating + 1, 10)
+            case .decrement: userRating.wrappedValue = max(rating - 1, allowsUnrated ? 0 : 1)
             default: break
             }
         }
+    }
+
+    @ViewBuilder private var readout: some View {
+        Text(rating == 0 ? "—" : "\(rating)")
+            .font(.ironMetric(.largeTitle))
+            .contentTransition(reduceMotion ? .opacity : .numericText())
+        Text(rating == 0 ? "Not rated" : tier.title)
+            .font(.title2.weight(.semibold))
+            .fixedSize(horizontal: false, vertical: true)
+            // Changes at once, so two tier names never overlap mid-animation.
+            .transaction { $0.animation = nil }
+    }
+}
+
+/// Each half step is a separate segment of one continuous slanted ramp.
+struct RPEGraph: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .caption) private var labelHeight: CGFloat = 18
+    @Binding var selection: Double?
+    @State private var selectionFeedback = 0
+
+    private func select(_ value: Double) {
+        guard selection != value else { return }
+        selection = value
+        selectionFeedback += 1
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            GeometryReader { proxy in
+                let width = max(0, (proxy.size.width - 40) / 11)
+                HStack(alignment: .bottom, spacing: 4) {
+                    ForEach(0..<11) { index in
+                        bar(index: index, width: width, totalWidth: proxy.size.width)
+                    }
+                }
+                .contentShape(Rectangle())
+                .ironHorizontalScrub(includingTaps: false) { location in
+                    guard width > 0 else { return }
+                    let index = min(max(Int(floor((location.x + 2) / (width + 4))), 0), 10)
+                    select(5 + Double(index) * 0.5)
+                } onEnded: { }
+            }
+            .frame(height: 96)
+
+            GeometryReader { proxy in
+                let width = max(0, (proxy.size.width - 40) / 11)
+                ForEach(0..<6) { index in
+                    Text("\(5 + index)")
+                        .font(.ironMetric(.caption, weight: .semibold))
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .position(x: CGFloat(index * 2) * (width + 4) + width / 2, y: labelHeight / 2)
+                }
+            }
+            .frame(height: labelHeight)
+            .accessibilityHidden(true)
+        }
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selection)
+        .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Set RPE")
+        .accessibilityValue(selection.map { "RPE \(String(format: "%g", $0)), \(RPE.title($0) ?? "")" } ?? "Not rated")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: select(min((selection ?? 4.5) + 0.5, 10))
+            case .decrement: select(max((selection ?? 5.5) - 0.5, 5))
+            default: break
+            }
+        }
+    }
+
+    private func bar(index: Int, width: CGFloat, totalWidth: CGFloat) -> some View {
+        let x0 = CGFloat(index) * (width + 4)
+        let x1 = x0 + width
+        let value = 5 + Double(index) * 0.5
+        let divisor = max(totalWidth, 1)
+        let shape = SlantedBarShape(leftHeight: 0.28 + 0.72 * x0 / divisor,
+                                    rightHeight: 0.28 + 0.72 * x1 / divisor,
+                                    cornerRadius: min(8, width / 2.6))
+        // A tap selects a bar directly; dragging across the ramp scrubs.
+        return Button { select(value) } label: {
+            shape
+                .fill(selection.map { value <= $0 } == true ? IronTheme.metricEffort : Color(uiColor: .systemFill))
+                .frame(width: width)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -729,36 +834,6 @@ extension View {
             if includingTaps { horizontal.simultaneousGesture(tap) } else { horizontal }
         }
     }
-}
-
-enum EffortTier {
-    case easy, light, moderate, hard, allOut
-
-    static func tier(for rating: Int) -> EffortTier {
-        switch rating {
-        case ...2: return .easy
-        case 3...4: return .light
-        case 5...6: return .moderate
-        case 7...8: return .hard
-        default: return .allOut
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .easy: return "Easy"
-        case .light: return "Light"
-        case .moderate: return "Moderate"
-        case .hard: return "Hard"
-        case .allOut: return "All Out"
-        }
-    }
-
-    /// Effort uses one semantic role at every rating.
-    static func color(for level: Int) -> Color {
-        IronTheme.metricEffort
-    }
-
 }
 
 /// A reusable Cupertino bottom modal for timed exercise targets and logged

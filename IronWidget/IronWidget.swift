@@ -11,6 +11,287 @@ import SwiftUI
 import WorkoutDataKit
 import CoreData
 import ActivityKit
+import Charts
+
+// MARK: - This Week
+
+private struct ThisWeekEntry: TimelineEntry {
+    let date: Date
+    let summary: ThisWeekWidgetSummary?
+    let unit: UnitMass
+
+    func volume(_ kilograms: Double) -> String {
+        let value = Measurement(value: kilograms, unit: UnitMass.kilograms).converted(to: unit).value
+        // Match Home's WorkoutPreviewFormatting.volume.
+        if value >= 10_000 {
+            return (value / 1_000).formatted(.number.precision(.fractionLength(1))) + "k"
+        }
+        return value.formatted(.number.precision(.fractionLength(0)).grouping(.automatic))
+    }
+
+    static func sample(at date: Date = Date()) -> Self {
+        let calendar = Calendar.current
+        let start = calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? date
+        var sessions: [ThisWeekWidgetHistory.Session] = []
+        for offset in 1...28 {
+            if let day = calendar.date(byAdding: .weekOfYear, value: -offset, to: start) {
+                sessions.append(.init(date: day, sets: 10, volume: 3_000))
+            }
+        }
+        sessions.append(.init(date: calendar.startOfDay(for: date), sets: 12, volume: 5_200))
+        return .init(date: date, summary: ThisWeekWidgetHistory(sessions: sessions).summary(at: date), unit: .pounds)
+    }
+}
+
+private struct ThisWeekProvider: TimelineProvider {
+    func placeholder(in context: Context) -> ThisWeekEntry { .sample() }
+
+    func getSnapshot(in context: Context, completion: @escaping (ThisWeekEntry) -> Void) {
+        completion(context.isPreview ? .sample() : entry(at: Date()))
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<ThisWeekEntry>) -> Void) {
+        let now = Date()
+        let midnight = ThisWeekWidgetHistory.nextMidnight(after: now)
+        let history = ThisWeekWidgetCache.load()
+        let unit = ThisWeekWidgetCache.displayUnit
+        // Include midnight itself so today/week rollover does not depend on the
+        // system granting a new background refresh exactly at the boundary.
+        let entries = [now, midnight].map {
+            ThisWeekEntry(date: $0, summary: history?.summary(at: $0), unit: unit)
+        }
+        completion(Timeline(entries: entries, policy: .after(midnight)))
+    }
+
+    private func entry(at date: Date) -> ThisWeekEntry {
+        .init(date: date, summary: ThisWeekWidgetCache.load()?.summary(at: date), unit: ThisWeekWidgetCache.displayUnit)
+    }
+}
+
+private struct ThisWeekWidgetEntryView: View {
+    @Environment(\.widgetFamily) private var family
+    @Environment(\.widgetRenderingMode) private var renderingMode
+    let entry: ThisWeekEntry
+
+    private var monochrome: Bool {
+        family == .accessoryRectangular || family == .accessoryCircular || renderingMode != .fullColor
+    }
+
+    var body: some View {
+        Group {
+            if let summary = entry.summary {
+                switch family {
+                case .accessoryCircular:
+                    circular(summary).widgetAccentable()
+                case .accessoryRectangular:
+                    rectangular(summary).widgetAccentable()
+                case .systemMedium:
+                    medium(summary)
+                default:
+                    small(summary)
+                }
+            } else {
+                unavailable
+            }
+        }
+        .containerBackground(.fill.tertiary, for: .widget)
+        // No Home/feed deep link exists. The default tap opens Light normally.
+    }
+
+    private var caption: some View {
+        Text("This Week")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(monochrome ? Color.primary : IronTheme.secondaryText)
+            .lineLimit(1)
+    }
+
+    private func small(_ summary: ThisWeekWidgetSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            caption
+            Spacer(minLength: 0)
+            bars(summary, height: 48)
+            Spacer(minLength: 0)
+            streakOrCount(summary)
+        }
+    }
+
+    private func medium(_ summary: ThisWeekWidgetSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                caption
+                Spacer(minLength: 0)
+                streakOrCount(summary)
+            }
+            HStack(alignment: .top, spacing: 12) {
+                metric("Workouts", value: "\(summary.workouts)", tint: IronTheme.accent)
+                metric("Sets", value: "\(summary.sets)", tint: IronTheme.metricSets)
+                metric("Volume", value: entry.volume(summary.volume), unit: entry.unit.symbol, tint: IronTheme.metricVolume)
+            }
+            bars(summary, height: 28)
+        }
+    }
+
+    private func metric(_ label: String, value: String, unit: String? = nil, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value)
+                    .font(.ironMetric(.title2))
+                    .foregroundStyle(monochrome ? Color.primary : tint)
+                    .widgetAccentable()
+                if let unit {
+                    Text(unit)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(monochrome ? Color.secondary : IronTheme.secondaryText)
+                }
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.65)
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(monochrome ? Color.secondary : IronTheme.secondaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(value + (unit.map { " " + $0 } ?? ""))
+    }
+
+    private func streakOrCount(_ summary: ThisWeekWidgetSummary) -> some View {
+        Label {
+            Text(summary.streak >= 2 ? "\(summary.streak) wk" : workoutCount(summary))
+                .font(.ironMetric(.caption))
+        } icon: {
+            Image(systemName: summary.streak >= 2 ? "flame.fill" : "figure.strengthtraining.traditional")
+                .font(.caption.weight(.semibold))
+        }
+        .foregroundStyle(monochrome ? Color.primary : IronTheme.accent)
+        .padding(.horizontal, 8)
+        .frame(minHeight: 24)
+        .background(monochrome ? Color.primary.opacity(0.12) : IronTheme.accentSoft, in: Capsule())
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .widgetAccentable()
+        .accessibilityLabel(summary.streak >= 2 ? "\(summary.streak) week training streak" : "\(workoutCount(summary)) this week")
+    }
+
+    private func rectangular(_ summary: ThisWeekWidgetSummary) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(workoutCount(summary)) · \(summary.streak)-wk streak")
+                .font(.ironMetric(.caption, weight: .semibold))
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+            bars(summary, height: 14, showsWeekdays: false)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("This week")
+        .accessibilityValue("\(workoutCount(summary)), \(summary.streak) week training streak. \(daySummary(summary))")
+    }
+
+    private func circular(_ summary: ThisWeekWidgetSummary) -> some View {
+        Gauge(value: Double(min(summary.workouts, summary.workoutTarget)), in: 0...Double(summary.workoutTarget)) {
+            Image(systemName: "figure.strengthtraining.traditional")
+        } currentValueLabel: {
+            Text("\(summary.workouts)").font(.ironMetric(.title2))
+        }
+        .gaugeStyle(.accessoryCircularCapacity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Workouts this week")
+        .accessibilityValue("\(summary.workouts) of \(summary.workoutTarget)")
+    }
+
+    private func bars(_ summary: ThisWeekWidgetSummary, height: CGFloat, showsWeekdays: Bool = true) -> some View {
+        VStack(spacing: 2) {
+            // Matches Home's week chart: volume-colored bars on a faint baseline, no tracks.
+            Chart {
+                RuleMark(y: .value("Baseline", 0))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                    .foregroundStyle(monochrome ? Color.primary.opacity(0.18) : IronTheme.tertiaryFill)
+                ForEach(summary.days) { day in
+                    BarMark(x: .value("Day", Double(day.index)), yStart: .value("Baseline", 0),
+                            yEnd: .value("Volume", day.volume), width: .ratio(0.5))
+                        .cornerRadius(3)
+                        .foregroundStyle(monochrome ? Color.primary : IronTheme.metricVolume)
+                }
+            }
+            .chartXScale(domain: -0.5...6.5)
+            .chartYScale(domain: 0...maximumVolume(summary))
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .frame(height: height)
+            .widgetAccentable()
+
+            if showsWeekdays {
+                HStack(spacing: 0) {
+                    ForEach(summary.days) { day in
+                        Text(day.date.formatted(.dateTime.weekday(.narrow)))
+                            .font(.caption2.weight(day.isToday ? .bold : .regular))
+                            .foregroundStyle(monochrome ? Color.primary : (day.isToday ? IronTheme.accent : IronTheme.secondaryText))
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Volume by day this week")
+        .accessibilityValue(daySummary(summary))
+    }
+
+    private func maximumVolume(_ summary: ThisWeekWidgetSummary) -> Double {
+        max(summary.days.map(\.volume).max() ?? 0, 1)
+    }
+
+    private func daySummary(_ summary: ThisWeekWidgetSummary) -> String {
+        summary.days.map {
+            "\($0.date.formatted(.dateTime.weekday(.wide)))\($0.isToday ? ", today" : ""), \(entry.volume($0.volume)) \(entry.unit.symbol)"
+        }.joined(separator: "; ")
+    }
+
+    private func workoutCount(_ summary: ThisWeekWidgetSummary) -> String {
+        "\(summary.workouts) \(summary.workouts == 1 ? "workout" : "workouts")"
+    }
+
+    private var unavailable: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Image(systemName: "figure.strengthtraining.traditional")
+            if family != .accessoryCircular {
+                caption
+                Text("Open Light to update")
+                    .font(.caption2)
+                    .lineLimit(2)
+            }
+        }
+        .foregroundStyle(.primary)
+        .widgetAccentable()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("This Week. Open Light to update workout history.")
+    }
+}
+
+struct ThisWeekWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: WidgetKind.thisWeek.rawValue, provider: ThisWeekProvider()) { entry in
+            ThisWeekWidgetEntryView(entry: entry)
+        }
+        .configurationDisplayName("This Week")
+        .description("Your weekly workouts, daily volume and training streak.")
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular])
+    }
+}
+
+private struct ThisWeekWidget_Previews: PreviewProvider {
+    static var previews: some View {
+        Group {
+            ThisWeekWidgetEntryView(entry: .sample())
+                .previewContext(WidgetPreviewContext(family: .systemSmall))
+            ThisWeekWidgetEntryView(entry: .sample())
+                .previewContext(WidgetPreviewContext(family: .systemMedium))
+            ThisWeekWidgetEntryView(entry: .sample())
+                .previewContext(WidgetPreviewContext(family: .accessoryRectangular))
+            ThisWeekWidgetEntryView(entry: .sample())
+                .previewContext(WidgetPreviewContext(family: .accessoryCircular))
+        }
+    }
+}
 
 struct Provider: TimelineProvider {
     func placeholder(in context: Context) -> Entry {
@@ -352,7 +633,8 @@ private struct WorkoutLiveActivityLockScreenView: View {
                 } else if phase == .resting, let end = context.state.restTimerEnd {
                     WorkoutRunningRestControls(
                         workoutID: context.attributes.workoutID,
-                        end: end
+                        end: end,
+                        duration: context.state.restDuration
                     )
                 } else {
                     HStack(spacing: 10) {
@@ -443,19 +725,8 @@ private struct WorkoutLiveActivityLockScreenView: View {
         phase: WorkoutActivityAttributes.Phase,
         date: Date
     ) -> some View {
-        if phase == .resting, let progress = context.state.restProgress(at: date) {
-            Capsule(style: .continuous)
-                .fill(WorkoutActivityPalette.secondary.opacity(0.20))
-                .frame(height: 4)
-                .overlay(alignment: .leading) {
-                    GeometryReader { proxy in
-                        Capsule(style: .continuous)
-                            .fill(IronTheme.metricTime)
-                            .frame(width: proxy.size.width * progress)
-                    }
-                }
-                .accessibilityLabel("Rest progress")
-                .accessibilityValue("\(Int(progress * 100)) percent")
+        if phase == .resting {
+            WorkoutRestProgressView(state: context.state, date: date)
         } else {
             let progress = context.state.totalSets > 0
                 ? Double(context.state.completedSets) / Double(context.state.totalSets)
@@ -521,11 +792,103 @@ private struct WorkoutActivityExerciseArtwork: View {
     }
 }
 
+/// Timer-based ProgressView is rendered by the system between ActivityKit updates.
+/// A TimelineView-derived width freezes as soon as the widget process is suspended.
+private struct WorkoutRestProgressView: View {
+    let state: WorkoutActivityAttributes.ContentState
+    let date: Date
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Capsule(style: .continuous)
+                .fill(WorkoutActivityPalette.secondary.opacity(0.20))
+
+            if state.isRestPaused {
+                // A missing interval means the producer supplied only remaining
+                // seconds. Leave the track neutral rather than imply set progress.
+                if let progress = state.restProgress(at: date) {
+                    GeometryReader { proxy in
+                        Capsule(style: .continuous)
+                            .fill(IronTheme.metricTime)
+                            .frame(width: proxy.size.width * progress)
+                    }
+                }
+            } else if let interval = state.restTimerInterval {
+                ProgressView(timerInterval: interval, countsDown: false) {
+                    EmptyView()
+                } currentValueLabel: {
+                    EmptyView()
+                }
+                .progressViewStyle(.linear)
+                .tint(IronTheme.metricTime)
+                .labelsHidden()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 4)
+        .clipShape(Capsule(style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Rest progress")
+        .accessibilityValue(accessibilityValue)
+        .invalidatableContent(false)
+        .unredacted()
+    }
+
+    private var accessibilityValue: Text {
+        let total = state.restDuration.map { " of \(workoutRestSpokenDuration($0))" }
+            ?? ", total unavailable"
+        if state.isRestPaused, let remaining = state.pausedRestRemaining {
+            return Text("\(workoutRestSpokenDuration(remaining)) left\(total), paused")
+        }
+        if let end = state.restTimerInterval?.upperBound {
+            // Keep VoiceOver's remaining time system-driven too, using the same
+            // wide interval as the visible countdown to avoid timer placeholders.
+            return Text(timerInterval: end.addingTimeInterval(-24 * 60 * 60)...end,
+                        countsDown: true, showsHours: false)
+                + Text(" left\(total)")
+        }
+        return Text("Rest time unavailable")
+    }
+}
+
+private struct WorkoutRestTotalLabel: View {
+    let duration: TimeInterval?
+
+    var body: some View {
+        if let duration {
+            Text("of \(workoutRestDurationText(duration))")
+                .font(.ironMetric(.caption2, weight: .semibold))
+                .foregroundStyle(WorkoutActivityPalette.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.68)
+                .accessibilityLabel("Total rest \(workoutRestSpokenDuration(duration))")
+                .contentTransition(.identity)
+                .invalidatableContent(false)
+                .unredacted()
+        }
+    }
+}
+
+private func workoutRestSeconds(_ duration: TimeInterval) -> Int {
+    duration.isFinite ? Int(min(max(duration.rounded(.up), 0), 86_400)) : 0
+}
+
+private func workoutRestDurationText(_ duration: TimeInterval) -> String {
+    let seconds = workoutRestSeconds(duration)
+    return String(format: "%d:%02d", seconds / 60, seconds % 60)
+}
+
+private func workoutRestSpokenDuration(_ duration: TimeInterval) -> String {
+    Duration.seconds(workoutRestSeconds(duration))
+        .formatted(.units(allowed: [.hours, .minutes, .seconds], width: .wide))
+}
+
 /// Keep Skip anchored at the trailing edge while the three rest controls
 /// share the remaining space equally on both full-size activity surfaces.
 private struct WorkoutRunningRestControls: View {
     let workoutID: String
     let end: Date
+    let duration: TimeInterval?
     var compact = false
 
     var body: some View {
@@ -541,13 +904,18 @@ private struct WorkoutRunningRestControls: View {
                 .frame(minWidth: 0, maxWidth: .infinity)
                 .accessibilityLabel("Subtract 15 seconds")
 
-                workoutRestTimerText(until: end)
-                    .font(.ironMetric(compact ? .title3 : .title2))
-                    .foregroundStyle(IronTheme.metricTime)
-                    .multilineTextAlignment(.center)
-                    .frame(minWidth: 0, maxWidth: .infinity)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.68)
+                VStack(spacing: 2) {
+                    workoutRestTimerText(until: end)
+                        .font(.ironMetric(compact ? .title3 : .title2))
+                        .foregroundStyle(IronTheme.metricTime)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.68)
+
+                    WorkoutRestTotalLabel(duration: duration)
+                }
+                .multilineTextAlignment(.center)
+                .frame(minWidth: 0, maxWidth: .infinity)
+                .accessibilityElement(children: .combine)
 
                 Button(intent: AdjustWorkoutRestTimerIntent(
                     workoutID: workoutID,
@@ -669,28 +1037,20 @@ private struct WorkoutDynamicIslandBottom: View {
                     WorkoutActivitySetProgress(set: set, state: context.state, size: 28)
                 }
 
-                if phase == .resting, context.state.isRestPaused {
-                    WorkoutPausedRestControls(context: context)
-                } else if phase == .resting,
-                   let end = context.state.restTimerEnd,
-                   let progress = context.state.restProgress(at: presentationDate) {
-                    VStack(spacing: 7) {
-                        Capsule(style: .continuous)
-                            .fill(WorkoutActivityPalette.secondary.opacity(0.20))
-                            .frame(height: 3)
-                            .overlay(alignment: .leading) {
-                                GeometryReader { proxy in
-                                    Capsule(style: .continuous)
-                                        .fill(IronTheme.metricTime)
-                                        .frame(width: proxy.size.width * progress)
-                                }
-                            }
+                if phase == .resting {
+                    VStack(spacing: 8) {
+                        WorkoutRestProgressView(state: context.state, date: presentationDate)
 
-                        WorkoutRunningRestControls(
-                            workoutID: context.attributes.workoutID,
-                            end: end,
-                            compact: true
-                        )
+                        if context.state.isRestPaused {
+                            WorkoutPausedRestControls(context: context)
+                        } else if let end = context.state.restTimerEnd {
+                            WorkoutRunningRestControls(
+                                workoutID: context.attributes.workoutID,
+                                end: end,
+                                duration: context.state.restDuration,
+                                compact: true
+                            )
+                        }
                     }
                 } else {
                     HStack(spacing: 10) {
@@ -772,7 +1132,7 @@ private struct WorkoutActivitySetProgress: View {
             if let completed {
                 WorkoutSetProgressTile(completed: completed, total: total, size: size)
                     .accessibilityLabel("\(set?.exerciseName ?? "Workout") progress")
-                    .accessibilityValue(total == 0 ? "No sets yet" : "\(completed) of \(total) sets complete")
+                    .accessibilityValue(total == 0 ? "No sets yet" : "\(completed) of \(total) sets done")
             } else if let set {
                 Text("\(set.setNumber)/\(set.setCount)")
                     .font(.ironMetric(.caption2, weight: .semibold))
@@ -808,7 +1168,7 @@ private struct WorkoutSetProgressTile: View {
                 ForEach(0..<cells, id: \.self) { cell in
                     let fill = min(max(progress * Double(cells) - Double(cell), 0), 1)
                     RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(IronTheme.field)
+                        .fill(WorkoutActivityPalette.secondary.opacity(0.45))
                         .overlay(alignment: .bottom) {
                             Rectangle()
                                 .fill(IronTheme.accent)
@@ -884,6 +1244,7 @@ private struct WorkoutPausedRestControls: View {
                     .font(.ironMetric(.title3, weight: .semibold))
                     .contentTransition(reduceMotion ? .opacity : .numericText())
                     .foregroundStyle(IronTheme.metricTime)
+                WorkoutRestTotalLabel(duration: context.state.restDuration)
             }
             Spacer(minLength: 4)
             Button(intent: ResumeWorkoutRestTimerIntent(workoutID: context.attributes.workoutID)) {
@@ -902,9 +1263,7 @@ private struct WorkoutPausedRestControls: View {
     }
 
     private var remainingText: String {
-        let remaining = context.state.pausedRestRemaining ?? 0
-        let seconds = remaining.isFinite ? Int(min(max(remaining.rounded(.up), 0), 86_400)) : 0
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+        workoutRestDurationText(context.state.pausedRestRemaining ?? 0)
     }
 }
 
@@ -974,6 +1333,7 @@ private func phaseIsCompletion(_ phase: WorkoutActivityAttributes.Phase) -> Bool
 struct IronWidgetBundle: WidgetBundle {
     var body: some Widget {
         LastWorkoutWidget()
+        ThisWeekWidget()
         WorkoutLiveActivityWidget()
     }
 }

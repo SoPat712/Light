@@ -1,9 +1,10 @@
 # Iron Design Backlog: build specs
 
-**Latest owner decision (2026-10-26):** stop Watch development and preserve the current work.
-The iPhone app is the priority. Watch build 43 is a checkpoint requiring further design and
-on-device validation, not an accepted final result. Earlier Watch approvals below are
-superseded by this decision. See HANDOFF.md's owner checkpoint before resuming any Watch work.
+**Latest owner decision (2026-10-31):** correct the Watch retheme to match the phone, keep
+Previous visible/read-only, and give reps more width. Finish simulator verification while
+sharing resources with Overland, then install on the owner's phone and Watch for direct testing.
+The earlier October 26 stop is superseded by the owner's later requests. Read HANDOFF.md's
+active correction and DESIGN_SYSTEM.md §22 before using the historical specifications below.
 
 Approved design work that is not built yet, written so a coding agent can build each item
 **without asking questions**. Read [`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md) first. Every token,
@@ -23,7 +24,7 @@ lanes can run at the same time. A lane must **not** edit files owned by another 
 
 | Lane | Items, in order | Owns these files (exclusive) |
 | --- | --- | --- |
-| **A: Live workout** | B1 → B4 → B5 → B3 → B2 | `Iron/UI/Workout/CurrentWorkoutView.swift`, `Iron/UI/Workout/RestTimerView.swift`, `Iron/UI/Workout/WorkoutSetEditor.swift`, `Iron/UI/SwiftUISupport.swift`, `Shared/UI/SwiftUI/IronStyle.swift`, new `Iron/UI/Components/RestLengthRuler.swift`, `Iron.xcodeproj/project.pbxproj` |
+| **A: Live workout** | B1 → B4 → B5 → B3 → B2 | `Iron/UI/Workout/CurrentWorkoutView.swift`, `Iron/UI/Workout/RestTimerView.swift`, `Iron/UI/Workout/WorkoutSetEditor.swift`, `Iron/UI/SwiftUISupport.swift`, `Shared/UI/SwiftUI/IronStyle.swift`, new `Iron/UI/Components/RestLengthRuler.swift`, `Light.xcodeproj/project.pbxproj` |
 | **B: Exercise detail** | B6 | `Iron/UI/Exercises/ExerciseDetailView.swift`, `Iron/UI/Exercises/ExerciseStatisticsView.swift`, `Iron/UI/Exercises/ExerciseHistoryView.swift` |
 | **C: Workout tab and Home** | B8 → B9 | `Iron/UI/Workout/StartWorkoutView.swift`, `Iron/UI/History/WorkoutDetailView.swift`, `Iron/UI/Feed/FeedView.swift` |
 | **D: Polish** (after A–C merge) | B7, B10 | Whatever those items name |
@@ -39,7 +40,7 @@ adds files to the Xcode project.
 - **Apple Health:** never export imported workouts (`Workout.importSource != nil`). Only workouts
   completed in Iron are exported. Do not change `HealthManager` behavior.
 - No new package dependencies. A new Swift file must be registered in
-  `Iron.xcodeproj/project.pbxproj` for the correct target(s).
+  `Light.xcodeproj/project.pbxproj` for the correct target(s).
 - Preserve every existing action, persistence path, accessibility label and the Watch and Live
   Activity sync calls. Visual changes must not change data behavior.
 - Follow `DESIGN_SYSTEM.md` §16 and §18 for anything this file does not spell out.
@@ -49,7 +50,7 @@ adds files to the Xcode project.
 Offline simulator build (package checkouts are already cloned):
 
 ```bash
-xcodebuild -project Iron.xcodeproj -scheme Iron -destination 'generic/platform=iOS Simulator' \
+xcodebuild -project Light.xcodeproj -scheme Iron -destination 'generic/platform=iOS Simulator' \
   -derivedDataPath /tmp/iron-<lane>-dd -clonedSourcePackagesDirPath /tmp/iron-spm \
   -disableAutomaticPackageResolution build CODE_SIGNING_ALLOWED=NO 2>&1 \
   | grep -E "error:|BUILD (SUCCEEDED|FAILED)"
@@ -63,7 +64,7 @@ are needed, or let the orchestrator build.
 Install on the owner's iPhone (the orchestrator does this; the phone must be unlocked):
 
 ```bash
-xcodebuild -project Iron.xcodeproj -scheme Iron -configuration Debug \
+xcodebuild -project Light.xcodeproj -scheme Iron -configuration Debug \
   -destination 'id=00008150-001914903E69401C' -derivedDataPath /tmp/iron-device-dd \
   -clonedSourcePackagesDirPath /tmp/iron-spm -disableAutomaticPackageResolution \
   -allowProvisioningUpdates build

@@ -57,6 +57,7 @@ struct EditCustomExerciseView: View {
     }
     
     @Binding var exerciseValues: ExerciseValues
+    @State private var selectionFeedback = 0
     var titleValidationMessage: String? = nil
     var onSelectMuscles: () -> Void = {}
     
@@ -103,11 +104,19 @@ struct EditCustomExerciseView: View {
                     }
                 }
 
-                Picker("Equipment", selection: $exerciseValues.type) {
+                Picker("Equipment", selection: Binding(
+                    get: { exerciseValues.type },
+                    set: {
+                        guard exerciseValues.type != $0 else { return }
+                        exerciseValues.type = $0
+                        selectionFeedback += 1
+                    }
+                )) {
                     ForEach(Exercise.ExerciseType.allCases, id: \.self) { type in
                         Text(type.title.capitalized).tag(type)
                     }
                 }
+                .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
             } header: {
                 Text("Classification")
             } footer: {
@@ -220,6 +229,7 @@ struct MuscleSelectionView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .sensoryFeedback(.selection, trigger: activeRole) { _, _ in SettingsStore.shared.workoutHaptics }
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             } footer: {

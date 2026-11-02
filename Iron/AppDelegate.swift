@@ -63,6 +63,31 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Reset first so repeated launches stay idempotent instead of stacking
         // duplicate history.
         IronSampleDataSeeder.seed(reset: true, includeActiveWorkout: wantsActiveWorkout)
+        if wantsActiveWorkout && arguments.contains("-ironSeedNotes") {
+            seedActiveWorkoutNotes()
+        }
+    }
+
+    private func seedActiveWorkoutNotes() {
+        let context = WorkoutDataStorage.shared.persistentContainer.viewContext
+        guard let workout = try? context.fetch(Workout.currentWorkoutFetchRequest).first,
+              let exercise = workout.workoutExercises?.firstObject as? WorkoutExercise,
+              let exerciseID = exercise.exerciseUuid, let loggedID = exercise.uuid else { return }
+
+        // Use a real saved-plan row so the existing pinned-note resolver and
+        // Watch snapshot include the plan cue and its stable source identity.
+        let request: NSFetchRequest<WorkoutRoutine> = WorkoutRoutine.fetchRequest()
+        let routines = (try? context.fetch(request)) ?? []
+        guard let source = routines.compactMap({ routine in
+            (routine.workoutRoutineExercises?.array as? [WorkoutRoutineExercise])?
+                .first(where: { $0.exerciseUuid == exerciseID })
+        }).first, let sourceID = source.uuid else { return }
+        source.comment = "Superset with lateral raises"
+        workout.workoutRoutine = source.workoutRoutine
+        exercise.comment = "Controlled tempo today"
+        context.saveOrCrash()
+        WorkoutRoutineNoteLinks.setRoutineExerciseID(sourceID, for: loggedID)
+        ExerciseNotes.setNote("Perform lateral flexion; keep elbows soft", for: exerciseID)
     }
     #endif
 

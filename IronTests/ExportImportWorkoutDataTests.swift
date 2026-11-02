@@ -725,6 +725,28 @@ extension ExportImportWorkoutDataTests {
         return workout
     }
 
+    func testHevyWorkoutKeyRoundsStartAndNormalizesTitle() {
+        let key = HevyCSV.workoutKey(
+            start: Date(timeIntervalSince1970: 1_790_000_000.1), title: "  Café — PUSH!  "
+        )
+        let equivalent = HevyCSV.workoutKey(
+            start: Date(timeIntervalSince1970: 1_790_000_000.4), title: "cafe push"
+        )
+        XCTAssertEqual(key, equivalent)
+        XCTAssertEqual(Set([key, equivalent]).count, 1)
+        XCTAssertEqual(
+            HevyCSV.workoutKey(start: .distantPast, title: ""),
+            HevyCSV.workoutKey(start: .distantPast, title: "Workout")
+        )
+    }
+
+    func testHevyWorkoutKeyDistinguishesStartSecondsAndTitles() {
+        let start = Date(timeIntervalSince1970: 1_790_000_000.1)
+        let key = HevyCSV.workoutKey(start: start, title: "Push")
+        XCTAssertNotEqual(key, HevyCSV.workoutKey(start: start.addingTimeInterval(1), title: "Push"))
+        XCTAssertNotEqual(key, HevyCSV.workoutKey(start: start, title: "Pull"))
+    }
+
     func testHevyReimportSkipsRenamedWorkoutByExerciseAndSets() throws {
         let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
         let data = workoutCSV(exerciseTitle: exercise.title)
@@ -738,6 +760,51 @@ extension ExportImportWorkoutDataTests {
         XCTAssertEqual(result.skippedDuplicateWorkouts, 1)
         XCTAssertEqual(workout.title, "Renamed in Iron")
         XCTAssertEqual(try persistenContainer.viewContext.count(for: Workout.fetchRequest()), 1)
+    }
+
+    func testHevyFingerprintUsesNormalizedPersistedSetValues() throws {
+        let context = persistenContainer.viewContext
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let title = exercise.title.replacingOccurrences(of: "\"", with: "\"\"")
+        let data = Data("""
+        title,start_time,end_time,exercise_title,set_index,set_type,weight_kg,reps,distance_km,duration_seconds,rpe
+        Imported,2026-08-17T08:16:00Z,2026-08-17T08:35:00Z,"\(title)",0,warmup,-5,99999,0,0,7.3
+        Imported,2026-08-17T08:16:00Z,2026-08-17T08:35:00Z,"\(title)",1,dropset,45.12345678,8,1.234567,90,8.5
+        """.utf8)
+        _ = try HevyCSV.importData(data, into: context, exerciseStore: .shared)
+        let workout = try XCTUnwrap(HevyImportedWorkouts.fetch(in: context).first)
+        workout.title = "Renamed locally"
+        workout.comment = "A local note does not change session identity"
+        try context.save()
+
+        let result = try HevyCSV.importData(data, into: context, exerciseStore: .shared)
+
+        XCTAssertEqual(result.importedWorkouts, 0)
+        XCTAssertEqual(result.skippedDuplicateWorkouts, 1)
+        XCTAssertEqual(try context.count(for: WorkoutSet.fetchRequest()), 2)
+        XCTAssertEqual(workout.title, "Renamed locally")
+        XCTAssertEqual(workout.comment, "A local note does not change session identity")
+    }
+
+    func testHevyFingerprintDistinguishesExerciseIdentity() throws {
+        let context = persistenContainer.viewContext
+        let exercises = Array(ExerciseStore.shared.exercises.prefix(2))
+        XCTAssertEqual(exercises.count, 2)
+        let firstExercise = try XCTUnwrap(exercises.first)
+        let secondExercise = try XCTUnwrap(exercises.dropFirst().first)
+        let original = workoutCSV(exerciseTitle: firstExercise.title)
+        _ = try HevyCSV.importData(original, into: context, exerciseStore: .shared)
+        let workout = try XCTUnwrap(HevyImportedWorkouts.fetch(in: context).first)
+        workout.title = "Renamed locally"
+        try context.save()
+
+        let result = try HevyCSV.importData(
+            workoutCSV(exerciseTitle: secondExercise.title), into: context, exerciseStore: .shared
+        )
+
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.skippedDuplicateWorkouts, 0)
+        XCTAssertEqual(try HevyImportedWorkouts.fetch(in: context).count, 2)
     }
 
     func testHevyFingerprintDistinguishesDatesAndSetValues() throws {
@@ -770,9 +837,27 @@ extension ExportImportWorkoutDataTests {
         XCTAssertEqual(native.title, "Logged in Iron")
     }
 
+    func testContentFingerprintDoesNotTreatOtherImportSourceAsHevy() throws {
+        let context = persistenContainer.viewContext
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let data = workoutCSV(exerciseTitle: exercise.title)
+        _ = try HevyCSV.importData(data, into: context, exerciseStore: .shared)
+        let otherImport = try XCTUnwrap(HevyImportedWorkouts.fetch(in: context).first)
+        otherImport.importSource = "json"
+        otherImport.title = "Imported from JSON"
+        try context.save()
+
+        let result = try HevyCSV.importData(data, into: context, exerciseStore: .shared)
+
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.skippedDuplicateWorkouts, 0)
+        XCTAssertEqual(otherImport.importSource, "json")
+        XCTAssertEqual(otherImport.title, "Imported from JSON")
+    }
+
     func testRemovalPredicateOnlySelectsExactHevySource() throws {
         let context = persistenContainer.viewContext
-        let sources: [String?] = [nil, "hevy", "json", "sample", "Hevy", ""]
+        let sources: [String?] = [nil, "hevy", "json", "sample", "Hevy", "hevy ", ""]
         for source in sources {
             let workout = makeImportedDataTestWorkout(in: context)
             workout.importSource = source
@@ -783,7 +868,7 @@ extension ExportImportWorkoutDataTests {
         XCTAssertEqual(selected.first?.importSource, "hevy")
         XCTAssertEqual(try HevyImportedWorkouts.remove(in: context), 1)
         let remaining = try context.fetch(Workout.fetchRequest())
-        XCTAssertEqual(remaining.count, 5)
+        XCTAssertEqual(remaining.count, sources.count - 1)
         XCTAssertTrue(remaining.contains { $0.importSource == nil })
         XCTAssertFalse(remaining.contains { $0.importSource == "hevy" })
     }
@@ -1139,6 +1224,113 @@ extension ExportImportWorkoutDataTests {
         XCTAssertEqual(catalog[1].primaryMuscle, ["new muscle"])
         XCTAssertEqual(catalog[2].uuid, newUUID)
         XCTAssertEqual(Set(catalog.map(\.uuid)).count, catalog.count)
+    }
+
+    func testLegacyArtAddsPicturesWithoutChangingIdentityOrExistingArt() throws {
+        func fixture(uuid: UUID, title: String, image: String? = nil) -> Exercise {
+            Exercise(
+                uuid: uuid, everkineticId: 1, title: title, alias: ["Old Name"], description: nil,
+                primaryMuscle: ["chest"], secondaryMuscle: [], equipment: ["cable"], steps: [], tips: [],
+                references: [], pdfPaths: ["pdf/0001-tension.pdf"], imageFilename: image, animationFilename: image
+            )
+        }
+        let plainID = UUID()
+        let illustratedID = UUID()
+        let art = try JSONDecoder().decode([ExerciseCatalogMetadata.LegacyArt].self, from: Data("""
+        [{"uuid": "\(plainID.uuidString)", "image": "0001-abc.jpg", "animation": "0001-abc.gif"},
+         {"uuid": "\(illustratedID.uuidString)", "image": "0002-new.jpg", "animation": "0002-new.gif"}]
+        """.utf8))
+
+        let catalog = ExerciseCatalogMetadata.addingLegacyArt(art, to: [
+            fixture(uuid: plainID, title: "Flyes: Cable"),
+            fixture(uuid: illustratedID, title: "Air Bike", image: "0003-kept.gif")
+        ])
+
+        XCTAssertEqual(catalog[0].uuid, plainID)
+        XCTAssertEqual(catalog[0].title, "Flyes: Cable")
+        XCTAssertEqual(catalog[0].alias, ["Old Name"])
+        XCTAssertEqual(catalog[0].pdfPaths, ["pdf/0001-tension.pdf"])
+        XCTAssertEqual(catalog[0].imageURL?.absoluteString, "https://static.exercisedb.dev/media/abc.gif")
+        XCTAssertEqual(catalog[1].animationFilename, "0003-kept.gif")
+    }
+
+    func testBundledLegacyExercisesAllHavePicturesExceptTheReviewedGap() {
+        let store = ExerciseStore(customExercisesURL: nil)
+        let withoutPicture = store.builtInExercises.filter { !$0.pdfPaths.isEmpty && $0.imageURL == nil }
+        XCTAssertEqual(withoutPicture.map(\.title), ["Supermans"])
+    }
+
+    func testCatalogCleanupHidesOnlyReviewedDuplicatesAndKeepsCommonNames() throws {
+        let store = ExerciseStore(customExercisesURL: nil)
+        let byID = Dictionary(uniqueKeysWithValues: store.builtInExercises.map { ($0.uuid, $0) })
+        let root = ExerciseStore.defaultBuiltInExercisesResourceURL
+        let duplicates = try JSONDecoder().decode(
+            [ExerciseCatalogMetadata.CatalogDuplicate].self,
+            from: Data(contentsOf: root.appendingPathComponent("catalog-duplicates.json"))
+        )
+        XCTAssertEqual(duplicates.count, 58)
+        for duplicate in duplicates {
+            let hidden = try XCTUnwrap(byID[duplicate.uuid])
+            let kept = try XCTUnwrap(byID[duplicate.keep], hidden.title)
+            XCTAssertFalse(store.isBrowsable(hidden), hidden.title)
+            XCTAssertTrue(store.isBrowsable(kept), kept.title)
+            XCTAssertNotNil(kept.imageURL, kept.title)
+            XCTAssertFalse(hidden.title.contains("V. "), hidden.title)
+        }
+
+        var importTargets = Set<UUID>()
+        for name in ["hevy-aliases.json", "hevy-template-aliases.json"] {
+            let aliases = try JSONDecoder().decode(
+                [String: UUID].self, from: Data(contentsOf: root.appendingPathComponent(name))
+            )
+            importTargets.formUnion(aliases.values)
+        }
+        XCTAssertTrue(importTargets.isDisjoint(with: duplicates.map(\.uuid)))
+
+        for title in ["Crunch", "Plank", "Leg Press", "Leg Extension", "Supermans", "Flyes: Cable", "Squat: Barbell"] {
+            let exercise = try XCTUnwrap(store.builtInExercises.first { $0.title == title }, title)
+            XCTAssertTrue(store.isBrowsable(exercise), title)
+        }
+
+        let custom = Exercise(uuid: UUID(), everkineticId: 10_000, title: "Mine", alias: [],
+                              description: nil, primaryMuscle: [], secondaryMuscle: [], equipment: [],
+                              steps: [], tips: [], references: [], pdfPaths: [])
+        XCTAssertTrue(store.isBrowsable(custom))
+
+        XCTAssertEqual(store.listed(store.builtInExercises, showingAll: false).count, 1_383)
+        let everything = store.listed(store.builtInExercises, showingAll: true)
+        XCTAssertEqual(everything.count, store.builtInExercises.count, "Nothing may become unreachable")
+        XCTAssertEqual(everything.prefix(1_383).filter(store.isBrowsable).count, 1_383, "Listed exercises come first")
+    }
+
+    func testAddExerciseSearchFindsUnlistedExercisesEvenAfterBrowsing() {
+        let store = ExerciseStore(customExercisesURL: nil)
+        let catalog = AddExerciseCatalog(exercises: store.builtInExercises, store: store)
+
+        let browsing = catalog.matches(search: "", muscleGroup: nil, equipment: nil)
+        XCTAssertEqual(browsing.count, 1_383)
+        XCTAssertEqual(catalog.moreCount, store.builtInExercises.count - 1_383)
+        XCTAssertFalse(browsing.contains { $0.title == "1 2 Stick Drill" })
+
+        // The next letter narrows the cached matches, which must still include unlisted ones.
+        let noPicture = catalog.matches(search: "1 2 stick", muscleGroup: nil, equipment: nil)
+        XCTAssertTrue(noPicture.contains { $0.title == "1 2 Stick Drill" })
+        XCTAssertEqual(catalog.moreCount, 0)
+        let duplicate = catalog.matches(search: "front raises: barbell", muscleGroup: nil, equipment: nil)
+        XCTAssertTrue(duplicate.contains { $0.title == "Front Raises: Barbell" })
+
+        let frontRaises = catalog.matches(search: "front raise", muscleGroup: nil, equipment: nil)
+        let firstUnlisted = frontRaises.firstIndex { !store.isBrowsable($0) } ?? frontRaises.endIndex
+        XCTAssertTrue(frontRaises[firstUnlisted...].allSatisfy { !store.isBrowsable($0) }, "Listed exercises come first")
+
+        let all = catalog.matches(search: "", muscleGroup: nil, equipment: nil, showingAll: true)
+        XCTAssertEqual(all.count, store.builtInExercises.count)
+        XCTAssertEqual(catalog.moreCount, 0)
+
+        // A filter with only unlisted exercises shows them instead of nothing.
+        let massageBall = catalog.matches(search: "", muscleGroup: nil, equipment: "massage ball")
+        XCTAssertFalse(massageBall.isEmpty)
+        XCTAssertEqual(catalog.moreCount, 0)
     }
 
     func testOpenGymCatalogMetadataEnrichesHipThrustAndPreservesCustomIdentityThroughImport() throws {

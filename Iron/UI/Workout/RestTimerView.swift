@@ -16,6 +16,7 @@ struct RestTimerView: View {
     @EnvironmentObject private var restTimerStore: RestTimerStore
     @State private var selectedDuration: TimeInterval = 90
     @State private var clampFeedback = 0
+    @State private var actionFeedback = 0
 
     private var isRunning: Bool { restTimerStore.restTimerRemainingTime != nil }
 
@@ -56,6 +57,7 @@ struct RestTimerView: View {
                 } else {
                     RestLengthRuler(value: $selectedDuration) { _ in }
                     Button {
+                        actionFeedback += 1
                         restTimerStore.start(duration: selectedDuration)
                         restTimerStore.recentRestTimes.removeAll { $0 == selectedDuration }
                         restTimerStore.recentRestTimes.insert(selectedDuration, at: 0)
@@ -79,7 +81,8 @@ struct RestTimerView: View {
             }
         }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isRunning)
-        .sensoryFeedback(.error, trigger: clampFeedback)
+        .sensoryFeedback(.error, trigger: clampFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
+        .sensoryFeedback(.selection, trigger: actionFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
     }
 
     private func timerActionButton(
@@ -89,7 +92,10 @@ struct RestTimerView: View {
         destructive: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        Button {
+            actionFeedback += 1
+            action()
+        } label: {
             Group {
                 if let systemImage { Image(systemName: systemImage) } else { Text(title) }
             }
@@ -107,7 +113,7 @@ struct RestTimerView: View {
     }
 
     private func adjustRunningTimer(by interval: TimeInterval) {
-        restTimerStore.adjust(by: interval)
+        restTimerStore.adjust(by: interval, feedback: true)
         WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
     }
 }

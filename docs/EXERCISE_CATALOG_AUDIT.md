@@ -158,3 +158,40 @@ Verification for this update:
   device-to-host copy for byte comparison was blocked by automatic approval review because
   it could contain personal exercise data; no transfer was retried. Phone-file byte equality
   is not claimed for this update. Iron's simulator was shut down and shared slots released.
+
+## One illustrated set and OpenGym revision `b6cfe2b` — 2026-11-02
+
+The owner asked to replace the black-and-white outline icons with the cohesive set.
+
+- **Art sources today:** of 5,749 built-ins, 1,324 have ExerciseDB art, 117 had only Everkinetic
+  PDF outlines, and 4,308 have no picture. The ExerciseDB art is free-tier 180 px GIFs.
+- **`legacy-art.json`** maps 116 of the 117 outline exercises to the same movement's existing
+  art. Each pairing was chosen by hand and its first frame checked on a contact sheet. It is a
+  separate file because the OpenGym importer requires each media prefix to be unique in
+  `exercises.json`. UUIDs, titles, aliases, PDFs and history are unchanged. Supermans has no
+  matching picture. Several pictures are close rather than exact: Leg Press (Narrow Stance) uses
+  the standard leg press, and Leg Curl (Standing) shows a bodyweight curl, not a machine.
+- **OpenGym has no consolidated list.** Its README says an id is never deleted and a duplicate
+  is fixed by improving one entry. Against the earlier revision, 316 exercise files changed and
+  none were added or removed. They add `hold` (135), `needs` (110), and equipment or body-part
+  corrections. Iron's importer reads equipment but not those new fields, so regenerating changed
+  46 entries. Iron guesses timed holds from names, so wall sits and L-sits still default to reps.
+- **Default lists:** the owner asked for high-quality exercises over every exercise, and for
+  caution: "I'd rather miss some than get rid of too many". Of 5,749 built-ins, default lists show
+  1,383. No exercise is deleted, and history, imports and UUIDs are unchanged. Search and "Show N
+  More Exercises" reach the rest, browsable entries first. A custom exercise, or anything in a
+  workout or saved workout, always stays listed. The Watch list honors the same rule and its search
+  reaches everything. Pinned chart selection is deliberately unchanged.
+- **`catalog-duplicates.json`** has 58 entries, chosen by name: 43 older names for the same
+  exercise, 7 camera-angle or female-figure copies, 2 spelling variants and 6 exact same names.
+  Each names the entry to keep. "V. 2" entries were left visible because the name doesn't show
+  whether they differ. Anything Hevy imports map to was left out, which excluded
+  Bench Press: Machine, Biceps Curl: Machine and Triceps Pushdown: Cable with and without rope.
+  Plain common names such as Crunch, Plank, Leg Press and Leg Extension also stay.
+- **ExerciseDB's free tier** has 1,500 entries. It includes all 1,324 pictures Iron uses and 176
+  more, of which only 2 exactly name a no-picture exercise, so it doesn't close the gap. Its README
+  calls the free endpoints "for exploration only and not recommended for production integration".
+- **Before a public release:** OpenGym's text may be used under the bundled AGPL and MIT notices;
+  its media may not. No terms were found that confirm commercial use of the ExerciseDB media,
+  or caching it: the terms link (`dub.sh/exercisedb-api-tos`) refused automated access. Read the
+  terms or ask the provider. Its paid tier offers 360p to 1080p; prices were not retrieved.

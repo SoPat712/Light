@@ -60,3 +60,8 @@ fastlane/screenshots_dark/screenshots.html
 fastlane/test_output
 
 fastlane/metadata
+
+# Local-only material: third-party references, device QA logs and signing scratch files
+reference-material/
+docs/qa/
+codesign[0-9]*

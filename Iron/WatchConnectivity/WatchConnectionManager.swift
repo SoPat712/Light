@@ -32,6 +32,32 @@ final class WatchWorkoutMetricsStore: ObservableObject {
     }
 }
 
+/// Before activation, retain lifecycle commands in order and only the latest
+/// value for each legacy workout field. Snapshots/preferences keep their own
+/// existing coalescing and content-deduplication paths.
+struct PendingWatchUserInfo {
+    private var payloads: [[String: Any]] = []
+
+    mutating func enqueue(_ payload: [String: Any]) {
+        let fields = [PayloadKey.updateWorkoutSessionStart, PayloadKey.updateWorkoutSessionEnd,
+                      PayloadKey.updateWorkoutSessionRestTimer, PayloadKey.updateWorkoutSessionSelectedSet]
+        if payload.count == 1, let field = fields.first(where: { payload[$0] != nil }),
+           let arguments = payload[field] as? [String: Any],
+           let workoutID = arguments[PayloadKey.Arg.uuid] as? String {
+            payloads.removeAll {
+                ($0[field] as? [String: Any])?[PayloadKey.Arg.uuid] as? String == workoutID
+            }
+        }
+        payloads.append(payload)
+    }
+
+    mutating func takeAll() -> [[String: Any]] {
+        let result = payloads
+        payloads.removeAll()
+        return result
+    }
+}
+
 /// The following behaviour was tested on watchOS 6.2 and iOS 13.4:
 /// When the watch app is not reachable, data often won't arrive until the app is opened. Sometimes the data arrives, but then the watch only answers when the watch app is opened.
 
@@ -48,6 +74,7 @@ class WatchConnectionManager: NSObject, ObservableObject {
     /// expose a lightweight revision instead of leaving settings stale until
     /// the user manually refreshes.
     @Published private(set) var connectionRevision = 0
+    @Published private(set) var watchWorkoutAwaitingOpen: WatchWorkoutSnapshot?
     let liveMetrics = WatchWorkoutMetricsStore()
     
     private let session = WCSession.default
@@ -55,15 +82,54 @@ class WatchConnectionManager: NSObject, ObservableObject {
     private struct EventLedger: Codable {
         var recentEventIDs: [UUID] = []
         var latestSequenceByField: [String: Int64] = [:]
+        var latestSequenceByWorkout: [String: Int64]? = nil
+        var watchStartedWorkoutIDs: Set<UUID>? = nil
     }
 
     private static let eventLedgerDefaultsKey = "watchWorkoutEventLedger.v1"
+    private static let deletedWorkoutIDsDefaultsKey = "watchWorkoutDeletedIDs.v1"
+    private static let finalizationDatesDefaultsKey = "watchWorkoutFinalizationDates.v1"
+    private static let finalizationValuesDefaultsKey = finalizationDatesDefaultsKey + ".setValues"
+    private static let terminalDefaultsLock = NSLock()
     private var eventLedger: EventLedger
     private var selectedWatchSetUuid: UUID?
     private var pendingSnapshot: WatchWorkoutSnapshot?
+    private var pendingSnapshotBuild: DispatchWorkItem?
+    private var pendingWatchAdoption = false
+    private var lastSentSnapshotContent: Data?
+    private var workoutThumbnailCache: [UUID: Data] = [:]
     private var lastSnapshotRevision: Int64 = 0
     private var librarySaveObserver: AnyCancellable?
+    private let connectivityQueue = DispatchQueue(label: "Light.phoneConnectivity", qos: .utility)
+    // Accessed only on connectivityQueue; activation drains each pending item once.
+    private var pendingUserInfo = PendingWatchUserInfo()
+    private var pendingEventAcknowledgements = Set<UUID>()
+    private lazy var preferenceSync = WatchPreferenceSyncManager(queue: connectivityQueue,
+        transmit: { [weak self] payload in
+            guard let self, self.isActivated else { return false }
+            do {
+                try self.updateApplicationContextIfChanged(self.applicationContextIncludingPreferences(payload))
+            } catch {
+                os_log("Could not sync Watch preferences: %@", log: .watch, type: .error, error.localizedDescription)
+                return false
+            }
+            if self.isReachable {
+                self.session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+            }
+            return true
+        }, didChangeLocally: { [weak self] changes in
+            guard changes.contains(.tracking) || changes.contains(.notes) else { return }
+            self?.syncCurrentWorkoutSnapshot()
+            self?.scheduleWorkoutLibrarySync()
+        })
+    #if DEBUG
+    private var healthTestModeObserver: AnyCancellable?
+    private var lastSentHealthTestMode: Bool?
+    private var healthTestModeEnabledObserver: AnyCancellable?
+    #endif
     private var exerciseLibraryObserver: AnyCancellable?
+    private var logRPEObserver: AnyCancellable?
+    private var lastSentLogRPE: Bool?
     private var pendingLibrarySync: DispatchWorkItem?
     private var libraryBuildGeneration: UInt64 = 0
     private var retainedTransferFiles = Set<URL>()
@@ -95,7 +161,113 @@ class WatchConnectionManager: NSObject, ObservableObject {
             eventLedger = EventLedger()
         }
         super.init()
+        refreshWatchWorkoutAwaitingOpen()
         observeLibraryChanges()
+        _ = preferenceSync
+        logRPEObserver = NotificationCenter.default.publisher(
+            for: UserDefaults.didChangeNotification, object: UserDefaults.appGroup)
+            .map { _ in SettingsStore.shared.logRPE }
+            .prepend(SettingsStore.shared.logRPE)
+            .removeDuplicates()
+            .debounce(for: .milliseconds(750), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.syncLogRPE() }
+        #if DEBUG
+        healthTestModeEnabledObserver = NotificationCenter.default.publisher(for: SettingsStore.healthTestModeEnabledNotification)
+            .filter { ($0.object as? SettingsStore) === SettingsStore.shared }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.persistActiveTestProvenance() }
+        healthTestModeObserver = NotificationCenter.default.publisher(
+            for: UserDefaults.didChangeNotification, object: UserDefaults.appGroup)
+            .map { _ in SettingsStore.shared.healthTestMode }
+            .prepend(SettingsStore.shared.healthTestMode)
+            .removeDuplicates()
+            .dropFirst()
+            .debounce(for: .milliseconds(750), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.syncHealthTestMode()
+                self?.syncCurrentWorkoutSnapshot()
+            }
+        #endif
+    }
+
+    #if DEBUG
+    private func persistActiveTestProvenance() {
+        do {
+            try Workout.markCurrentWorkoutAsHealthTestWorkout(
+                in: WorkoutDataStorage.shared.persistentContainer.viewContext)
+        } catch {
+            os_log("Could not persist active test workout provenance: %@", log: .watch, type: .error, error.localizedDescription)
+        }
+    }
+
+    private func syncHealthTestMode() {
+        persistActiveTestProvenance()
+        let enabled = SettingsStore.shared.healthTestMode
+        let workoutID = currentWatchWorkoutUuid
+        connectivityQueue.async {
+            guard self.isActivated else { return }
+            var context = self.applicationContextIncludingPreferences([PayloadKey.healthTestMode: enabled])
+            // Keep the durable active snapshot, but never resurrect an archive.
+            if let data = context[PayloadKey.workoutSnapshot] as? Data,
+               let snapshot = WatchWorkoutWire.decode(WatchWorkoutSnapshot.self, from: data),
+               snapshot.workoutID != workoutID || snapshot.isFinishedRecord {
+                context.removeValue(forKey: PayloadKey.workoutSnapshot)
+            }
+            do { try self.updateApplicationContextIfChanged(context) }
+            catch {
+                os_log("Could not sync Health test preference: %@", log: .watch, type: .error, error.localizedDescription)
+                return
+            }
+            if enabled != self.lastSentHealthTestMode, self.isReachable {
+                self.session.sendMessage([PayloadKey.healthTestMode: enabled], replyHandler: nil, errorHandler: nil)
+                self.lastSentHealthTestMode = enabled
+            }
+            if enabled { self.liveMetrics.clear() }
+        }
+    }
+    #endif
+
+    /// The phone is authoritative for Log RPE. Only local edits and connection
+    /// transitions send it; receiving other preferences never schedules a send.
+    private func syncLogRPE() {
+        let enabled = SettingsStore.shared.logRPE
+        connectivityQueue.async {
+            guard self.isActivated else { return }
+            let payload: [String: Any] = ["logRPE": enabled]
+            do {
+                try self.updateApplicationContextIfChanged(self.applicationContextIncludingPreferences(payload))
+            } catch {
+                os_log("Could not sync Log RPE preference: %@", log: .watch, type: .error, error.localizedDescription)
+                return
+            }
+            if self.isReachable, self.lastSentLogRPE != enabled {
+                self.session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+                self.lastSentLogRPE = enabled
+            }
+        }
+    }
+
+    private func applicationContextIncludingPreferences(_ payload: [String: Any]) -> [String: Any] {
+        var context = session.applicationContext
+        // This helper runs on the transport queue. Read the thread-safe value,
+        // rather than crossing into the UI's observable settings facade.
+        context["logRPE"] = UserDefaults.appGroup.logRPE
+        context.merge(PlateCalculatorPreferences.load().dictionaryRepresentation) { _, new in new }
+        context.merge(SetTrackingPreferences.load().dictionaryRepresentation) { _, new in new }
+        context.merge(ExerciseNotes.load().dictionaryRepresentation) { _, new in new }
+        context.merge(payload) { _, new in new }
+        if let data = context[PayloadKey.workoutSnapshot] as? Data,
+           let snapshot = WatchWorkoutWire.decode(WatchWorkoutSnapshot.self, from: data),
+           Self.phoneFinalizationDate(snapshot.workoutID) != nil || Self.wasDeletedOnPhone(snapshot.workoutID) {
+            context.removeValue(forKey: PayloadKey.workoutSnapshot)
+        }
+        return context
+    }
+
+    private func updateApplicationContextIfChanged(_ context: [String: Any]) throws {
+        dispatchPrecondition(condition: .onQueue(connectivityQueue))
+        guard !WatchSyncContent.contextsEqual(context, session.applicationContext) else { return }
+        try session.updateApplicationContext(context)
     }
 
     private func observeLibraryChanges() {
@@ -113,9 +285,20 @@ class WatchConnectionManager: NSObject, ObservableObject {
                     } == true
                 }
             }
-            .map { _ in () }
+            .map { notification -> [UUID] in
+                let deleted = Self.recordDeletedWorkouts(from: notification)
+                let updated = notification.userInfo?[NSUpdatedObjectsKey] as? Set<NSManagedObject> ?? []
+                let finished = updated.compactMap { $0 as? Workout }.filter {
+                    !$0.isCurrentWorkout && !$0.isImported && $0.end != nil
+                }
+                for workout in finished { Self.recordPhoneFinalization(workout) }
+                return deleted + finished.compactMap(\.uuid)
+            }
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.scheduleWorkoutLibrarySync() }
+            .sink { [weak self] terminalIDs in
+                for id in terminalIDs { self?.retireSnapshotDelivery(workoutID: id) }
+                self?.scheduleWorkoutLibrarySync()
+            }
 
         exerciseLibraryObserver = ExerciseStore.shared.objectWillChange
             .receive(on: DispatchQueue.main)
@@ -150,7 +333,7 @@ class WatchConnectionManager: NSObject, ObservableObject {
     }
     
     var isReachable: Bool {
-        session.isReachable
+        isActivated && session.isReachable
     }
     
     var isActivated: Bool {
@@ -158,11 +341,11 @@ class WatchConnectionManager: NSObject, ObservableObject {
     }
 
     var isPaired: Bool {
-        session.isPaired
+        isActivated && session.isPaired
     }
 
     var isWatchAppInstalled: Bool {
-        session.isWatchAppInstalled
+        isActivated && session.isWatchAppInstalled
     }
 
     private func publishConnectionStatus() {
@@ -193,7 +376,24 @@ extension WatchConnectionManager: WCSessionDelegate {
                 }
                 return
             }
+            self.connectivityQueue.async {
+                self.preferenceSync.applyReceived(session.receivedApplicationContext)
+                do {
+                    try self.updateApplicationContextIfChanged(self.applicationContextIncludingPreferences([:]))
+                } catch {
+                    os_log("Could not clear obsolete Watch context: %@", log: .watch, type: .error, error.localizedDescription)
+                }
+                self.flushPendingUserInfo()
+                let acknowledgements = self.pendingEventAcknowledgements
+                self.pendingEventAcknowledgements.removeAll()
+                for eventID in acknowledgements { self.acknowledge(eventID: eventID, replyHandler: nil) }
+                self.preferenceSync.requestSync()
+            }
+            self.syncLogRPE()
             self.resumePendingPrepareRequest()
+            #if DEBUG
+            self.syncHealthTestMode()
+            #endif
             if let snapshot = self.pendingSnapshot {
                 self.sendWorkoutSnapshot(snapshot)
             } else {
@@ -212,6 +412,14 @@ extension WatchConnectionManager: WCSessionDelegate {
     func sessionDidDeactivate(_ session: WCSession) {
         os_log("Session was deactivated", log: .watch, type: .debug)
         publishConnectionStatus()
+        connectivityQueue.async {
+            self.lastSentSnapshotContent = nil
+            self.lastSentLogRPE = nil
+            #if DEBUG
+            self.lastSentHealthTestMode = nil
+            #endif
+        }
+        preferenceSync.resetTransmission()
         // connect to the new Apple Watch
         os_log("Reactivating session", log: .watch, type: .debug)
         activateSession()
@@ -245,11 +453,13 @@ extension WatchConnectionManager: WCSessionDelegate {
         guard file.metadata?[Self.eventTransferMarker] as? Bool == true else { return }
         do {
             let data = try Data(contentsOf: file.fileURL)
-            guard let event = WatchWorkoutWire.decode(WatchWorkoutEvent.self, from: data) else {
-                os_log("Could not decode transferred Watch workout event", log: .watch, type: .error)
-                return
+            connectivityQueue.async {
+                guard let event = WatchWorkoutWire.decode(WatchWorkoutEvent.self, from: data) else {
+                    os_log("Could not decode transferred Watch workout event", log: .watch, type: .error)
+                    return
+                }
+                self.handleWorkoutEvent(event, replyHandler: nil)
             }
-            handleWorkoutEvent(event, replyHandler: nil)
         } catch {
             os_log("Could not read transferred Watch workout event: %@", log: .watch, type: .error,
                    error.localizedDescription)
@@ -257,25 +467,33 @@ extension WatchConnectionManager: WCSessionDelegate {
     }
     
     func sessionReachabilityDidChange(_ session: WCSession) {
-        os_log("Session reachability did change isReachable=%@", log: .watch, type: .debug, String(describing: session.isReachable))
+        let reachable = session.activationState == .activated && session.isReachable
+        os_log("Session reachability did change isReachable=%@", log: .watch, type: .debug, String(describing: reachable))
         publishConnectionStatus()
-        guard session.isReachable else { return }
+        guard reachable else { return }
         DispatchQueue.main.async {
+            self.preferenceSync.requestSync()
+            self.syncLogRPE()
+            #if DEBUG
+            self.syncHealthTestMode()
+            #endif
             self.syncCurrentWorkoutSnapshot()
             self.scheduleWorkoutLibrarySync(immediate: true)
         }
     }
 
     func sessionWatchStateDidChange(_ session: WCSession) {
+        let paired = session.activationState == .activated && session.isPaired
+        let installed = session.activationState == .activated && session.isWatchAppInstalled
         os_log(
             "Watch state changed paired=%@ installed=%@",
             log: .watch,
             type: .debug,
-            String(describing: session.isPaired),
-            String(describing: session.isWatchAppInstalled)
+            String(describing: paired),
+            String(describing: installed)
         )
         publishConnectionStatus()
-        if session.isPaired && session.isWatchAppInstalled {
+        if paired && installed {
             scheduleWorkoutLibrarySync(immediate: true)
         }
     }
@@ -285,7 +503,7 @@ extension WatchConnectionManager: WCSessionDelegate {
         let isLibrary = file.metadata?[Self.libraryTransferMarker] as? Bool == true
         let isSnapshot = file.metadata?[Self.snapshotTransferMarker] as? Bool == true
         guard isLibrary || isSnapshot else { return }
-        DispatchQueue.main.async {
+        connectivityQueue.async {
             if self.retainedTransferFiles.remove(file.fileURL) != nil {
                 try? FileManager.default.removeItem(at: file.fileURL)
             }
@@ -299,11 +517,16 @@ extension WatchConnectionManager: WCSessionDelegate {
 
 extension WatchConnectionManager {
     private func receive(message: [String : Any], replyHandler: (([String: Any]) -> Void)? = nil) {
+        connectivityQueue.async { self.receiveOnConnectivityQueue(message, replyHandler: replyHandler) }
+    }
+
+    private func receiveOnConnectivityQueue(_ message: [String: Any], replyHandler: (([String: Any]) -> Void)?) {
+        preferenceSync.applyReceived(message)
         if message[PayloadKey.requestWorkoutLibrary] as? Bool == true {
             scheduleWorkoutLibrarySync(immediate: true)
             replyHandler?([:])
         } else if message[PayloadKey.requestWorkoutSnapshot] as? Bool == true {
-            syncCurrentWorkoutSnapshot()
+            syncCurrentWorkoutSnapshot(allowWatchAdoption: true)
             replyHandler?([:])
         } else if let data = message[PayloadKey.workoutMetrics] as? Data,
            let metrics = WatchWorkoutWire.decode(WatchWorkoutMetrics.self, from: data) {
@@ -312,6 +535,10 @@ extension WatchConnectionManager {
                 guard let workout = try? context.fetch(Workout.currentWorkoutFetchRequest).first,
                       workout.isCurrentWorkout, !workout.isImported,
                       workout.uuid == metrics.workoutID else { return }
+                if SettingsStore.shared.healthTestMode || workout.healthExportState == "test" {
+                    self.liveMetrics.clear()
+                    return
+                }
                 self.liveMetrics.receive(metrics, workoutID: metrics.workoutID)
             }
             replyHandler?([:])
@@ -319,7 +546,7 @@ extension WatchConnectionManager {
            let event = WatchWorkoutWire.decode(WatchWorkoutEvent.self, from: eventData) {
             handleWorkoutEvent(event, replyHandler: replyHandler)
         } else if let prepared = message[PayloadKey.preparedWorkoutSession] as? Bool, prepared {
-            handlePreparedWorkoutSessionMessage()
+            DispatchQueue.main.async { self.handlePreparedWorkoutSessionMessage() }
             replyHandler?([:])
         } else {
             replyHandler?([:])
@@ -343,6 +570,112 @@ extension WatchConnectionManager {
 
 // MARK: - Durable watch edits
 extension WatchConnectionManager {
+    @discardableResult
+    static func recordDeletedWorkouts(from notification: Notification,
+                                     defaults: UserDefaults = .appGroup) -> [UUID] {
+        let deleted = notification.userInfo?[NSDeletedObjectsKey] as? Set<NSManagedObject> ?? []
+        let ids = deleted.compactMap { ($0 as? Workout)?.uuid }
+        recordDeletedWorkoutIDs(ids, defaults: defaults)
+        return ids
+    }
+
+    static func recordDeletedWorkoutIDs(_ ids: [UUID], defaults: UserDefaults = .appGroup) {
+        guard !ids.isEmpty else { return }
+        terminalDefaultsLock.lock()
+        defer { terminalDefaultsLock.unlock() }
+        var retained = (defaults.stringArray(forKey: deletedWorkoutIDsDefaultsKey) ?? []).compactMap(UUID.init(uuidString:))
+        for id in ids { retained = WatchWorkoutPersistence.retainingTerminalID(id, in: retained) }
+        defaults.set(retained.map(\.uuidString), forKey: deletedWorkoutIDsDefaultsKey)
+    }
+
+    static func wasDeletedOnPhone(_ id: UUID, defaults: UserDefaults = .appGroup) -> Bool {
+        terminalDefaultsLock.lock()
+        defer { terminalDefaultsLock.unlock() }
+        return defaults.stringArray(forKey: deletedWorkoutIDsDefaultsKey)?.contains(id.uuidString) == true
+    }
+
+    static func recordPhoneFinalization(_ workout: Workout, at date: Date = Date(), defaults: UserDefaults = .appGroup) {
+        guard let id = workout.uuid, !workout.isImported,
+              phoneFinalizationDate(id, defaults: defaults) == nil else { return }
+        var values: [String: [String: String]] = [:]
+        for exercise in workout.workoutExercises?.array as? [WorkoutExercise] ?? [] {
+            for set in exercise.workoutSets?.array as? [WorkoutSet] ?? [] where set.isCompleted {
+                if let setID = set.uuid { values[setID.uuidString] = finalizationValues(for: set) }
+            }
+        }
+        recordPhoneFinalization(id, at: date, defaults: defaults, setValues: values)
+    }
+
+    static func recordPhoneFinalization(_ id: UUID, at date: Date = Date(), defaults: UserDefaults = .appGroup,
+                                        setValues: [String: [String: String]]? = nil) {
+        terminalDefaultsLock.lock()
+        defer { terminalDefaultsLock.unlock() }
+        var dates = defaults.dictionary(forKey: finalizationDatesDefaultsKey) as? [String: Date] ?? [:]
+        guard dates[id.uuidString] == nil else { return }
+        dates[id.uuidString] = date
+        let retained = Set(dates.keys.sorted {
+            let first = dates[$0]!, second = dates[$1]!
+            return first == second ? $0 < $1 : first > second
+        }.prefix(50))
+        var baselines = defaults.dictionary(forKey: finalizationValuesDefaultsKey) as? [String: [String: [String: String]]] ?? [:]
+        if let setValues { baselines[id.uuidString] = setValues }
+        baselines = baselines.filter { retained.contains($0.key) }
+        if !baselines.isEmpty || defaults.object(forKey: finalizationValuesDefaultsKey) != nil {
+            defaults.set(baselines, forKey: finalizationValuesDefaultsKey)
+        }
+        defaults.set(Dictionary(uniqueKeysWithValues: retained.map { ($0, dates[$0]!) }),
+                     forKey: finalizationDatesDefaultsKey)
+    }
+
+    /// Canonical model values, including distinct nil tokens. This is storage
+    /// metadata, never a localized display value or a preference notification.
+    private static func finalizationValues(for set: WorkoutSet) -> [String: String] {
+        func token<T>(_ value: T?) -> String { value.map { "1" + String(describing: $0) } ?? "0" }
+        return ["weight": token(set.weight?.doubleValue), "reps": token(set.repetitions?.intValue),
+                "rpe": token(set.rpeValue), "tag": token(set.tagValue?.rawValue),
+                "duration": token(set.durationValue), "distance": token(set.distanceValue),
+                "comment": token(set.comment), "minTargetReps": token(set.minTargetRepetitionsValue),
+                "maxTargetReps": token(set.maxTargetRepetitionsValue)]
+    }
+
+    static func phoneFinalizationDate(_ id: UUID, defaults: UserDefaults = .appGroup) -> Date? {
+        terminalDefaultsLock.lock()
+        defer { terminalDefaultsLock.unlock() }
+        return defaults.dictionary(forKey: finalizationDatesDefaultsKey)?[id.uuidString] as? Date
+    }
+
+    static func removingWorkoutSnapshot(_ id: UUID, from context: [String: Any]) -> [String: Any] {
+        guard let data = context[PayloadKey.workoutSnapshot] as? Data,
+              WatchWorkoutWire.decode(WatchWorkoutSnapshot.self, from: data)?.workoutID == id else { return context }
+        var context = context
+        context.removeValue(forKey: PayloadKey.workoutSnapshot)
+        return context
+    }
+
+    private func retireSnapshotDelivery(workoutID: UUID) {
+        Self.recordPhoneFinalization(workoutID)
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.retireSnapshotDelivery(workoutID: workoutID) }
+            return
+        }
+        if pendingSnapshot?.workoutID == workoutID { pendingSnapshot = nil }
+        if currentWatchWorkoutUuid == workoutID {
+            pendingSnapshotBuild?.cancel()
+            pendingSnapshotBuild = nil
+            pendingWatchAdoption = false
+        }
+        connectivityQueue.async {
+            self.cancelOutstandingTransfers(marker: Self.snapshotTransferMarker, workoutID: workoutID)
+            self.lastSentSnapshotContent = nil
+            guard self.isActivated else { return }
+            let context = Self.removingWorkoutSnapshot(workoutID, from: self.applicationContextIncludingPreferences([:]))
+            do { try self.updateApplicationContextIfChanged(context) }
+            catch {
+                os_log("Could not clear ended Watch snapshot: %@", log: .watch, type: .error, error.localizedDescription)
+            }
+        }
+    }
+
     struct DeferredWatchEventEffects {
         let perform: () -> Void
 
@@ -377,6 +710,10 @@ extension WatchConnectionManager {
 
     private func handleWorkoutEvent(_ event: WatchWorkoutEvent,
                                     replyHandler: (([String: Any]) -> Void)?) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.handleWorkoutEvent(event, replyHandler: replyHandler) }
+            return
+        }
         guard event.schemaVersion <= WatchWorkoutWire.schemaVersion else {
             os_log("Ignoring unsupported Watch workout event version=%d", log: .watch, type: .error, event.schemaVersion)
             replyHandler?([:])
@@ -385,6 +722,9 @@ extension WatchConnectionManager {
 
         let context = WorkoutDataStorage.shared.persistentContainer.viewContext
         context.perform {
+            // Both devices advance the same logical clock. After an offline
+            // Watch burst, a phone response must be newer than that projection.
+            self.lastSnapshotRevision = max(self.lastSnapshotRevision, event.snapshot?.revision ?? 0)
             if self.eventLedger.recentEventIDs.contains(event.id) {
                 self.acknowledge(eventID: event.id, replyHandler: replyHandler)
                 return
@@ -413,6 +753,13 @@ extension WatchConnectionManager {
                     return
                 }
 
+                if Self.wasDeletedOnPhone(event.workoutID) {
+                    try self.removeDeferredWorkout(event.workoutID)
+                    self.recordProcessed(event, fieldKey: fieldKey)
+                    self.acknowledge(eventID: event.id, replyHandler: replyHandler)
+                    return
+                }
+
                 guard let workout = try self.resolveWorkout(for: event, in: context) else {
                     if event.kind == .workoutDiscarded {
                         try self.removeDeferredWorkout(event.workoutID)
@@ -420,14 +767,19 @@ extension WatchConnectionManager {
                         self.acknowledge(eventID: event.id, replyHandler: replyHandler)
                         return
                     }
-                    if let snapshot = event.snapshot, !snapshot.isFinishedRecord,
-                       try context.fetch(Workout.currentWorkoutFetchRequest).contains(where: {
-                           $0.uuid != event.workoutID
-                       }) {
-                        try self.persistDeferredWorkout(snapshot)
-                        self.recordProcessed(event, fieldKey: fieldKey)
-                        self.acknowledge(eventID: event.id, replyHandler: replyHandler)
-                        return
+                    if let snapshot = event.snapshot, !snapshot.isFinishedRecord {
+                        let hasPhoneCurrent = try context.fetch(Workout.currentWorkoutFetchRequest).contains {
+                            $0.uuid != event.workoutID
+                        }
+                        let wasDeferred = try self.readDeferredWorkouts().snapshots[event.workoutID.uuidString] != nil
+                        if hasPhoneCurrent || wasDeferred {
+                            // Keep updating the handoff even if the phone's
+                            // competing workout ended before the user opened it.
+                            try self.persistDeferredWorkout(snapshot)
+                            self.recordProcessed(event, fieldKey: fieldKey)
+                            self.acknowledge(eventID: event.id, replyHandler: replyHandler)
+                            return
+                        }
                     }
                     // The workout may have been removed on the phone while the
                     // watch was offline. Acknowledge so it does not retry forever.
@@ -443,7 +795,14 @@ extension WatchConnectionManager {
                     },
                     mutation: { try self.applyWatchEventModelMutation(event, to: workout, in: context) },
                     didPersist: {
-                        if event.kind == .workoutFinished || event.kind == .workoutDiscarded {
+                        if !workout.isDeleted {
+                            self.persistRoutineNoteLinks(from: event.snapshot, to: workout)
+                        }
+                        if event.kind == .workoutCreated, workout.isCurrentWorkout {
+                            self.currentWatchWorkoutUuid = workout.uuid
+                        }
+                        if event.kind == .workoutFinished || event.kind == .workoutDiscarded ||
+                            event.snapshot?.isFinishedRecord == true || workout.isCurrentWorkout {
                             try? self.removeDeferredWorkout(event.workoutID)
                         }
                         self.recordProcessed(event, fieldKey: fieldKey)
@@ -454,7 +813,7 @@ extension WatchConnectionManager {
                 if event.kind != .workoutDiscarded,
                    !workout.isDeleted,
                    workout.isCurrentWorkout {
-                    self.sendWorkoutSnapshot(self.makeSnapshot(for: workout))
+                    self.syncCurrentWorkoutSnapshot()
                 }
             } catch {
                 os_log("Could not apply Watch workout event %@: %@", log: .watch, type: .error,
@@ -466,11 +825,13 @@ extension WatchConnectionManager {
     }
 
     func resolveWorkout(for event: WatchWorkoutEvent,
-                        in context: NSManagedObjectContext) throws -> Workout? {
+                        in context: NSManagedObjectContext,
+                        tombstoneDefaults: UserDefaults = .appGroup) throws -> Workout? {
         let request: NSFetchRequest<Workout> = Workout.fetchRequest()
         request.fetchLimit = 1
         request.predicate = NSPredicate(format: "uuid == %@", event.workoutID as NSUUID)
         if let workout = try context.fetch(request).first { return workout }
+        guard !Self.wasDeletedOnPhone(event.workoutID, defaults: tombstoneDefaults) else { return nil }
         guard let snapshot = event.snapshot,
               event.kind == .workoutCreated || event.kind == .workoutFinished ||
                 (event.kind == .workoutFailed && snapshot.isFinishedRecord) else { return nil }
@@ -483,9 +844,10 @@ extension WatchConnectionManager {
         workout.uuid = event.workoutID
         workout.importSource = nil
         workout.isCurrentWorkout = !snapshot.isFinishedRecord
-        workout.healthExportState = "watch"
+        // Replayed offline history must not take the phone's current preference.
+        workout.healthExportState = snapshot.isHealthTestWorkout ||
+            (workout.isCurrentWorkout && SettingsStore.shared.healthTestMode) ? "test" : "watch"
         applyComplete(snapshot, to: workout, in: context)
-        if workout.isCurrentWorkout { currentWatchWorkoutUuid = workout.uuid }
         return workout
     }
 
@@ -534,24 +896,119 @@ extension WatchConnectionManager {
         }
         store.snapshots[key] = compact
         try writeDeferredWorkouts(store)
+        refreshWatchWorkoutAwaitingOpen()
     }
 
     private func removeDeferredWorkout(_ workoutID: UUID) throws {
         var store = try readDeferredWorkouts()
         guard store.snapshots.removeValue(forKey: workoutID.uuidString) != nil else { return }
         try writeDeferredWorkouts(store)
+        refreshWatchWorkoutAwaitingOpen()
+    }
+
+    private func refreshWatchWorkoutAwaitingOpen() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.refreshWatchWorkoutAwaitingOpen() }
+            return
+        }
+        watchWorkoutAwaitingOpen = (try? readDeferredWorkouts())?.snapshots.values
+            .filter { !$0.isFinishedRecord }.max { $0.updatedAt < $1.updatedAt }
+    }
+
+    func canReplaceEmptyPhoneWorkout(_ workout: Workout?) -> Bool {
+        guard let workout else { return true }
+        guard !workout.isImported else { return false }
+        return (workout.workoutExercises?.count ?? 0) == 0 && workout.workoutRoutine == nil &&
+            (workout.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) &&
+            (workout.comment?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
+    /// Explicit handoff of the already-running Watch identity. A phone workout
+    /// with any exercises, title or notes must be finished/discarded separately.
+    @discardableResult
+    func openWatchWorkout(in context: NSManagedObjectContext, snapshot: WatchWorkoutSnapshot? = nil) throws -> Workout {
+        guard let source = snapshot ?? watchWorkoutAwaitingOpen, !source.isFinishedRecord else {
+            throw GenericError(description: "The Watch workout is no longer available.")
+        }
+        let workout = try persistWatchWorkoutForOpening(source, in: context)
+        currentWatchWorkoutUuid = workout.uuid
+        recordWatchOrigin(source.workoutID)
+        persistEventLedger()
+        lastSnapshotRevision = max(lastSnapshotRevision, source.revision)
+        try? removeDeferredWorkout(source.workoutID)
+        RestTimerStore.shared.applyWatchUpdate(end: source.restTimerEnd, pausedRemaining: source.pausedRestRemaining)
+        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        syncCurrentWorkoutSnapshot()
+        return workout
+    }
+
+    func persistWatchWorkoutForOpening(_ source: WatchWorkoutSnapshot, in context: NSManagedObjectContext,
+                                      save: (() throws -> Void)? = nil) throws -> Workout {
+        guard !source.isFinishedRecord, source.schemaVersion <= WatchWorkoutWire.schemaVersion else {
+            throw GenericError(description: "The Watch workout is no longer available.")
+        }
+        let current = try context.fetch(Workout.currentWorkoutFetchRequest)
+        guard current.allSatisfy({ $0.uuid == source.workoutID || canReplaceEmptyPhoneWorkout($0) }) else {
+            throw GenericError(description: "Finish the workout on this iPhone before opening your Watch workout.")
+        }
+        let event = WatchWorkoutEvent(workoutID: source.workoutID, sequence: 0,
+                                      kind: .workoutCreated, snapshot: source)
+        let workout = try context.persistMutation(save: { try save?() ?? context.save() }) {
+            for placeholder in current where placeholder.uuid != source.workoutID { context.delete(placeholder) }
+            context.processPendingChanges()
+            guard let workout = try resolveWorkout(for: event, in: context), workout.isCurrentWorkout else {
+                throw GenericError(description: "The Watch workout has already ended.")
+            }
+            return workout
+        }
+        persistRoutineNoteLinks(from: source, to: workout)
+        return workout
+    }
+
+    /// Sidecar links are installed only after the Watch projection saves successfully.
+    private func persistRoutineNoteLinks(from snapshot: WatchWorkoutSnapshot?, to workout: Workout) {
+        if let snapshot, let context = workout.managedObjectContext {
+            let logged = Dictionary(uniqueKeysWithValues: orderedExercises(in: workout).compactMap { exercise in
+                exercise.uuid.map { ($0, exercise) }
+            })
+            for source in snapshot.exercises {
+                guard let sourceID = source.routineExerciseID,
+                      let exercise = logged[source.id],
+                      let exerciseID = exercise.exerciseUuid,
+                      exerciseID == source.exerciseUuid else { continue }
+                let request: NSFetchRequest<WorkoutRoutineExercise> = WorkoutRoutineExercise.fetchRequest()
+                request.fetchLimit = 1
+                request.predicate = NSPredicate(format: "uuid == %@ AND exerciseUuid == %@",
+                                                sourceID as NSUUID, exerciseID as NSUUID)
+                guard (try? context.fetch(request))?.first != nil else { continue }
+                WorkoutRoutineNoteLinks.setRoutineExerciseID(sourceID, for: source.id)
+            }
+        }
+        workout.persistRoutineNoteLinks()
     }
 
     func applyWatchEventModelMutation(
         _ event: WatchWorkoutEvent,
         to workout: Workout,
         in context: NSManagedObjectContext,
-        healthManager: HealthManager = .shared
+        healthManager: HealthManager = .shared,
+        finalizationDefaults: UserDefaults = .appGroup
     ) throws -> DeferredWatchEventEffects {
+        if workout.isCurrentWorkout, !workout.isImported,
+           event.snapshot?.isHealthTestWorkout == true {
+            workout.healthExportState = "test"
+        }
         switch event.kind {
         case .setUpdated:
-            guard acceptsWatchEdits(workout),
-                  let set = workoutSet(with: event.setID, in: workout) else { return .none }
+            guard let set = workoutSet(with: event.setID, in: workout) else { return .none }
+            if !acceptsWatchEdits(workout) {
+                let fields = delayedWatchValueFields(["weight", "reps", "rpe"], event: event,
+                    set: set, workout: workout, defaults: finalizationDefaults)
+                apply(weight: event.weight, reps: event.reps, rpe: event.rpe,
+                      unit: event.weightUnit, fields: fields, to: set)
+                return delayedWatchValueEffects(workoutID: event.workoutID,
+                    updates: delayedValueUpdate(for: set, fields: fields), defaults: finalizationDefaults)
+            }
             apply(weight: event.weight, reps: event.reps, rpe: event.rpe,
                   unit: event.weightUnit, to: set)
             guard workout.isCurrentWorkout else { return .none }
@@ -573,7 +1030,7 @@ extension WatchConnectionManager {
                 return DeferredWatchEventEffects {
                     // This applies one atomic timer snapshot and intentionally
                     // does not echo a Watch-originated timer back to the Watch.
-                    RestTimerStore.shared.applyWatchUpdate(end: restTimerEnd)
+                    RestTimerStore.shared.applyWatchUpdate(end: restTimerEnd, startedAt: event.createdAt)
                     WorkoutLiveActivityManager.shared.setCompleted(
                         set,
                         in: workoutExercise,
@@ -610,6 +1067,7 @@ extension WatchConnectionManager {
                 applyWatchCompletion(event, to: workout, state: "watch")
             }
             return DeferredWatchEventEffects { [weak self] in
+                self?.retireSnapshotDelivery(workoutID: event.workoutID)
                 if wasCurrent {
                     self?.currentWatchWorkoutUuid = nil
                     RestTimerStore.shared.cancel()
@@ -624,6 +1082,7 @@ extension WatchConnectionManager {
             let workoutID = workout.uuid
             context.delete(workout)
             return DeferredWatchEventEffects { [weak self] in
+                self?.retireSnapshotDelivery(workoutID: event.workoutID)
                 if wasCurrent {
                     self?.currentWatchWorkoutUuid = nil
                     RestTimerStore.shared.cancel()
@@ -640,14 +1099,23 @@ extension WatchConnectionManager {
             let wasCurrent = workout.isCurrentWorkout
             if event.endDate != nil || event.snapshot?.isFinishedRecord == true {
                 if workout.isCurrentWorkout || isWatchOwned(workout) {
-                    applyWatchCompletion(event, to: workout, state: "pending", includeEventTitle: false)
+                    if event.fieldChanges != nil {
+                        if workout.isCurrentWorkout {
+                            applyModernWatchCompletion(event, to: workout, state: "pending")
+                        } else {
+                            workout.healthExportState = watchCompletionExportState(event, workout: workout, fallback: "pending")
+                        }
+                    } else {
+                        applyWatchCompletion(event, to: workout, state: "pending", includeEventTitle: false)
+                    }
                 } else if workout.healthExportEligibility == .eligible,
                           workout.healthExportState == "watch" {
-                    workout.healthExportState = "pending"
+                    workout.healthExportState = watchCompletionExportState(event, workout: workout, fallback: "pending")
                 }
             }
-            let shouldClearWatchWorkout = workout.isCurrentWorkout || workout.healthExportState == "pending"
+            let shouldClearWatchWorkout = workout.isCurrentWorkout || workout.healthExportState == "pending" || workout.healthExportState == "test"
             return DeferredWatchEventEffects { [weak self] in
+                if !workout.isCurrentWorkout { self?.retireSnapshotDelivery(workoutID: event.workoutID) }
                 if shouldClearWatchWorkout { self?.currentWatchWorkoutUuid = nil }
                 if wasCurrent {
                     RestTimerStore.shared.cancel()
@@ -697,8 +1165,15 @@ extension WatchConnectionManager {
             }
 
         case .setTagChanged:
-            guard acceptsWatchEdits(workout),
-                  let set = workoutSet(with: event.setID, in: workout) else { return .none }
+            guard let set = workoutSet(with: event.setID, in: workout) else { return .none }
+            if !acceptsWatchEdits(workout) {
+                let fields = delayedWatchValueFields(["tag"], event: event, set: set,
+                    workout: workout, defaults: finalizationDefaults)
+                guard fields.contains("tag") else { return .none }
+                set.tagValue = event.tag.flatMap { WorkoutSetTag(rawValue: $0) }
+                return delayedWatchValueEffects(workoutID: event.workoutID,
+                    updates: delayedValueUpdate(for: set, fields: fields), defaults: finalizationDefaults)
+            }
             set.tagValue = event.tag.flatMap { WorkoutSetTag(rawValue: $0) }
             guard workout.isCurrentWorkout else { return .none }
             return DeferredWatchEventEffects {
@@ -731,9 +1206,19 @@ extension WatchConnectionManager {
 
         case .workoutCreated:
             guard acceptsWatchEdits(workout) else { return .none }
+            if !workout.isImported && workout.isCurrentWorkout && SettingsStore.shared.healthTestMode {
+                workout.healthExportState = "test"
+            }
             if let snapshot = event.snapshot {
-                if isWatchOwned(workout) {
+                if workout.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+                    workout.title = snapshot.title
+                }
+                // A matching placeholder (including a test workout) has no
+                // local graph to protect. Seed its title, dates and full graph.
+                if orderedExercises(in: workout).isEmpty {
                     applyComplete(snapshot, to: workout, in: context)
+                } else if let changes = event.fieldChanges {
+                    applyMaskedStructure(snapshot, changes: changes, to: workout, in: context)
                 } else {
                     applyNonDestructiveStructure(snapshot, to: workout, in: context)
                 }
@@ -743,7 +1228,31 @@ extension WatchConnectionManager {
                 : .none
 
         case .workoutStructureUpdated:
-            guard acceptsWatchEdits(workout), let snapshot = event.snapshot else { return .none }
+            guard let snapshot = event.snapshot else { return .none }
+            if !acceptsWatchEdits(workout) {
+                // Offline value corrections may precede the phone's finish.
+                // Apply only masked values to retained completed sets; never
+                // recreate removed rows or reopen a completed workout.
+                if let changes = event.fieldChanges {
+                    let valueFields: Set<String> = ["weight", "reps", "rpe", "tag", "duration", "distance",
+                                                    "comment", "minTargetReps", "maxTargetReps"]
+                    var updates: [String: [String: String]] = [:]
+                    for exercise in snapshot.exercises {
+                        for source in exercise.sets {
+                            guard let set = workoutSet(with: source.id, in: workout) else { continue }
+                            let fields = delayedWatchValueFields(
+                                Set(changes.sets[source.id.uuidString] ?? []).intersection(valueFields),
+                                event: event, set: set, workout: workout, defaults: finalizationDefaults)
+                            applyMaskedSet(source, fields: fields, unit: snapshot.weightUnit,
+                                           updatedAt: snapshot.updatedAt, to: set)
+                            updates.merge(delayedValueUpdate(for: set, fields: fields)) { _, new in new }
+                        }
+                    }
+                    return delayedWatchValueEffects(workoutID: event.workoutID, updates: updates,
+                        defaults: finalizationDefaults)
+                }
+                return .none
+            }
             // Only remove IDs explicitly deleted on the Watch. Missing IDs alone
             // can also mean the phone added something while the Watch was offline.
             let removedExercises = Set(event.removedExerciseIDs ?? [])
@@ -774,11 +1283,58 @@ extension WatchConnectionManager {
     }
 
     private func isWatchOwned(_ workout: Workout) -> Bool {
-        workout.healthExportState == "watch" && workout.importSource == nil
+        // Test provenance is also set on phone-started workouts. It cannot
+        // authorize replacing an active phone graph with a Watch projection.
+        (workout.healthExportState == "watch" ||
+            (workout.healthExportState == "test" && !workout.isCurrentWorkout)) && workout.importSource == nil
     }
 
     private func acceptsWatchEdits(_ workout: Workout) -> Bool {
         workout.isCurrentWorkout || (isWatchOwned(workout) && workout.end == nil)
+    }
+
+    private func delayedWatchValueFields(_ fields: Set<String>, event: WatchWorkoutEvent,
+                                         set: WorkoutSet, workout: Workout,
+                                         defaults: UserDefaults) -> Set<String> {
+        guard !fields.isEmpty, !workout.isImported, !workout.isCurrentWorkout, set.isCompleted,
+              let end = Self.phoneFinalizationDate(event.workoutID, defaults: defaults) ?? workout.end,
+              event.createdAt <= end, event.snapshot?.isFinishedRecord != true,
+              let setID = set.uuid else { return [] }
+        Self.terminalDefaultsLock.lock()
+        let baselines = defaults.dictionary(forKey: Self.finalizationValuesDefaultsKey) as? [String: [String: [String: String]]]
+        let baseline = baselines?[event.workoutID.uuidString]?[setID.uuidString]
+        Self.terminalDefaultsLock.unlock()
+        // Older finalized records without a baseline cannot prove that the
+        // phone field is unchanged. Never overwrite an unprovable correction.
+        guard let baseline else { return [] }
+        let current = Self.finalizationValues(for: set)
+        return fields.filter { baseline[$0] != nil && baseline[$0] == current[$0] }
+    }
+
+    private func delayedValueUpdate(for set: WorkoutSet, fields: Set<String>) -> [String: [String: String]] {
+        guard let id = set.uuid, !fields.isEmpty else { return [:] }
+        return [id.uuidString: Self.finalizationValues(for: set).filter { fields.contains($0.key) }]
+    }
+
+    /// Advance only accepted Watch fields, after the model save succeeds, so a
+    /// later queued patch can follow them without unprotecting phone changes.
+    private func delayedWatchValueEffects(workoutID: UUID, updates: [String: [String: String]],
+                                          defaults: UserDefaults) -> DeferredWatchEventEffects {
+        guard !updates.isEmpty else { return .none }
+        return DeferredWatchEventEffects {
+            Self.terminalDefaultsLock.lock()
+            defer { Self.terminalDefaultsLock.unlock() }
+            var baselines = defaults.dictionary(forKey: Self.finalizationValuesDefaultsKey) as? [String: [String: [String: String]]] ?? [:]
+            guard var workout = baselines[workoutID.uuidString] else { return }
+            let previous = workout
+            for (id, values) in updates {
+                guard workout[id] != nil else { continue }
+                workout[id]?.merge(values) { _, new in new }
+            }
+            guard workout != previous else { return }
+            baselines[workoutID.uuidString] = workout
+            defaults.set(baselines, forKey: Self.finalizationValuesDefaultsKey)
+        }
     }
 
     private func addExercise(from event: WatchWorkoutEvent,
@@ -1033,15 +1589,8 @@ extension WatchConnectionManager {
     private func applyMaskedSet(_ watchSet: WatchWorkoutSet, fields: Set<String>,
                                 unit: WatchWorkoutWeightUnit?, updatedAt: Date,
                                 to set: WorkoutSet) {
-        if fields.contains("weight") {
-            set.weight = watchSet.weight.map { NSNumber(value: canonicalWeight($0, unit: unit)) }
-        }
-        if fields.contains("reps") {
-            set.repetitions = watchSet.reps.map {
-                NSNumber(value: min(max($0, 0), Int(WorkoutSet.MAX_REPETITIONS)))
-            }
-        }
-        if fields.contains("rpe") { set.rpeValue = watchSet.rpe }
+        apply(weight: watchSet.weight, reps: watchSet.reps, rpe: watchSet.rpe,
+              unit: unit, fields: fields, to: set)
         if fields.contains("completed") {
             set.isCompleted = watchSet.completed
             set.completedAt = watchSet.completed ? (set.completedAt ?? updatedAt) : nil
@@ -1123,11 +1672,17 @@ extension WatchConnectionManager {
             plan.addToWorkoutRoutines(routine)
         }
         (routine.workoutRoutineExercises?.array as? [WorkoutRoutineExercise])?.forEach(context.delete)
+        var tracking = SetTrackingPreferences()
+        let updatedAt = event.createdAt.timeIntervalSince1970
         let exercises = saved.exercises.sorted(by: { $0.order < $1.order }).map { watchExercise -> WorkoutRoutineExercise in
+            if let id = watchExercise.exerciseUuid,
+               let type = watchExercise.trackingType.flatMap(SetTrackingType.init(rawValue:)) {
+                tracking.overrides[id.uuidString] = .init(type: type, updatedAt: updatedAt)
+            }
             let exercise = WorkoutRoutineExercise.create(context: context)
             exercise.uuid = watchExercise.id
             exercise.exerciseUuid = watchExercise.exerciseUuid
-            exercise.comment = watchExercise.comment
+            exercise.comment = watchExercise.routineNote ?? watchExercise.comment
             exercise.restTimerDurationValue = watchExercise.restTimerDuration
             exercise.supersetUuid = watchExercise.supersetID
             let sets = watchExercise.sets.sorted(by: { $0.order < $1.order }).map { watchSet -> WorkoutRoutineSet in
@@ -1139,20 +1694,39 @@ extension WatchConnectionManager {
                 set.tagValue = watchSet.tag.flatMap { WorkoutSetTag(rawValue: $0) }
                 set.comment = watchSet.comment
                 set.durationValue = watchSet.duration
+                // Include zero as a timestamped removal when a target is cleared.
+                let distance = watchSet.distance.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 0
+                tracking.routineDistances[watchSet.id.uuidString] = .init(meters: distance, updatedAt: updatedAt)
                 return set
             }
             exercise.workoutRoutineSets = NSOrderedSet(array: sets)
             return exercise
         }
         routine.workoutRoutineExercises = NSOrderedSet(array: exercises)
-        return .none
+        // UserDefaults isn't part of the Core Data undo transaction. Publish
+        // targets only after the durable event save, before acknowledging it.
+        return DeferredWatchEventEffects {
+            SyncedPreferenceStorage.lock.lock()
+            defer { SyncedPreferenceStorage.lock.unlock() }
+            let stored = SetTrackingPreferences.load()
+            let merged = stored.merging(tracking)
+            // A Watch event is a remote apply, never a new local preference edit.
+            merged.save()
+        }
     }
 
     private func apply(weight: Double?, reps: Int?, rpe: Double?,
-                       unit: WatchWorkoutWeightUnit?, to set: WorkoutSet) {
-        set.weight = weight.map { NSNumber(value: canonicalWeight($0, unit: unit)) }
-        set.repetitions = reps.map { NSNumber(value: min(max($0, 0), Int(WorkoutSet.MAX_REPETITIONS))) }
-        set.rpeValue = rpe
+                       unit: WatchWorkoutWeightUnit?,
+                       fields: Set<String> = ["weight", "reps", "rpe"], to set: WorkoutSet) {
+        // A rejected field must remain untouched; nil clears only an accepted
+        // field. Keep direct updates and masked snapshots on the same writer.
+        if fields.contains("weight") {
+            set.weight = weight.map { NSNumber(value: canonicalWeight($0, unit: unit)) }
+        }
+        if fields.contains("reps") {
+            set.repetitions = reps.map { NSNumber(value: min(max($0, 0), Int(WorkoutSet.MAX_REPETITIONS))) }
+        }
+        if fields.contains("rpe") { set.rpeValue = rpe }
     }
 
     private func orderedExercises(in workout: Workout) -> [WorkoutExercise] {
@@ -1205,7 +1779,7 @@ extension WatchConnectionManager {
         workout.deleteExercisesWhereAllSetsAreUncompleted()
         workout.deleteUncompletedSets()
         workout.isCurrentWorkout = false
-        workout.healthExportState = workout.healthExportEligibility == .eligible ? state : nil
+        workout.healthExportState = watchCompletionExportState(event, workout: workout, fallback: state)
     }
 
     private func applyModernWatchCompletion(_ event: WatchWorkoutEvent, to workout: Workout,
@@ -1215,8 +1789,19 @@ extension WatchConnectionManager {
         if let effort = event.sessionEffort ?? event.snapshot?.sessionEffort {
             workout.sessionEffortValue = effort
         }
+        workout.deleteExercisesWhereAllSetsAreUncompleted()
+        workout.deleteUncompletedSets()
         workout.isCurrentWorkout = false
-        workout.healthExportState = workout.healthExportEligibility == .eligible ? state : nil
+        workout.healthExportState = watchCompletionExportState(event, workout: workout, fallback: state)
+    }
+
+    private func watchCompletionExportState(_ event: WatchWorkoutEvent, workout: Workout,
+                                            fallback: String) -> String? {
+        guard !workout.isImported else { return nil }
+        if workout.healthExportState == "test" || event.snapshot?.isHealthTestWorkout == true {
+            return "test"
+        }
+        return workout.healthExportEligibility == .eligible ? fallback : nil
     }
 
     private func sequenceFieldKey(for event: WatchWorkoutEvent) -> String {
@@ -1249,6 +1834,11 @@ extension WatchConnectionManager {
         eventLedger.latestSequenceByField[fieldKey] = max(
             event.sequence,
             eventLedger.latestSequenceByField[fieldKey] ?? Int64.min)
+        let workoutKey = event.workoutID.uuidString
+        var sequences = eventLedger.latestSequenceByWorkout ?? [:]
+        sequences[workoutKey] = max(sequences[workoutKey] ?? 0, event.sequence)
+        eventLedger.latestSequenceByWorkout = sequences
+        if event.kind == .workoutCreated || event.snapshot?.startedOnWatch == true { recordWatchOrigin(event.workoutID) }
         if eventLedger.latestSequenceByField.count > 2_048 {
             let keysToRemove = Array(eventLedger.latestSequenceByField.keys.prefix(
                 eventLedger.latestSequenceByField.count - 2_048))
@@ -1256,6 +1846,18 @@ extension WatchConnectionManager {
                 eventLedger.latestSequenceByField.removeValue(forKey: key)
             }
         }
+        persistEventLedger()
+    }
+
+    private func recordWatchOrigin(_ workoutID: UUID) {
+        var origins = eventLedger.watchStartedWorkoutIDs ?? []
+        if origins.insert(workoutID).inserted {
+            eventLedger.watchStartedWorkoutIDs = origins
+            publishConnectionStatus()
+        }
+    }
+
+    private func persistEventLedger() {
         if let data = WatchWorkoutWire.encode(eventLedger) {
             UserDefaults.standard.set(data, forKey: Self.eventLedgerDefaultsKey)
         }
@@ -1272,22 +1874,52 @@ extension WatchConnectionManager {
             replyHandler(payload)
             return
         }
-        guard isActivated else { return }
-        session.transferUserInfo(payload)
-        if isReachable {
-            session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+        connectivityQueue.async {
+            guard self.isActivated else {
+                self.pendingEventAcknowledgements.insert(eventID)
+                return
+            }
+            self.session.transferUserInfo(payload)
+            if self.isReachable {
+                self.session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+            }
         }
     }
 }
 
 extension WatchConnectionManager {
+    func wasStartedOnWatch(_ workout: Workout) -> Bool {
+        guard !workout.isImported, let id = workout.uuid else { return false }
+        return eventLedger.watchStartedWorkoutIDs?.contains(id) == true ||
+            (workout.isCurrentWorkout && workout.healthExportState == "watch")
+    }
+
     /// Publishes the complete current workout through application context (the
     /// durable latest value) and an immediate message when the Watch is reachable.
-    func syncCurrentWorkoutSnapshot() {
-        guard SettingsStore.shared.watchCompanion,
-              let currentWatchWorkoutUuid = currentWatchWorkoutUuid else { return }
+    func syncCurrentWorkoutSnapshot(allowWatchAdoption: Bool = false) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.syncCurrentWorkoutSnapshot(allowWatchAdoption: allowWatchAdoption) }
+            return
+        }
+        pendingWatchAdoption = pendingWatchAdoption || allowWatchAdoption
+        pendingSnapshotBuild?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let allowAdoption = self.pendingWatchAdoption
+            self.pendingWatchAdoption = false
+            self.pendingSnapshotBuild = nil
+            self.publishCurrentWorkoutSnapshot(allowWatchAdoption: allowAdoption)
+        }
+        pendingSnapshotBuild = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
+    }
+
+    private func publishCurrentWorkoutSnapshot(allowWatchAdoption: Bool) {
+        // The preference controls automatic companion startup, not edits to a
+        // workout the user has already started on either device.
+        guard allowWatchAdoption || currentWatchWorkoutUuid != nil else { return }
         if (try? readDeferredWorkouts().snapshots.values.contains {
-            $0.endDate == nil && $0.workoutID != currentWatchWorkoutUuid
+            !$0.isFinishedRecord && $0.workoutID != currentWatchWorkoutUuid
         }) == true {
             // The Watch owns a different active projection that was deferred
             // to preserve the phone's workout. Never overwrite it with the
@@ -1299,7 +1931,9 @@ extension WatchConnectionManager {
             do {
                 guard let workout = try context.fetch(Workout.currentWorkoutFetchRequest).first,
                       !workout.isImported,
-                      workout.uuid == currentWatchWorkoutUuid else { return }
+                      let workoutID = workout.uuid,
+                      allowWatchAdoption || self.currentWatchWorkoutUuid == workoutID else { return }
+                if allowWatchAdoption { self.currentWatchWorkoutUuid = workoutID }
                 self.sendWorkoutSnapshot(self.makeSnapshot(for: workout))
             } catch {
                 os_log("Could not create Watch workout snapshot: %@", log: .watch, type: .error,
@@ -1308,7 +1942,7 @@ extension WatchConnectionManager {
         }
     }
 
-    private func makeSnapshot(for workout: Workout) -> WatchWorkoutSnapshot {
+    func makeSnapshot(for workout: Workout, after minimumRevision: Int64 = 0) -> WatchWorkoutSnapshot {
         let now = Date()
         let workoutID = workout.uuid ?? UUID()
         if workout.uuid == nil { workout.uuid = workoutID }
@@ -1325,24 +1959,18 @@ extension WatchConnectionManager {
             let exerciseID = workoutExercise.uuid ?? UUID()
             if workoutExercise.uuid == nil { workoutExercise.uuid = exerciseID }
 
-            let previousExercise = (try? workoutExercise.managedObjectContext?
-                .fetch(workoutExercise.historyFetchRequest).first) ?? nil
-            let previousSets = previousExercise?.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
             let sets = workoutExercise.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
             let watchSets = sets.enumerated().map { setIndex, set -> WatchWorkoutSet in
                 let setID = set.uuid ?? UUID()
                 if set.uuid == nil { set.uuid = setID }
-                let previousSet = previousSets.indices.contains(setIndex)
-                    ? previousSets[setIndex]
-                    : previousSets.last
                 return WatchWorkoutSet(
                     id: setID,
                     order: setIndex + 1,
                     weight: displayWeight(set.weight),
                     reps: set.repetitions?.intValue,
                     rpe: set.rpeValue,
-                    previousWeight: displayWeight(previousSet?.weight),
-                    previousReps: previousSet?.repetitions?.intValue,
+                    previousWeight: nil,
+                    previousReps: nil,
                     completed: set.isCompleted,
                     tag: set.tagValue?.rawValue,
                     duration: set.durationValue,
@@ -1361,11 +1989,13 @@ extension WatchConnectionManager {
                                         muscleGroup: catalog?.muscleGroup,
                                         exerciseUuid: workoutExercise.exerciseUuid,
                                         imageURL: catalog?.imageURL?.absoluteString,
-                                        imageData: catalog?.imageURL == nil
-                                            ? catalog.flatMap(WatchExerciseThumbnailEncoder.jpeg(for:))
-                                            : nil,
+                                        imageData: nil,
                                         supersetID: workoutExercise.supersetUuid,
-                                        comment: workoutExercise.comment)
+                                        comment: workoutExercise.comment,
+                                        trackingType: workoutExercise.setTrackingType.rawValue,
+                                        exerciseNote: ExerciseNotes.note(for: workoutExercise.exerciseUuid),
+                                        routineNote: workoutExercise.routineNote,
+                                        routineExerciseID: workoutExercise.routineNoteSource()?.uuid)
         }
 
         let allSets = watchExercises.flatMap(\.sets)
@@ -1380,9 +2010,9 @@ extension WatchConnectionManager {
         let selectedText = allSets.first(where: { $0.id == selectedID })
             .map { $0.displayText(weightUnit: wireWeightUnit) }
 
-        let timestampRevision = Int64(now.timeIntervalSince1970 * 1_000)
-        lastSnapshotRevision = max(lastSnapshotRevision + 1, timestampRevision)
-        return WatchWorkoutSnapshot(
+        lastSnapshotRevision = WatchWorkoutSnapshot.nextRevision(
+            after: max(lastSnapshotRevision, minimumRevision), at: now)
+        var snapshot = WatchWorkoutSnapshot(
             workoutID: workoutID,
             title: workout.displayTitle(in: ExerciseStore.shared.exercises),
             startDate: workout.start ?? now,
@@ -1403,6 +2033,12 @@ extension WatchConnectionManager {
                 ? RestTimerStore.shared.restTimerRemainingTime
                 : nil,
             isFinished: false)
+        snapshot.healthTestMode = workout.healthExportState == "test" || SettingsStore.shared.healthTestMode
+        snapshot.startedOnWatch = wasStartedOnWatch(workout)
+        let key = workoutID.uuidString
+        snapshot.acknowledgedWatchSequence = eventLedger.latestSequenceByWorkout?[key]
+            ?? eventLedger.latestSequenceByField.filter { $0.key.hasPrefix(key + ":") }.values.max() ?? 0
+        return snapshot
     }
 
     func scheduleWorkoutLibrarySync(immediate: Bool = false) {
@@ -1429,7 +2065,8 @@ extension WatchConnectionManager {
         let exerciseCatalog = ExerciseStore.shared.exercises
         let picks = ExerciseStore.shared.shownExercises.map {
             WatchExercisePick(id: $0.uuid, name: $0.title, muscle: $0.muscleGroup,
-                              imageURL: $0.imageURL?.absoluteString)
+                              imageURL: $0.imageURL?.absoluteString,
+                              listed: ExerciseStore.shared.isBrowsable($0) ? nil : false)
         }
         let context = WorkoutDataStorage.shared.persistentContainer.newBackgroundContext()
         context.undoManager = nil
@@ -1488,7 +2125,7 @@ extension WatchConnectionManager {
                     id: sourceSet.uuid ?? UUID(), order: setIndex + 1,
                     weight: weight, reps: nil, rpe: nil, completed: false,
                     tag: sourceSet.tagValue?.rawValue,
-                    duration: sourceSet.durationValue, comment: sourceSet.comment,
+                    duration: sourceSet.durationValue, distance: SetTrackingPreferences.routineDistance(for: sourceSet.uuid), comment: sourceSet.comment,
                     minTargetReps: sourceSet.minRepetitionsValue.map(Int.init),
                     maxTargetReps: sourceSet.maxRepetitionsValue.map(Int.init)))
             }
@@ -1498,7 +2135,10 @@ extension WatchConnectionManager {
                 restTimerDuration: source.restTimerDurationValue,
                 muscleGroup: exercise?.muscleGroup, exerciseUuid: source.exerciseUuid,
                 imageURL: exercise?.imageURL?.absoluteString,
-                supersetID: source.supersetUuid, comment: source.comment))
+                supersetID: source.supersetUuid, comment: nil,
+                trackingType: source.trackingType(catalogExercise: exercise).rawValue,
+                exerciseNote: ExerciseNotes.note(for: source.exerciseUuid),
+                routineNote: source.comment, routineExerciseID: source.uuid))
         }
         return WatchSavedWorkout(id: routine.uuid ?? UUID(), title: routine.displayTitle,
                                  exercises: exercises, weightUnit: weightUnit,
@@ -1534,7 +2174,10 @@ extension WatchConnectionManager {
                 restTimerDuration: source.restTimerDurationValue,
                 muscleGroup: exercise?.muscleGroup, exerciseUuid: source.exerciseUuid,
                 imageURL: exercise?.imageURL?.absoluteString, imageData: nil,
-                supersetID: source.supersetUuid, comment: source.comment))
+                supersetID: source.supersetUuid, comment: source.comment,
+                trackingType: source.trackingType(catalogExercise: exercise).rawValue,
+                exerciseNote: ExerciseNotes.note(for: source.exerciseUuid),
+                routineNote: source.routineNote, routineExerciseID: source.routineNoteSource()?.uuid))
         }
         return WatchWorkoutSnapshot(
             workoutID: workout.uuid ?? UUID(), title: workout.displayTitle(in: catalog),
@@ -1546,18 +2189,27 @@ extension WatchConnectionManager {
     }
 
     private func transferWorkoutLibrary(_ data: Data) {
-        guard isActivated else { return }
-        cancelOutstandingTransfers(marker: Self.libraryTransferMarker)
-        _ = stageTransfer(data, prefix: Self.libraryFilePrefix, metadata: [
-            Self.libraryTransferMarker: true,
-            PayloadKey.workoutLibrary: true,
-            "schemaVersion": WatchWorkoutWire.schemaVersion
-        ])
+        connectivityQueue.async {
+            guard self.isActivated else { return }
+            self.cancelOutstandingTransfers(marker: Self.libraryTransferMarker)
+            _ = self.stageTransfer(data, prefix: Self.libraryFilePrefix, metadata: [
+                Self.libraryTransferMarker: true,
+                PayloadKey.workoutLibrary: true,
+                "schemaVersion": WatchWorkoutWire.schemaVersion
+            ])
+        }
     }
 
-    private func cancelOutstandingTransfers(marker: String) {
+    private func cancelOutstandingTransfers(marker: String, workoutID: UUID? = nil) {
         for transfer in session.outstandingFileTransfers
         where transfer.file.metadata?[marker] as? Bool == true {
+            if let workoutID {
+                let id = (transfer.file.metadata?[PayloadKey.Arg.uuid] as? String).flatMap(UUID.init(uuidString:))
+                    ?? (try? Data(contentsOf: transfer.file.fileURL)).flatMap {
+                        WatchWorkoutWire.decode(WatchWorkoutSnapshot.self, from: $0)?.workoutID
+                    }
+                guard id == workoutID else { continue }
+            }
             transfer.cancel()
         }
     }
@@ -1601,27 +2253,110 @@ extension WatchConnectionManager {
     }
 
     private func sendWorkoutSnapshot(_ snapshot: WatchWorkoutSnapshot) {
+        dispatchPrecondition(condition: .onQueue(.main))
         pendingSnapshot = snapshot
-        guard isActivated,
-              let data = WatchWorkoutWire.encode(snapshot) else { return }
-        cancelOutstandingTransfers(marker: Self.snapshotTransferMarker)
-        if data.count > Self.snapshotMessageLimit {
-            if stageTransfer(data, prefix: Self.snapshotFilePrefix, metadata: [
-                Self.snapshotTransferMarker: true,
-                PayloadKey.workoutSnapshot: true,
-                "schemaVersion": WatchWorkoutWire.schemaVersion
-            ]) {
-                pendingSnapshot = nil
+        let catalog = ExerciseStore.shared.exercises
+        let healthTestModePreference = SettingsStore.shared.healthTestMode
+        connectivityQueue.async {
+            guard self.isActivated else { return }
+            guard Self.phoneFinalizationDate(snapshot.workoutID) == nil,
+                  !Self.wasDeletedOnPhone(snapshot.workoutID) else {
+                self.clearPendingSnapshot(snapshot)
+                return
             }
-            return
+            var snapshot = snapshot
+            // History lookups and PDF/JPEG rendering must not run on the view
+            // context/main queue for each workout message.
+            let historyContext = WorkoutDataStorage.shared.persistentContainer.newBackgroundContext()
+            historyContext.performAndWait {
+                let unit: WeightUnit = snapshot.weightUnit == .pound ? .imperial : .metric
+                for index in snapshot.exercises.indices {
+                    let request = WorkoutExercise.historyFetchRequest(of: snapshot.exercises[index].exerciseUuid,
+                                                                      until: snapshot.startDate)
+                    request.fetchLimit = 1
+                    let previous = (try? historyContext.fetch(request).first) ?? nil
+                    let sets = previous?.workoutSets?.array as? [WorkoutSet] ?? []
+                    for setIndex in snapshot.exercises[index].sets.indices {
+                        let previousSet = sets.indices.contains(setIndex) ? sets[setIndex] : sets.last
+                        snapshot.exercises[index].sets[setIndex].previousWeight = previousSet?.weight.map {
+                            WeightUnit.convert(weight: $0.doubleValue, from: .metric, to: unit)
+                        }
+                        snapshot.exercises[index].sets[setIndex].previousReps = previousSet?.repetitions?.intValue
+                    }
+                }
+            }
+            for index in snapshot.exercises.indices {
+                let exercise = snapshot.exercises[index]
+                guard exercise.imageData == nil, exercise.imageURL == nil,
+                      let id = exercise.exerciseUuid else { continue }
+                if self.workoutThumbnailCache[id] == nil,
+                   let source = catalog.first(where: { $0.uuid == id }) {
+                    self.workoutThumbnailCache[id] = WatchExerciseThumbnailEncoder.jpeg(for: source)
+                }
+                snapshot.exercises[index].imageData = self.workoutThumbnailCache[id]
+            }
+            // The phone may have finished while artwork/history was prepared.
+            guard Self.phoneFinalizationDate(snapshot.workoutID) == nil,
+                  !Self.wasDeletedOnPhone(snapshot.workoutID) else {
+                self.clearPendingSnapshot(snapshot)
+                return
+            }
+            guard let data = WatchWorkoutWire.encode(snapshot),
+                  let content = WatchSyncContent.workoutData(data) else { return }
+            guard content != self.lastSentSnapshotContent else {
+                self.clearPendingSnapshot(snapshot)
+                return
+            }
+            self.cancelOutstandingTransfers(marker: Self.snapshotTransferMarker)
+            var delivered = false
+            if data.count > Self.snapshotMessageLimit {
+                var metadata: [String: Any] = [
+                    Self.snapshotTransferMarker: true,
+                    PayloadKey.workoutSnapshot: true,
+                    PayloadKey.Arg.uuid: snapshot.workoutID.uuidString,
+                    "schemaVersion": WatchWorkoutWire.schemaVersion
+                ]
+                #if DEBUG
+                metadata[PayloadKey.healthTestMode] = healthTestModePreference
+                #endif
+                delivered = self.stageTransfer(data, prefix: Self.snapshotFilePrefix, metadata: metadata)
+                // Preserve the compact-message/full-artwork-file pair. Their
+                // revision is identical, but their content deliberately differs.
+                var compact = snapshot
+                for index in compact.exercises.indices { compact.exercises[index].imageData = nil }
+                if let compactData = WatchWorkoutWire.encode(compact), compactData.count <= Self.snapshotMessageLimit {
+                    delivered = self.sendSnapshotPayload(compactData, healthTestModePreference: healthTestModePreference) || delivered
+                }
+            } else {
+                delivered = self.sendSnapshotPayload(data, healthTestModePreference: healthTestModePreference)
+            }
+            if delivered {
+                self.lastSentSnapshotContent = content
+                self.clearPendingSnapshot(snapshot)
+            }
         }
-        let payload: [String: Any] = [PayloadKey.workoutSnapshot: data]
+    }
+
+    private func clearPendingSnapshot(_ snapshot: WatchWorkoutSnapshot) {
+        DispatchQueue.main.async {
+            if self.pendingSnapshot?.workoutID == snapshot.workoutID,
+               self.pendingSnapshot?.revision == snapshot.revision {
+                self.pendingSnapshot = nil
+            }
+        }
+    }
+
+    private func sendSnapshotPayload(_ data: Data, healthTestModePreference: Bool) -> Bool {
+        var payload: [String: Any] = [PayloadKey.workoutSnapshot: data]
+        #if DEBUG
+        payload[PayloadKey.healthTestMode] = healthTestModePreference
+        #endif
         do {
-            try session.updateApplicationContext(payload)
-            pendingSnapshot = nil
+            try updateApplicationContextIfChanged(applicationContextIncludingPreferences(payload))
         } catch {
             os_log("Could not update Watch application context: %@", log: .watch, type: .error,
                    error.localizedDescription)
+            return false
         }
         if isReachable {
             session.sendMessage(payload, replyHandler: nil) { error in
@@ -1629,20 +2364,38 @@ extension WatchConnectionManager {
                        type: .debug, error.localizedDescription)
             }
         }
+        return true
     }
 
     /// wrapper to send either via message or transfer, depending on what's available
     private func sendUserInfo(userInfo: [String : Any]) {
-        assert(isActivated)
-        if isReachable {
-            os_log("Messaging userInfo=%@", log: .watch, type: .debug, userInfo)
-            session.sendMessage(userInfo, replyHandler: nil) { error in
-                os_log("Messaging not possible, falling back to transfering", log: .watch, type: .fault)
-                self.session.transferUserInfo(userInfo)
+        connectivityQueue.async {
+            self.pendingUserInfo.enqueue(userInfo)
+            self.flushPendingUserInfo()
+        }
+    }
+
+    private func flushPendingUserInfo() {
+        dispatchPrecondition(condition: .onQueue(connectivityQueue))
+        guard isActivated else { return }
+        for userInfo in pendingUserInfo.takeAll() {
+            if isReachable {
+                os_log("Messaging userInfo=%@", log: .watch, type: .debug, userInfo)
+                session.sendMessage(userInfo, replyHandler: nil) { error in
+                    os_log("Messaging not possible, falling back to transfering", log: .watch, type: .fault)
+                    self.connectivityQueue.async {
+                        // Activation can be lost between send and its error callback.
+                        if self.isActivated {
+                            self.session.transferUserInfo(userInfo)
+                        } else {
+                            self.pendingUserInfo.enqueue(userInfo)
+                        }
+                    }
+                }
+            } else {
+                os_log("Transfering userInfo=%@", log: .watch, type: .debug, userInfo)
+                session.transferUserInfo(userInfo)
             }
-        } else {
-            os_log("Transfering userInfo=%@", log: .watch, type: .debug, userInfo)
-            session.transferUserInfo(userInfo)
         }
     }
     
@@ -1675,14 +2428,34 @@ extension WatchConnectionManager {
             activateSession()
             return
         }
-        beginPreparingWatch(startWatchCompanionErrorHandler: startWatchCompanionErrorHandler,
+        beginPreparingWatch(workoutID: workoutID, startWatchCompanionErrorHandler: startWatchCompanionErrorHandler,
                             preparedHandler: preparedHandler)
     }
 
     private func beginPreparingWatch(
+        workoutID: UUID?,
         startWatchCompanionErrorHandler: StartWatchCompanionErrorHandler?,
         preparedHandler: @escaping PrepareHandler
     ) {
+        #if DEBUG
+        var isTestWorkout = SettingsStore.shared.healthTestMode
+        if let workoutID {
+            let context = WorkoutDataStorage.shared.persistentContainer.viewContext
+            context.performAndWait {
+                if let workout = try? context.fetch(Workout.currentWorkoutFetchRequest).first,
+                   workout.uuid == workoutID, workout.healthExportState == "test" {
+                    isTestWorkout = true
+                }
+            }
+        }
+        if isTestWorkout {
+            // Send the start/snapshot directly. Asking HealthKit to launch and
+            // prepare the Watch can race the preference delivery and create a
+            // session for a test whose phone preference has since been disabled.
+            preparedHandler()
+            return
+        }
+        #endif
         self.preparedHandler = preparedHandler // set here, because the prepare message can be received even before startWatchApp() completion fires
         os_log("Using HKHealthStore to open watch app", log: .watch, type: .default)
         HealthManager.shared.healthStore.startWatchApp(with: HealthManager.shared.workoutConfiguration) { success, error in
@@ -1710,7 +2483,7 @@ extension WatchConnectionManager {
                     os_log("Discarding stale deferred Watch preparation", log: .watch, type: .info)
                     return
                 }
-                self.beginPreparingWatch(startWatchCompanionErrorHandler: pending.errorHandler,
+                self.beginPreparingWatch(workoutID: pending.workoutID, startWatchCompanionErrorHandler: pending.errorHandler,
                                          preparedHandler: pending.preparedHandler)
             } catch {
                 pending.errorHandler?(error)
@@ -1722,24 +2495,21 @@ extension WatchConnectionManager {
     func ignorePreparedWatchWorkout() {
         os_log("Notifying watch app that prepared message was ignored", log: .watch, type: .default)
         
-        guard isActivated else {
-            os_log("Session is not activated, skip notifying watch app", log: .watch, type: .info)
-            return
-        }
         sendUserInfo(userInfo: [PayloadKey.ignoredPreparedWorkoutSession : true])
     }
     
-    func startWatchWorkout(start: Date, uuid: UUID) {
+    func startWatchWorkout(start: Date, uuid: UUID, isHealthTestWorkout: Bool = false) {
         os_log("Starting watch workout", log: .watch, type: .default)
         
-        guard isActivated else {
-            os_log("Session is not activated, skip starting watch workout", log: .watch, type: .info)
-            return
-        }
         if currentWatchWorkoutUuid != nil {
             os_log("Overwriting currentWatchWorkoutUuid", log: .watch, type: .error)
         }
-        sendUserInfo(userInfo: [PayloadKey.startWorkoutSession : [PayloadKey.Arg.start : start, PayloadKey.Arg.uuid : uuid.uuidString]])
+        var arguments: [String: Any] = [PayloadKey.Arg.start: start, PayloadKey.Arg.uuid: uuid.uuidString]
+        #if DEBUG
+        arguments[PayloadKey.healthTestMode] = SettingsStore.shared.healthTestMode
+        arguments[PayloadKey.Arg.isHealthTestWorkout] = isHealthTestWorkout
+        #endif
+        sendUserInfo(userInfo: [PayloadKey.startWorkoutSession: arguments])
         currentWatchWorkoutUuid = uuid
         syncCurrentWorkoutSnapshot()
     }
@@ -1747,24 +2517,15 @@ extension WatchConnectionManager {
     func updateWatchWorkoutStart(start: Date, uuid: UUID) {
         os_log("Updating watch workout start date", log: .watch, type: .default)
         
-        guard isActivated else {
-            os_log("Session is not activated, skip updating watch workout start date", log: .watch, type: .info)
-            return
-        }
         if currentWatchWorkoutUuid != uuid {
             os_log("Sending update watch workout start date for different uuid", log: .watch, type: .error)
         }
         sendUserInfo(userInfo: [PayloadKey.updateWorkoutSessionStart : [PayloadKey.Arg.start : start, PayloadKey.Arg.uuid : uuid.uuidString]])
-        syncCurrentWorkoutSnapshot()
     }
     
     func updateWatchWorkoutEnd(end: Date?, uuid: UUID) {
         os_log("Updating watch workout end date", log: .watch, type: .default)
         
-        guard isActivated else {
-            os_log("Session is not activated, skip updating watch workout end date", log: .watch, type: .info)
-            return
-        }
         if currentWatchWorkoutUuid != uuid {
             os_log("Sending update watch workout end date for different uuid", log: .watch, type: .error)
         }
@@ -1773,16 +2534,11 @@ extension WatchConnectionManager {
         } else {
             sendUserInfo(userInfo: [PayloadKey.updateWorkoutSessionEnd : [PayloadKey.Arg.uuid : uuid.uuidString]])
         }
-        syncCurrentWorkoutSnapshot()
     }
     
     func updateWatchWorkoutRestTimer(end: Date?, keepRunning: Bool?, uuid: UUID) {
         os_log("Updating watch workout rest timer end", log: .watch, type: .default)
         
-        guard isActivated else {
-            os_log("Session is not activated, skip updating watch workout rest timer end", log: .watch, type: .info)
-            return
-        }
         if currentWatchWorkoutUuid != uuid {
             os_log("Sending update watch workout rest timer end for different uuid", log: .watch, type: .error)
         }
@@ -1802,10 +2558,6 @@ extension WatchConnectionManager {
     func updateWatchWorkoutSelectedSet(text: String?, uuid: UUID) {
         os_log("Updating watch workout selected set", log: .watch, type: .default)
         
-        guard isActivated else {
-            os_log("Session is not activated, skip updating watch workout selected set", log: .watch, type: .info)
-            return
-        }
         if currentWatchWorkoutUuid != uuid {
             os_log("Sending update watch workout selected set for different uuid", log: .watch, type: .error)
         }
@@ -1817,31 +2569,29 @@ extension WatchConnectionManager {
         syncCurrentWorkoutSnapshot()
     }
     
-    func finishWatchWorkout(start: Date, end: Date, title: String?, uuid: UUID) {
+    func finishWatchWorkout(start: Date, end: Date, title: String?, uuid: UUID,
+                            healthTestMode: Bool = false) {
         os_log("Finishing watch workout", log: .watch, type: .default)
+        retireSnapshotDelivery(workoutID: uuid)
         
-        guard isActivated else {
-            os_log("Session is not activated, skip finishing watch workout", log: .watch, type: .info)
-            return
-        }
         if currentWatchWorkoutUuid != uuid {
              os_log("Sending finish watch workout for different uuid", log: .watch, type: .error)
         }
-        if let title = title {
-            sendUserInfo(userInfo: [PayloadKey.endWorkoutSession : [PayloadKey.Arg.start : start, PayloadKey.Arg.end : end, PayloadKey.Arg.title: title, PayloadKey.Arg.uuid : uuid.uuidString]])
-        } else {
-            sendUserInfo(userInfo: [PayloadKey.endWorkoutSession : [PayloadKey.Arg.start : start, PayloadKey.Arg.end : end, PayloadKey.Arg.uuid : uuid.uuidString]])
-        }
+        var arguments: [String: Any] = [PayloadKey.Arg.start: start, PayloadKey.Arg.end: end,
+                                       PayloadKey.Arg.uuid: uuid.uuidString]
+        if let title { arguments[PayloadKey.Arg.title] = title }
+        #if DEBUG
+        arguments[PayloadKey.healthTestMode] = healthTestMode || SettingsStore.shared.healthTestMode
+        #endif
+        sendUserInfo(userInfo: [PayloadKey.endWorkoutSession: arguments])
         currentWatchWorkoutUuid = nil
     }
     
     func discardWatchWorkout(uuid: UUID) {
         os_log("Discarding watch workout", log: .watch, type: .default)
+        Self.recordDeletedWorkoutIDs([uuid])
+        retireSnapshotDelivery(workoutID: uuid)
         
-        guard isActivated else {
-            os_log("Session is not activated, skip discarding watch workout", log: .watch, type: .info)
-            return
-        }
         if currentWatchWorkoutUuid != uuid {
             os_log("Sending discard watch workout for different uuid", log: .watch, type: .error)
         }
@@ -1855,8 +2605,9 @@ extension WatchConnectionManager {
         }
         set {
             let previous = UserDefaults.standard.watchWorkoutUuid
+            guard newValue != previous else { return }
             UserDefaults.standard.watchWorkoutUuid = newValue
-            if newValue != previous { liveMetrics.clear() }
+            liveMetrics.clear()
         }
     }
 }
@@ -1896,7 +2647,7 @@ extension WatchConnectionManager {
                 assertionFailure("uuid is a required property")
                 return
             }
-            self.startWatchWorkout(start: start, uuid: uuid)
+            self.startWatchWorkout(start: start, uuid: uuid, isHealthTestWorkout: workout.healthExportState == "test")
         }
     }
 }

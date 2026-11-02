@@ -63,10 +63,11 @@ struct AboutView: View {
                     .font(.subheadline)
                     .foregroundColor(IronTheme.secondaryText)
                 Text("Version \(versionString)")
-                    .font(.caption)
-                    .foregroundColor(IronTheme.tertiaryText)
+                    .font(.ironMetric(.subheadline, weight: .semibold))
+                    .foregroundColor(IronTheme.secondaryText)
             }
-            Spacer(minLength: 0)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 6)
     }
@@ -74,48 +75,25 @@ struct AboutView: View {
     private func aboutLinkRow(_ row: AboutLink) -> some View {
         Link(destination: row.url) {
             HStack(spacing: 12) {
-                Image(systemName: row.systemImage)
-                    .font(.body.weight(.semibold))
-                    .foregroundColor(IronTheme.accent)
-                    .frame(width: 26)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.title)
-                        .font(.body)
-                        .foregroundColor(IronTheme.primaryText)
-                    Text(row.subtitle)
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-
-                Spacer(minLength: 8)
+                SettingsSubpageLabel(row.title, detail: row.subtitle, systemImage: row.systemImage)
 
                 Image(systemName: "arrow.up.right")
                     .font(.caption.weight(.semibold))
                     .foregroundColor(IronTheme.tertiaryText)
+                    .accessibilityHidden(true)
             }
+            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .accessibilityHint("Opens in your browser")
     }
 
     private var privacySummary: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "person.crop.circle.badge.checkmark")
-                .font(.title3.weight(.semibold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 26)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Private by design")
-                    .font(.body)
-                    .foregroundColor(IronTheme.primaryText)
-                Text("Light has no social feed or public profile. Your workout and body data remain under your control.")
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.vertical, 2)
+        SettingsSubpageLabel(
+            "Private by design",
+            detail: "Light has no social feed or public profile. Your workout and body data remain under your control.",
+            systemImage: "person.crop.circle.badge.checkmark"
+        )
     }
 
     private var versionString: String {

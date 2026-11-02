@@ -16,6 +16,7 @@ import ActivityKit
 
 enum WidgetKind: String {
     case lastWorkout
+    case thisWeek
 }
 
 /// Resolves the small, static exercise artwork shared with the Live Activity.
@@ -30,13 +31,13 @@ enum WorkoutLiveActivityArtwork {
         #endif
     }
 
-    static var directoryURL: URL? {
+    static let directoryURL: URL? = {
         FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)?
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Caches", isDirectory: true)
             .appendingPathComponent("LiveActivityArtwork", isDirectory: true)
-    }
+    }()
 
     static func fileURL(for fileName: String?) -> URL? {
         guard let fileName,
@@ -137,13 +138,30 @@ struct WorkoutActivityAttributes: ActivityAttributes {
             }
         }
 
-        func restProgress(at date: Date) -> Double? {
-            guard !isRestPaused else { return nil }
-            guard let restTimerStart, let restTimerEnd, restTimerEnd > restTimerStart else {
+        /// The adjusted interval is also the source of truth for the total. Keeping
+        /// the start fixed while moving the end preserves elapsed time after ±15 s.
+        var restTimerInterval: ClosedRange<Date>? {
+            guard let restTimerStart, let restTimerEnd,
+                  restTimerStart.timeIntervalSinceReferenceDate.isFinite,
+                  restTimerEnd.timeIntervalSinceReferenceDate.isFinite,
+                  restTimerEnd > restTimerStart,
+                  restTimerEnd.timeIntervalSince(restTimerStart).isFinite else {
                 return nil
             }
-            let duration = restTimerEnd.timeIntervalSince(restTimerStart)
-            let elapsed = date.timeIntervalSince(restTimerStart)
+            return restTimerStart...restTimerEnd
+        }
+
+        var restDuration: TimeInterval? {
+            restTimerInterval.map { $0.upperBound.timeIntervalSince($0.lowerBound) }
+        }
+
+        func restProgress(at date: Date) -> Double? {
+            guard let interval = restTimerInterval, let duration = restDuration else { return nil }
+            // A paused payload must retain the interval to recover its fraction.
+            // Older/current producers may omit it; don't invent an elapsed value.
+            let elapsed = isRestPaused
+                ? duration - (pausedRestRemaining ?? duration)
+                : date.timeIntervalSince(interval.lowerBound)
             return min(max(elapsed / duration, 0), 1)
         }
     }

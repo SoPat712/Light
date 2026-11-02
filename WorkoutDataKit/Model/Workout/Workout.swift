@@ -48,7 +48,8 @@ public class Workout: NSManagedObject, Codable {
     public var isImported: Bool { importSource != nil }
 
     // v6 also generates healthExportState: nil (legacy/not requested),
-    // "pending", "exported", or "watch" (Watch owns the Health recording).
+    // "pending", "exported", "watch" (Watch owns the Health recording), or
+    // "test" (permanently excluded debug test workout; survives release installs).
 
     public enum HealthExportEligibility: Equatable {
         case eligible

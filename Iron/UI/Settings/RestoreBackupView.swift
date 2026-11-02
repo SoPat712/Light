@@ -55,6 +55,7 @@ struct RestoreBackupView: View {
                             .controlSize(.large)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    .frame(maxWidth: .infinity)
                     .listRowBackground(Color.clear)
 
                 case .loaded:
@@ -64,6 +65,7 @@ struct RestoreBackupView: View {
                         } description: {
                             Text("Create your first private backup, then return here whenever you need to restore it.")
                         }
+                        .frame(maxWidth: .infinity)
                         .listRowBackground(Color.clear)
                     } else {
                         ForEach(backupStore.backups.indices, id: \.self) { index in
@@ -74,12 +76,16 @@ struct RestoreBackupView: View {
             } header: {
                 Text("iCloud Backups")
             } footer: {
-                Text("A restore replaces completed workouts, saved workouts, custom exercises, and body measurements. Settings and any workout in progress stay unchanged.")
+                Text("A restore replaces completed workouts, saved workouts, custom exercises, body measurements, and set tracking targets. Other settings and any workout in progress stay unchanged.")
             }
         }
         .listStyle(.insetGrouped)
+        .safeAreaInset(edge: .bottom) {
+            Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
+        }
         .navigationTitle("Restore Backup")
         .navigationBarTitleDisplayMode(.inline)
+        .ironScreen()
         .onAppear(perform: backupStore.fetchBackups)
         .allowsHitTesting(!isRestoring)
         .overlay {
@@ -123,7 +129,7 @@ struct RestoreBackupView: View {
                     title: details.title,
                     message: details.message,
                     systemImage: details.isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
-                    tint: details.isSuccess ? .green : .red
+                    tint: details.isSuccess ? IronTheme.success : IronTheme.danger
                 )
 
             case .deleteError(let error):
@@ -132,7 +138,7 @@ struct RestoreBackupView: View {
                     title: "Could not delete backup",
                     message: error.localizedDescription,
                     systemImage: "trash.slash.fill",
-                    tint: .red
+                    tint: IronTheme.danger
                 )
             }
         }
@@ -156,7 +162,7 @@ struct RestoreBackupView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(24)
-            .frame(maxWidth: 290)
+            .frame(maxWidth: .infinity)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Restoring your Light data")
@@ -167,16 +173,14 @@ struct RestoreBackupView: View {
         Button {
             activeModal = BackupModal(kind: .restoreConfirmation(backup.url))
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(BackupFileStore.BackupFile.dateFormatter.string(from: backup.creationDate))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text("\(backup.deviceName) · \(BackupFileStore.BackupFile.byteCountFormatter.string(fromByteCount: Int64(backup.fileSize)))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            SettingsSubpageLabel(
+                BackupFileStore.BackupFile.dateFormatter.string(from: backup.creationDate),
+                detail: "\(backup.deviceName) · \(BackupFileStore.BackupFile.byteCountFormatter.string(fromByteCount: Int64(backup.fileSize)))",
+                systemImage: "archivebox.fill",
+                tint: IronTheme.metricVolume
+            )
         }
+        .buttonStyle(.plain)
         .swipeActions(edge: .trailing) {
             Button("Delete", systemImage: "trash", role: .destructive) {
                 activeModal = BackupModal(kind: .deleteConfirmation(backup.url))

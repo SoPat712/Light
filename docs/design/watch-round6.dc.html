@@ -1,0 +1,1115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Light Watch prototype</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 422px; height: {{rootH}}; position: relative; overflow: hidden; background: #000000; color: #FFFFFF; font-family: 'SF Compact', 'SF Compact Text', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif; -webkit-font-smoothing: antialiased; line-height: 1.22">
+
+  <!-- Toolbar: back, vitals (active workout) or app title, clock -->
+  <div style="position: absolute; top: 0; left: 0; right: 0; height: 84px; z-index: 3; display: flex; align-items: center; gap: 12px; padding: 10px 24px 0 14px; box-sizing: border-box; background: linear-gradient(180deg, #000000 64%, rgba(0,0,0,0))">
+    <sc-if value="{{hdr.back}}" hint-placeholder-val="{{ true }}">
+      <button aria-label="Back" onClick="{{pop}}" style="width: 60px; height: 60px; flex-shrink: 0; border: 0; border-radius: 30px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.24); color: #FFFFFF; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4.5L7.5 12l7.5 7.5"></path></svg>
+      </button>
+    </sc-if>
+    <sc-if value="{{hdr.appTitle}}" hint-placeholder-val="{{ false }}">
+      <div style="font-size: 30px; font-weight: 700; color: #409CFF; padding-left: 6px">Light</div>
+    </sc-if>
+    <sc-if value="{{hdr.vitals}}" hint-placeholder-val="{{ true }}">
+      <div style="display: flex; align-items: center; gap: 14px; font-variant-numeric: tabular-nums" role="group" aria-label="Heart rate {{hdr.hr}} beats per minute, {{hdr.kcal}} active calories">
+        <div style="display: flex; align-items: center; gap: 5px; color: #FF453A">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 20.6c-.3 0-.6-.1-.8-.3C7.4 17.1 2.5 13.4 2.5 8.7 2.5 5.8 4.7 3.6 7.4 3.6c1.9 0 3.5 1 4.6 2.6 1.1-1.6 2.7-2.6 4.6-2.6 2.7 0 4.9 2.2 4.9 5.1 0 4.7-4.9 8.4-8.7 11.6-.2.2-.5.3-.8.3z"></path></svg>
+          <span style="font-size: 26px; font-weight: 600">{{hdr.hr}}</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 5px; color: #FF9F0A">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.6 2.2c.4 3-1.2 4.6-2.6 6.3C8.6 10.2 7 12 7 14.9 7 18.3 9.3 21 12.3 21c3.2 0 5.7-2.6 5.7-6.2 0-2.2-.9-4-2-5.4-.2 1.4-.9 2.6-2.1 3.1.5-3.7-.4-7.2-1.3-10.3z"></path></svg>
+          <span style="font-size: 26px; font-weight: 600">{{hdr.kcal}}</span>
+          <span style="font-size: 15px; font-weight: 700; color: #C77A00; letter-spacing: 0.2px">KCAL</span>
+        </div>
+      </div>
+    </sc-if>
+    <div style="flex-grow: 1"></div>
+    <div style="font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums">10:09</div>
+  </div>
+
+  <sc-if value="{{fold}}" hint-placeholder-val="{{ false }}">
+    <div aria-hidden="true" style="position: absolute; left: 0; right: 0; top: 514px; z-index: 4; border-top: 2px dashed rgba(255,255,255,0.3); pointer-events: none"></div>
+  </sc-if>
+
+  <div style="position: {{b.pos}}; top: 0; left: 0; right: 0; height: {{b.h}}; overflow-y: {{b.ov}}; box-sizing: border-box; padding: 88px 10px 40px; opacity: {{b.opacity}}">
+
+    <!-- HOME -->
+    <sc-if value="{{is.home}}" hint-placeholder-val="{{ true }}">
+      <div style="display: flex; flex-direction: column">
+        <sc-if value="{{home.active}}" hint-placeholder-val="{{ true }}">
+          <button onClick="{{home.resume}}" style="display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; padding: 18px; border: 0; border-radius: 30px; background: rgba(10,132,255,0.2); color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+            <div style="display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 600; color: #409CFF">
+              <div style="width: 10px; height: 10px; border-radius: 5px; background: #409CFF"></div>In Progress
+            </div>
+            <div style="font-size: 26px; font-weight: 700">{{title}}</div>
+            <div style="font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums"><span style="color: #64D2FF">{{wk.elapsed}}</span><span style="color: #9C9CA3"> · </span><span style="color: #FF9F0A">{{wk.setsDone}}</span><span style="color: #9C9CA3">/{{wk.setsTotal}} sets</span></div>
+            <div style="display: flex; gap: 3px; margin-top: 4px">
+              <sc-for list="{{home.cells}}" as="c" hint-placeholder-count="18">
+                <div style="height: 8px; flex: 1; border-radius: 4px; background: {{c.bg}}"></div>
+              </sc-for>
+            </div>
+          </button>
+        </sc-if>
+        <sc-if value="{{home.idle}}" hint-placeholder-val="{{ false }}">
+          <button onClick="{{home.newWorkout}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 84px; padding: 0 20px; border: 0; border-radius: 42px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 24px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>New Workout
+          </button>
+        </sc-if>
+
+        <div style="margin: 24px 8px 10px; font-size: 19px; font-weight: 600; color: #9C9CA3">Saved Workouts</div>
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <sc-for list="{{home.saved}}" as="w" hint-placeholder-count="3">
+            <button onClick="{{w.open}}" style="display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; min-height: 112px; padding: 16px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+              <div style="font-size: 24px; font-weight: 600">{{w.name}}</div>
+              <div style="font-size: 19px; font-weight: 600"><span style="color: #FF9F0A">{{w.sets}} sets</span><span style="color: #9C9CA3; font-weight: 400"> · {{w.count}} exercises</span></div>
+              <div style="font-size: 18px; color: #9C9CA3">{{w.muscles}}</div>
+            </button>
+          </sc-for>
+          <button onClick="{{home.allSaved}}" style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 64px; border: 0; border-radius: 32px; background: rgba(255,255,255,0.12); color: #409CFF; font: inherit; font-size: 20px; font-weight: 600; cursor: pointer">All Saved Workouts</button>
+        </div>
+
+        <div style="margin: 24px 8px 10px; font-size: 19px; font-weight: 600; color: #9C9CA3">History</div>
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <sc-for list="{{home.history}}" as="h" hint-placeholder-count="3">
+            <button onClick="{{h.open}}" style="display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; min-height: 112px; padding: 16px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+              <div style="font-size: 24px; font-weight: 600">{{h.name}}</div>
+              <div style="font-size: 18px; color: #9C9CA3">{{h.date}}</div>
+              <div style="font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums"><span style="color: #64D2FF">{{h.dur}}</span><span style="color: #9C9CA3"> · </span><span style="color: #FF9F0A">{{h.sets}} sets</span><span style="color: #9C9CA3"> · </span><span style="color: #30D158">{{h.vol}}</span><span style="color: #9C9CA3"> lb</span></div>
+            </button>
+          </sc-for>
+          <button onClick="{{home.allHistory}}" style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 64px; border: 0; border-radius: 32px; background: rgba(255,255,255,0.12); color: #409CFF; font: inherit; font-size: 20px; font-weight: 600; cursor: pointer">All History</button>
+        </div>
+
+        <button onClick="{{home.settings}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; margin-top: 24px; padding: 14px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 600; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #636366; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          </div>Settings
+        </button>
+      </div>
+    </sc-if>
+
+    <!-- SAVED LIST -->
+    <sc-if value="{{is.saved}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 14px; font-size: 32px; font-weight: 700; letter-spacing: -0.3px">Saved Workouts</div>
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <sc-for list="{{savedAll}}" as="w" hint-placeholder-count="4">
+          <button onClick="{{w.open}}" style="display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; min-height: 112px; padding: 16px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+            <div style="font-size: 24px; font-weight: 600">{{w.name}}</div>
+            <div style="font-size: 19px; font-weight: 600"><span style="color: #FF9F0A">{{w.sets}} sets</span><span style="color: #9C9CA3; font-weight: 400"> · {{w.count}} exercises</span></div>
+            <div style="font-size: 18px; color: #9C9CA3">{{w.muscles}}</div>
+          </button>
+        </sc-for>
+        <button style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 76px; margin-top: 8px; padding: 0 20px; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>New Saved Workout
+        </button>
+      </div>
+    </sc-if>
+
+    <!-- SAVED DETAIL -->
+    <sc-if value="{{is.savedDetail}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 4px; font-size: 32px; font-weight: 700; letter-spacing: -0.3px">{{sd.name}}</div>
+      <div style="margin: 0 8px; font-size: 19px; font-weight: 600"><span style="color: #FF9F0A">{{sd.sets}} sets</span><span style="color: #9C9CA3; font-weight: 400"> · {{sd.count}} exercises</span></div>
+      <div style="margin: 2px 8px 16px; font-size: 18px; color: #9C9CA3">{{sd.muscles}} · {{sd.last}}</div>
+      <button onClick="{{sd.start}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 84px; padding: 0 20px; border: 0; border-radius: 42px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 24px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5l12 7.5-12 7.5z"></path></svg>Start Workout
+      </button>
+      <div style="margin: 24px 8px 10px; font-size: 19px; font-weight: 600; color: #9C9CA3">Exercises</div>
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <sc-for list="{{sd.ex}}" as="x" hint-placeholder-count="5">
+          <div style="display: flex; align-items: center; gap: 14px; min-height: 92px; padding: 14px 16px; border-radius: 26px; background: #222224; box-sizing: border-box">
+            <div aria-hidden="true" style="width: 52px; height: 52px; border-radius: 26px; background: #FFFFFF; display: flex; align-items: center; justify-content: center; color: #8E8E93; flex-shrink: 0">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11"></path></svg>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 3px; min-width: 0">
+              <div style="font-size: 21px; font-weight: 600">{{x.name}}</div>
+              <div style="font-size: 18px; color: #9C9CA3">{{x.plan}}</div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+      <button style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 76px; margin-top: 16px; padding: 0 20px; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20l1-4.5L16 4.5l3.5 3.5L8.5 19zM14 6.5l3.5 3.5"></path></svg>Edit Workout
+      </button>
+    </sc-if>
+
+    <!-- HISTORY LIST -->
+    <sc-if value="{{is.history}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 14px; font-size: 32px; font-weight: 700; letter-spacing: -0.3px">History</div>
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <sc-for list="{{histAll}}" as="h" hint-placeholder-count="4">
+          <button onClick="{{h.open}}" style="display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; min-height: 112px; padding: 16px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+            <div style="font-size: 24px; font-weight: 600">{{h.name}}</div>
+            <div style="font-size: 18px; color: #9C9CA3">{{h.date}}</div>
+            <div style="font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums"><span style="color: #64D2FF">{{h.dur}}</span><span style="color: #9C9CA3"> · </span><span style="color: #FF9F0A">{{h.sets}} sets</span><span style="color: #9C9CA3"> · </span><span style="color: #30D158">{{h.vol}}</span><span style="color: #9C9CA3"> lb</span></div>
+          </button>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <!-- HISTORY DETAIL -->
+    <sc-if value="{{is.historyDetail}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 2px; font-size: 32px; font-weight: 700; letter-spacing: -0.3px">{{hd.name}}</div>
+      <div style="margin: 0 8px; font-size: 18px; color: #9C9CA3">{{hd.date}}</div>
+      <div style="margin: 6px 8px 0; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums"><span style="color: #64D2FF">{{hd.dur}}</span><span style="color: #9C9CA3"> · </span><span style="color: #FF9F0A">{{hd.sets}} sets</span><span style="color: #9C9CA3"> · </span><span style="color: #30D158">{{hd.vol}}</span><span style="color: #9C9CA3"> lb</span></div>
+      <div style="display: flex; gap: 16px; margin: 4px 8px 16px; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums">
+        <div style="display: flex; align-items: center; gap: 5px; color: #FF453A"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 20.6c-.3 0-.6-.1-.8-.3C7.4 17.1 2.5 13.4 2.5 8.7 2.5 5.8 4.7 3.6 7.4 3.6c1.9 0 3.5 1 4.6 2.6 1.1-1.6 2.7-2.6 4.6-2.6 2.7 0 4.9 2.2 4.9 5.1 0 4.7-4.9 8.4-8.7 11.6-.2.2-.5.3-.8.3z"></path></svg>{{hd.hr}} avg</div>
+        <div style="display: flex; align-items: center; gap: 5px; color: #FF9F0A"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.6 2.2c.4 3-1.2 4.6-2.6 6.3C8.6 10.2 7 12 7 14.9 7 18.3 9.3 21 12.3 21c3.2 0 5.7-2.6 5.7-6.2 0-2.2-.9-4-2-5.4-.2 1.4-.9 2.6-2.1 3.1.5-3.7-.4-7.2-1.3-10.3z"></path></svg>{{hd.kcal}} kcal</div>
+      </div>
+      <button onClick="{{hd.repeat}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 84px; padding: 0 20px; border: 0; border-radius: 42px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 24px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4v5h-5"></path></svg>Repeat Workout
+      </button>
+      <div style="margin: 24px 8px 10px; font-size: 19px; font-weight: 600; color: #9C9CA3">Exercises</div>
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <sc-for list="{{hd.ex}}" as="x" hint-placeholder-count="5">
+          <div style="display: flex; align-items: center; gap: 14px; min-height: 92px; padding: 14px 16px; border-radius: 26px; background: #222224; box-sizing: border-box">
+            <div aria-hidden="true" style="width: 52px; height: 52px; border-radius: 26px; background: #FFFFFF; display: flex; align-items: center; justify-content: center; color: #8E8E93; flex-shrink: 0">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11"></path></svg>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 3px; min-width: 0; flex-grow: 1">
+              <div style="font-size: 21px; font-weight: 600">{{x.name}}</div>
+              <div style="font-size: 18px; color: #9C9CA3; font-variant-numeric: tabular-nums">{{x.sets}} sets · Best {{x.best}}</div>
+            </div>
+            <sc-if value="{{x.pr}}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 4px 10px; border-radius: 14px; background: rgba(255,214,10,0.2); color: #FFD60A; font-size: 16px; font-weight: 700">PR</div>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <!-- SETTINGS -->
+    <sc-if value="{{is.settings}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 14px; font-size: 32px; font-weight: 700; letter-spacing: -0.3px">Settings</div>
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <div style="display: flex; align-items: center; gap: 14px; min-height: 96px; padding: 14px 18px; border-radius: 26px; background: #222224; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #30D158; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"></rect><path d="M10.5 18.5h3"></path></svg>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 2px">
+            <div style="font-size: 21px; font-weight: 600">iPhone Connected</div>
+            <div style="font-size: 17px; color: #9C9CA3">Synced 2 min ago</div>
+          </div>
+        </div>
+        <button style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 14px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; font-size: 21px; font-weight: 600; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #0A84FF; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 3.5V8h4.5M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20.5V16h-4.5"></path></svg>
+          </div>Sync Now
+        </button>
+        <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; border-radius: 26px; background: #222224">
+          <div style="display: flex; align-items: center; gap: 14px; font-size: 21px; font-weight: 600">
+            <div style="width: 40px; height: 40px; border-radius: 20px; background: #FF9F0A; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 9h13l-1.6 11H7.1zM9 9a3 3 0 0 1 6 0"></path></svg>
+            </div>Weight Unit
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; border-radius: 26px; background: #000000">
+            <button onClick="{{st.lb}}" style="height: 52px; border: 0; border-radius: 22px; background: {{st.lbBg}}; color: #FFFFFF; font: inherit; font-size: 20px; font-weight: 600; cursor: pointer">lb</button>
+            <button onClick="{{st.kg}}" style="height: 52px; border: 0; border-radius: 22px; background: {{st.kgBg}}; color: #FFFFFF; font: inherit; font-size: 20px; font-weight: 600; cursor: pointer">kg</button>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 14px; min-height: 96px; padding: 14px 18px; border-radius: 26px; background: #222224; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #FF453A; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="#FFFFFF" aria-hidden="true"><path d="M12 20.6c-.3 0-.6-.1-.8-.3C7.4 17.1 2.5 13.4 2.5 8.7 2.5 5.8 4.7 3.6 7.4 3.6c1.9 0 3.5 1 4.6 2.6 1.1-1.6 2.7-2.6 4.6-2.6 2.7 0 4.9 2.2 4.9 5.1 0 4.7-4.9 8.4-8.7 11.6-.2.2-.5.3-.8.3z"></path></svg>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 2px">
+            <div style="font-size: 21px; font-weight: 600">Health Recording</div>
+            <div style="font-size: 17px; color: #9C9CA3">Heart rate and calories record during every workout</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 14px; min-height: 84px; padding: 14px 18px; border-radius: 26px; background: #222224; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #32ADE6; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="13.5" r="7.5"></circle><path d="M12 9.5v4l2.5 2M9.5 2.5h5"></path></svg>
+          </div>
+          <div style="font-size: 21px; font-weight: 600; flex-grow: 1">Default Rest</div>
+          <div style="font-size: 21px; font-weight: 600; color: #64D2FF; font-variant-numeric: tabular-nums">2:00</div>
+        </div>
+        <div style="margin: 10px 8px 0; font-size: 17px; color: #9C9CA3">Light 1.0 (43)</div>
+      </div>
+    </sc-if>
+
+    <!-- ACTIVE WORKOUT: exercise list -->
+    <sc-if value="{{is.workout}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 2px; font-size: 32px; font-weight: 700; letter-spacing: -0.3px">{{title}}</div>
+      <div style="margin: 0 8px 14px; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums"><span style="color: #64D2FF">{{wk.elapsed}}</span><span style="color: #9C9CA3"> · </span><span style="color: #FF9F0A">{{wk.setsDone}}</span><span style="color: #9C9CA3">/{{wk.setsTotal}} sets · </span><span style="color: #30D158">{{wk.volume}}</span><span style="color: #9C9CA3"> lb</span></div>
+
+      <sc-if value="{{wk.hasNext}}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: 30px; background: rgba(10,132,255,0.2)">
+          <button onClick="{{wk.openNext}}" aria-label="Edit next set" style="display: flex; align-items: center; gap: 14px; width: 100%; padding: 2px 4px 0; border: 0; background: transparent; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer">
+            <div aria-hidden="true" style="width: 52px; height: 52px; border-radius: 26px; background: #FFFFFF; display: flex; align-items: center; justify-content: center; color: #8E8E93; flex-shrink: 0">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11"></path></svg>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+              <div style="font-size: 16px; font-weight: 700; color: #409CFF; letter-spacing: 0.2px">{{wk.nextCaption}}</div>
+              <div style="font-size: 22px; font-weight: 600">{{wk.nextName}}</div>
+              <div style="font-size: 19px; color: #D1D1D6; font-variant-numeric: tabular-nums">{{wk.nextLine}}</div>
+            </div>
+          </button>
+          <button onClick="{{wk.logNext}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 76px; padding: 0 20px; border: 0; border-radius: 38px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 23px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>Log Set
+          </button>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{wk.empty}}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 22px 16px; border-radius: 30px; background: #222224; text-align: center">
+          <div style="width: 64px; height: 64px; border-radius: 32px; background: rgba(10,132,255,0.2); display: flex; align-items: center; justify-content: center; color: #409CFF">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11"></path></svg>
+          </div>
+          <div style="font-size: 22px; font-weight: 600">No exercises yet</div>
+          <div style="font-size: 18px; color: #9C9CA3">Add one to start logging sets.</div>
+          <button onClick="{{wk.add}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 76px; margin-top: 6px; padding: 0 20px; border: 0; border-radius: 38px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 23px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add Exercise
+          </button>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{wk.allDone}}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: 30px; background: rgba(48,209,88,0.16)">
+          <div style="font-size: 22px; font-weight: 600">Every set is logged</div>
+          <button onClick="{{wk.finish}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 76px; padding: 0 20px; border: 0; border-radius: 38px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 23px; font-weight: 600; cursor: pointer; box-sizing: border-box">Finish Workout</button>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{wk.hasEx}}" hint-placeholder-val="{{ true }}">
+        <div style="margin: 24px 8px 10px; font-size: 19px; font-weight: 600; color: #9C9CA3">Exercises</div>
+      </sc-if>
+      <div style="display: flex; flex-direction: column">
+        <sc-for list="{{wk.rows}}" as="r" hint-placeholder-count="5">
+          <sc-if value="{{r.supHeader}}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; align-items: center; gap: 6px; margin: 14px 10px 8px; font-size: 17px; font-weight: 600; color: #409CFF">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M9.5 14.5l5-5M10.6 6.6l1.6-1.6a4.2 4.2 0 0 1 6 6l-1.6 1.6M13.4 17.4l-1.6 1.6a4.2 4.2 0 0 1-6-6l1.6-1.6"></path></svg>Superset
+            </div>
+          </sc-if>
+          <button onClick="{{r.open}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 104px; margin-top: {{r.mt}}; padding: 14px 16px; border: 0; border-radius: {{r.radius}}; background: {{r.bg}}; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+            <div aria-hidden="true" style="width: 52px; height: 52px; border-radius: 26px; background: #FFFFFF; display: flex; align-items: center; justify-content: center; color: #8E8E93; flex-shrink: 0; position: relative">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11"></path></svg>
+              <sc-if value="{{r.done}}" hint-placeholder-val="{{ false }}">
+                <div style="position: absolute; right: -4px; bottom: -4px; width: 24px; height: 24px; border-radius: 12px; background: #0A84FF; box-shadow: 0 0 0 3px #222224; display: flex; align-items: center; justify-content: center">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>
+                </div>
+              </sc-if>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px; min-width: 0; flex-grow: 1">
+              <div style="font-size: 22px; font-weight: 600; line-height: 1.16">{{r.name}}</div>
+              <div style="display: flex; gap: 4px">
+                <sc-for list="{{r.cells}}" as="c" hint-placeholder-count="4">
+                  <div style="height: 8px; flex: 1; max-width: 32px; border-radius: 4px; background: {{c.bg}}"></div>
+                </sc-for>
+              </div>
+              <div style="font-size: 17px; color: #9C9CA3">{{r.progress}}</div>
+            </div>
+          </button>
+        </sc-for>
+      </div>
+
+      <sc-if value="{{wk.hasEx}}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 16px">
+          <button onClick="{{wk.add}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 76px; padding: 0 20px; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add Exercise
+          </button>
+          <button onClick="{{wk.finish}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 76px; padding: 0 20px; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #409CFF; font: inherit; font-size: 22px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V4M5 4.5h11.5l-2 4 2 4H5"></path></svg>Finish Workout
+          </button>
+        </div>
+      </sc-if>
+      <button onClick="{{wk.discard}}" style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 64px; margin-top: 8px; border: 0; border-radius: 32px; background: transparent; color: #FF6961; font: inherit; font-size: 20px; font-weight: 600; cursor: pointer">Discard Workout</button>
+    </sc-if>
+
+    <!-- EXERCISE: sets -->
+    <sc-if value="{{is.exercise}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 4px; font-size: 28px; font-weight: 700; line-height: 1.14; letter-spacing: -0.2px">{{exv.name}}</div>
+      <div style="margin: 0 8px; font-size: 18px; color: #9C9CA3">{{exv.meta}}</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 6px 14px">
+        <button onClick="{{exv.openRest}}" aria-label="Rest timer {{exv.rest}}" style="display: flex; align-items: center; gap: 6px; height: 48px; padding: 0 16px; border: 0; border-radius: 24px; background: rgba(100,210,255,0.18); color: #64D2FF; font: inherit; font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; cursor: pointer">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="13.5" r="7.5"></circle><path d="M12 9.5v4l2.5 2M9.5 2.5h5"></path></svg>{{exv.rest}}
+        </button>
+        <sc-if value="{{exv.sup}}" hint-placeholder-val="{{ false }}">
+          <button onClick="{{exv.openSup}}" style="display: flex; align-items: center; gap: 6px; height: 48px; padding: 0 16px; border: 0; border-radius: 24px; background: rgba(10,132,255,0.2); color: #409CFF; font: inherit; font-size: 19px; font-weight: 600; cursor: pointer">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M9.5 14.5l5-5M10.6 6.6l1.6-1.6a4.2 4.2 0 0 1 6 6l-1.6 1.6M13.4 17.4l-1.6 1.6a4.2 4.2 0 0 1-6-6l1.6-1.6"></path></svg>{{exv.supName}}
+          </button>
+        </sc-if>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <sc-for list="{{exv.sets}}" as="s" hint-placeholder-count="5">
+          <button onClick="{{s.open}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 92px; padding: 12px 16px; border: 0; border-radius: 26px; background: {{s.bg}}; box-shadow: {{s.ring}}; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+            <div style="width: 44px; height: 44px; border-radius: 22px; background: {{s.badgeBg}}; color: {{s.badgeFg}}; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 20px; font-weight: 700">{{s.label}}</div>
+            <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1">
+              <div style="font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; color: {{s.valueColor}}">{{s.w}}<span style="font-size: 17px; color: #9C9CA3"> lb </span>× {{s.r}}</div>
+              <div style="font-size: 17px; font-weight: 600; color: {{s.subColor}}">{{s.sub}}</div>
+            </div>
+            <sc-if value="{{s.done}}" hint-placeholder-val="{{ true }}">
+              <div aria-label="Done" style="width: 36px; height: 36px; border-radius: 18px; background: #0A84FF; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>
+              </div>
+            </sc-if>
+            <sc-if value="{{s.notDone}}" hint-placeholder-val="{{ false }}">
+              <div aria-label="Not done" style="width: 36px; height: 36px; border-radius: 18px; box-shadow: inset 0 0 0 3px {{s.ringColor}}; flex-shrink: 0; box-sizing: border-box"></div>
+            </sc-if>
+          </button>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 14px">
+        <button onClick="{{exv.addSet}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 76px; padding: 0 20px; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add Set
+        </button>
+        <button onClick="{{exv.openSettings}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 76px; padding: 0 20px; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>Exercise Settings
+        </button>
+      </div>
+    </sc-if>
+
+    <!-- SET EDITOR -->
+    <sc-if value="{{is.set}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px; font-size: 18px; color: #9C9CA3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{sv.exName}}</div>
+      <div style="display: flex; align-items: center; gap: 10px; margin: 2px 8px 14px">
+        <div style="font-size: 30px; font-weight: 700">{{sv.title}}</div>
+        <sc-if value="{{sv.typed}}" hint-placeholder-val="{{ false }}">
+          <div style="padding: 4px 12px; border-radius: 16px; background: {{sv.typeBg}}; color: {{sv.typeFg}}; font-size: 17px; font-weight: 700">{{sv.typeName}}</div>
+        </sc-if>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px">
+        <button onClick="{{sv.focusW}}" aria-label="Weight {{sv.w}} pounds" style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px; height: 120px; padding: 14px 16px; border: 0; border-radius: 26px; background: {{sv.wBg}}; box-shadow: {{sv.wRing}}; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="font-size: 17px; font-weight: 600; color: {{sv.wLabel}}">Weight · lb</div>
+          <div style="font-size: 56px; font-weight: 600; line-height: 1.05; font-variant-numeric: tabular-nums; letter-spacing: -1px">{{sv.w}}</div>
+        </button>
+        <button onClick="{{sv.focusR}}" aria-label="{{sv.r}} reps" style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px; height: 120px; padding: 14px 16px; border: 0; border-radius: 26px; background: {{sv.rBg}}; box-shadow: {{sv.rRing}}; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="font-size: 17px; font-weight: 600; color: {{sv.rLabel}}">Reps</div>
+          <div style="font-size: 56px; font-weight: 600; line-height: 1.05; font-variant-numeric: tabular-nums; letter-spacing: -1px">{{sv.r}}</div>
+        </button>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px">
+        <button onClick="{{sv.dec}}" aria-label="Decrease {{sv.focusName}}" style="height: 64px; border: 0; border-radius: 32px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 32px; font-weight: 500; cursor: pointer">−</button>
+        <button onClick="{{sv.inc}}" aria-label="Increase {{sv.focusName}}" style="height: 64px; border: 0; border-radius: 32px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 32px; font-weight: 500; cursor: pointer">+</button>
+      </div>
+      <div style="margin: 12px 8px; text-align: center; font-size: 17px; color: #9C9CA3; font-variant-numeric: tabular-nums">{{sv.last}}</div>
+      <button onClick="{{sv.log}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 80px; padding: 0 20px; border: 0; border-radius: 40px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 24px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>{{sv.primary}}
+      </button>
+      <div style="margin: 26px 8px 10px; font-size: 19px; font-weight: 600; color: #9C9CA3">Set Settings</div>
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <button onClick="{{sv.openRpe}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #FF375F; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M5 20v-5M10 20v-9M15 20V7M20 20V3.5"></path></svg>
+          </div>
+          <div style="font-size: 21px; font-weight: 600; flex-grow: 1">RPE</div>
+          <div style="font-size: 21px; font-weight: 600; color: {{sv.rpeColor}}">{{sv.rpe}}</div>
+        </button>
+        <button onClick="{{sv.openType}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #5E5CE6; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12.2V4.5c0-.6.4-1 1-1h7.7l8.3 8.3-8.7 8.7z"></path><circle cx="8" cy="8" r="1.6"></circle></svg>
+          </div>
+          <div style="font-size: 21px; font-weight: 600; flex-grow: 1">Set Type</div>
+          <div style="font-size: 21px; color: #9C9CA3">{{sv.typeValue}}</div>
+        </button>
+        <sc-if value="{{sv.done}}" hint-placeholder-val="{{ false }}">
+          <button onClick="{{sv.undo}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; font-size: 21px; font-weight: 600; text-align: left; cursor: pointer; box-sizing: border-box">
+            <div style="width: 40px; height: 40px; border-radius: 20px; background: #636366; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3"></path></svg>
+            </div>Mark as Not Done
+          </button>
+        </sc-if>
+        <button onClick="{{sv.del}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FF6961; font: inherit; font-size: 21px; font-weight: 600; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #FF453A; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5h16M9.5 6.5V4h5v2.5M6.5 6.5l1 13.5h9l1-13.5M10 10.5v6M14 10.5v6"></path></svg>
+          </div>Delete Set
+        </button>
+      </div>
+    </sc-if>
+
+    <!-- REST -->
+    <sc-if value="{{is.rest}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px; font-size: 30px; font-weight: 700; color: #64D2FF">Rest</div>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin: 4px 0 8px">
+        <button onClick="{{rest.minus}}" aria-label="Subtract 15 seconds" style="width: 76px; height: 76px; flex-shrink: 0; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer">−15</button>
+        <div style="position: relative; width: 224px; height: 224px; flex-shrink: 0">
+          <svg width="224" height="224" viewBox="0 0 224 224" role="img" aria-label="{{rest.aria}}">
+            <circle cx="112" cy="112" r="100" fill="none" stroke="rgba(100,210,255,0.2)" stroke-width="16"></circle>
+            <circle cx="112" cy="112" r="100" fill="none" stroke="#64D2FF" stroke-width="16" stroke-linecap="round" stroke-dasharray="{{rest.dash}}" transform="rotate(-90 112 112)"></circle>
+          </svg>
+          <div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center">
+            <div style="font-size: 60px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -1px">{{rest.left}}</div>
+            <div style="margin-top: 6px; font-size: 17px; color: #9C9CA3; font-variant-numeric: tabular-nums">of {{rest.total}}</div>
+          </div>
+        </div>
+        <button onClick="{{rest.plus}}" aria-label="Add 15 seconds" style="width: 76px; height: 76px; flex-shrink: 0; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer">+15</button>
+      </div>
+      <div style="margin: 0 8px 12px; text-align: center; font-size: 18px; color: #9C9CA3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Next <span style="color: #FFFFFF; font-weight: 600">{{rest.next}}</span></div>
+      <button onClick="{{rest.skip}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 72px; padding: 0 20px; border: 0; border-radius: 36px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 5.5l9 6.5-9 6.5z"></path><path d="M18 5.5v13"></path></svg>Skip Rest
+      </button>
+    </sc-if>
+
+    <!-- FINISH -->
+    <sc-if value="{{is.finish}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 2px; font-size: 32px; font-weight: 700; letter-spacing: -0.3px">Finish Workout</div>
+      <div style="margin: 0 8px 14px; font-size: 19px; color: #9C9CA3">{{title}}</div>
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px">
+        <sc-for list="{{fin.tiles}}" as="t" hint-placeholder-count="6">
+          <div style="display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: 24px; background: #222224">
+            <div style="font-size: 16px; color: #9C9CA3">{{t.label}}</div>
+            <div style="font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; color: {{t.color}}; white-space: nowrap">{{t.value}}<span style="font-size: 16px; color: #9C9CA3; font-weight: 600">{{t.unit}}</span></div>
+          </div>
+        </sc-for>
+      </div>
+      <button onClick="{{fin.effort}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; margin-top: 8px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+        <div style="width: 40px; height: 40px; border-radius: 20px; background: #FF375F; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M5 20v-5M10 20v-9M15 20V7M20 20V3.5"></path></svg>
+        </div>
+        <div style="font-size: 21px; font-weight: 600; flex-grow: 1">Workout Effort</div>
+        <div style="font-size: 21px; font-weight: 600; color: {{fin.effortColor}}">{{fin.effortValue}}</div>
+      </button>
+      <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 16px">
+        <button onClick="{{fin.save}}" style="display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 80px; padding: 0 20px; border: 0; border-radius: 40px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 24px; font-weight: 600; cursor: pointer; box-sizing: border-box">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>Save Workout
+        </button>
+        <button onClick="{{pop}}" style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 76px; padding: 0 20px; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 600; cursor: pointer; box-sizing: border-box">Keep Going</button>
+        <button onClick="{{fin.discard}}" style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 64px; border: 0; border-radius: 32px; background: transparent; color: #FF6961; font: inherit; font-size: 20px; font-weight: 600; cursor: pointer">Discard Workout</button>
+      </div>
+    </sc-if>
+
+    <!-- SAVED CONFIRMATION -->
+    <sc-if value="{{is.done}}" hint-placeholder-val="{{ false }}">
+      <div style="display: flex; flex-direction: column; align-items: center; text-align: center; padding-top: 4px">
+        <div style="width: 116px; height: 116px; border-radius: 58px; background: #0A84FF; display: flex; align-items: center; justify-content: center; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35)">
+          <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>
+        </div>
+        <div style="margin-top: 16px; font-size: 30px; font-weight: 700">Workout Saved</div>
+        <div style="margin-top: 2px; font-size: 19px; color: #9C9CA3; font-variant-numeric: tabular-nums">{{dn.title}} · {{dn.dur}}</div>
+        <div style="display: flex; gap: 18px; margin: 14px 0 18px; font-size: 17px; font-weight: 600; color: #D1D1D6">
+          <div style="display: flex; align-items: center; gap: 6px"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#30D158" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"></rect><path d="M10.5 18.5h3"></path></svg>On iPhone</div>
+          <div style="display: flex; align-items: center; gap: 6px"><svg width="17" height="17" viewBox="0 0 24 24" fill="#FF453A" aria-hidden="true"><path d="M12 20.6c-.3 0-.6-.1-.8-.3C7.4 17.1 2.5 13.4 2.5 8.7 2.5 5.8 4.7 3.6 7.4 3.6c1.9 0 3.5 1 4.6 2.6 1.1-1.6 2.7-2.6 4.6-2.6 2.7 0 4.9 2.2 4.9 5.1 0 4.7-4.9 8.4-8.7 11.6-.2.2-.5.3-.8.3z"></path></svg>In Health</div>
+        </div>
+        <button onClick="{{dn.close}}" style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 80px; padding: 0 20px; border: 0; border-radius: 40px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 24px; font-weight: 600; cursor: pointer; box-sizing: border-box">Done</button>
+      </div>
+    </sc-if>
+
+    <!-- CONFIRM -->
+    <sc-if value="{{is.confirm}}" hint-placeholder-val="{{ false }}">
+      <div style="display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 6px 8px 0">
+        <div style="font-size: 30px; font-weight: 700">{{cf.title}}</div>
+        <div style="font-size: 19px; color: #9C9CA3; margin-bottom: 14px">{{cf.msg}}</div>
+        <button onClick="{{cf.act}}" style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 80px; padding: 0 20px; border: 0; border-radius: 40px; background: rgba(255,69,58,0.26); color: #FF6961; font: inherit; font-size: 24px; font-weight: 600; cursor: pointer; box-sizing: border-box">{{cf.label}}</button>
+        <button onClick="{{pop}}" style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 76px; padding: 0 20px; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 600; cursor: pointer; box-sizing: border-box">Cancel</button>
+      </div>
+    </sc-if>
+
+    <!-- EXERCISE SETTINGS -->
+    <sc-if value="{{is.exSettings}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 2px; font-size: 30px; font-weight: 700">Exercise Settings</div>
+      <div style="margin: 0 8px 14px; font-size: 18px; color: #9C9CA3">{{exs.name}}</div>
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <button onClick="{{exs.openRest}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #32ADE6; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="13.5" r="7.5"></circle><path d="M12 9.5v4l2.5 2M9.5 2.5h5"></path></svg>
+          </div>
+          <div style="font-size: 21px; font-weight: 600; flex-grow: 1">Rest Timer</div>
+          <div style="font-size: 21px; font-weight: 600; color: #64D2FF; font-variant-numeric: tabular-nums">{{exs.rest}}</div>
+        </button>
+        <button onClick="{{exs.openSup}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #0A84FF; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M9.5 14.5l5-5M10.6 6.6l1.6-1.6a4.2 4.2 0 0 1 6 6l-1.6 1.6M13.4 17.4l-1.6 1.6a4.2 4.2 0 0 1-6-6l1.6-1.6"></path></svg>
+          </div>
+          <div style="font-size: 21px; font-weight: 600; flex-grow: 1">Superset</div>
+          <div style="font-size: 19px; color: #9C9CA3; max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{exs.sup}}</div>
+        </button>
+        <button onClick="{{exs.replace}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; font-size: 21px; font-weight: 600; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #636366; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 3.5V8h4.5M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20.5V16h-4.5"></path></svg>
+          </div>Replace Exercise
+        </button>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px">
+          <button onClick="{{exs.up}}" style="display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 76px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; opacity: {{exs.upOpacity}}; font: inherit; font-size: 20px; font-weight: 600; cursor: pointer">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"></path></svg>Move Up
+          </button>
+          <button onClick="{{exs.down}}" style="display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 76px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; opacity: {{exs.downOpacity}}; font: inherit; font-size: 20px; font-weight: 600; cursor: pointer">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"></path></svg>Move Down
+          </button>
+        </div>
+        <button style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #FFD60A; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3.5h7.5L19 8v12.5H7zM14 3.5V8.5h5M10 13h6M10 16.5h4"></path></svg>
+          </div>
+          <div style="font-size: 21px; font-weight: 600; flex-grow: 1">Notes</div>
+          <div style="font-size: 19px; color: #9C9CA3">Dictate</div>
+        </button>
+        <button onClick="{{exs.del}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FF6961; font: inherit; font-size: 21px; font-weight: 600; text-align: left; cursor: pointer; box-sizing: border-box">
+          <div style="width: 40px; height: 40px; border-radius: 20px; background: #FF453A; display: flex; align-items: center; justify-content: center; flex-shrink: 0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5h16M9.5 6.5V4h5v2.5M6.5 6.5l1 13.5h9l1-13.5M10 10.5v6M14 10.5v6"></path></svg>
+          </div>Delete Exercise
+        </button>
+      </div>
+    </sc-if>
+
+    <!-- REST TIMER PICKER -->
+    <sc-if value="{{is.restPicker}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 2px; font-size: 30px; font-weight: 700">Rest Timer</div>
+      <div style="margin: 0 8px 10px; font-size: 18px; color: #9C9CA3">{{exs.name}}</div>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin: 4px 0 14px">
+        <button onClick="{{rp.minus}}" aria-label="Subtract 15 seconds" style="width: 76px; height: 76px; flex-shrink: 0; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 700; cursor: pointer">−15</button>
+        <div style="font-size: 64px; font-weight: 600; color: #64D2FF; font-variant-numeric: tabular-nums; letter-spacing: -1px">{{rp.value}}</div>
+        <button onClick="{{rp.plus}}" aria-label="Add 15 seconds" style="width: 76px; height: 76px; flex-shrink: 0; border: 0; border-radius: 38px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 22px; font-weight: 700; cursor: pointer">+15</button>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px">
+        <sc-for list="{{rp.presets}}" as="o" hint-placeholder-count="6">
+          <button onClick="{{o.pick}}" style="height: 60px; border: 0; border-radius: 30px; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; cursor: pointer">{{o.label}}</button>
+        </sc-for>
+      </div>
+      <button onClick="{{pop}}" style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 76px; margin-top: 16px; padding: 0 20px; border: 0; border-radius: 38px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 23px; font-weight: 600; cursor: pointer; box-sizing: border-box">Done</button>
+    </sc-if>
+
+    <!-- SUPERSET PICKER -->
+    <sc-if value="{{is.superset}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 2px; font-size: 30px; font-weight: 700">Superset</div>
+      <div style="margin: 0 8px 14px; font-size: 18px; color: #9C9CA3">Alternate sets with {{exs.short}}</div>
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <sc-for list="{{sp.rows}}" as="o" hint-placeholder-count="4">
+          <button onClick="{{o.toggle}}" aria-pressed="{{o.on}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 92px; padding: 12px 16px; border: 0; border-radius: 26px; background: {{o.bg}}; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+            <div aria-hidden="true" style="width: 52px; height: 52px; border-radius: 26px; background: #FFFFFF; display: flex; align-items: center; justify-content: center; color: #8E8E93; flex-shrink: 0">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11"></path></svg>
+            </div>
+            <div style="font-size: 21px; font-weight: 600; flex-grow: 1; min-width: 0">{{o.name}}</div>
+            <div style="width: 36px; height: 36px; border-radius: 18px; background: {{o.markBg}}; box-shadow: {{o.markRing}}; display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-sizing: border-box">
+              <sc-if value="{{o.on}}" hint-placeholder-val="{{ false }}">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>
+              </sc-if>
+            </div>
+          </button>
+        </sc-for>
+      </div>
+      <button onClick="{{pop}}" style="display: flex; align-items: center; justify-content: center; width: 100%; min-height: 76px; margin-top: 16px; padding: 0 20px; border: 0; border-radius: 38px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 23px; font-weight: 600; cursor: pointer; box-sizing: border-box">Done</button>
+    </sc-if>
+
+    <!-- SET TYPE -->
+    <sc-if value="{{is.setType}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 14px; font-size: 30px; font-weight: 700">Set Type</div>
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <sc-for list="{{ty.rows}}" as="o" hint-placeholder-count="4">
+          <button onClick="{{o.pick}}" aria-pressed="{{o.on}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 84px; padding: 12px 18px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+            <div style="width: 44px; height: 44px; border-radius: 22px; background: {{o.bg}}; color: {{o.fg}}; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 20px; font-weight: 700">{{o.badge}}</div>
+            <div style="font-size: 21px; font-weight: 600; flex-grow: 1">{{o.name}}</div>
+            <sc-if value="{{o.on}}" hint-placeholder-val="{{ false }}">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#409CFF" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>
+            </sc-if>
+          </button>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <!-- EFFORT (RPE) -->
+    <sc-if value="{{is.rpe}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 2px; font-size: 30px; font-weight: 700">{{rpe.title}}</div>
+      <div style="margin: 0 8px 8px; font-size: 18px; color: #9C9CA3">{{rpe.context}}</div>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px">
+        <button onClick="{{rpe.minus}}" aria-label="Lower effort" style="width: 68px; height: 68px; flex-shrink: 0; border: 0; border-radius: 34px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 30px; font-weight: 500; cursor: pointer">−</button>
+        <div style="display: flex; flex-direction: column; align-items: center">
+          <div style="font-size: 64px; font-weight: 600; line-height: 1; color: {{rpe.color}}; font-variant-numeric: tabular-nums">{{rpe.big}}</div>
+          <div style="margin-top: 4px; font-size: 18px; font-weight: 600; color: #D1D1D6">{{rpe.text}}</div>
+        </div>
+        <button onClick="{{rpe.plus}}" aria-label="Raise effort" style="width: 68px; height: 68px; flex-shrink: 0; border: 0; border-radius: 34px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 30px; font-weight: 500; cursor: pointer">+</button>
+      </div>
+      <sc-if value="{{rpe.isWk}}" hint-placeholder-val="{{ false }}">
+<svg width="402" height="170" viewBox="0 0 402 170" role="img" aria-label="Effort {{rpe.big}}, {{rpe.text}}" style="display: block"><path d="{{ef.g0.d}}" fill="{{ef.g0.fill}}" onClick="{{ef.g0.pick}}" style="cursor: pointer"></path><path d="{{ef.g1.d}}" fill="{{ef.g1.fill}}" onClick="{{ef.g1.pick}}" style="cursor: pointer"></path><path d="{{ef.g2.d}}" fill="{{ef.g2.fill}}" onClick="{{ef.g2.pick}}" style="cursor: pointer"></path><path d="{{ef.g3.d}}" fill="{{ef.g3.fill}}" onClick="{{ef.g3.pick}}" style="cursor: pointer"></path><circle cx="{{ef.d0.cx}}" cy="{{ef.d0.cy}}" r="{{ef.d0.r}}" fill="{{ef.d0.fill}}" onClick="{{ef.d0.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d1.cx}}" cy="{{ef.d1.cy}}" r="{{ef.d1.r}}" fill="{{ef.d1.fill}}" onClick="{{ef.d1.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d2.cx}}" cy="{{ef.d2.cy}}" r="{{ef.d2.r}}" fill="{{ef.d2.fill}}" onClick="{{ef.d2.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d3.cx}}" cy="{{ef.d3.cy}}" r="{{ef.d3.r}}" fill="{{ef.d3.fill}}" onClick="{{ef.d3.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d4.cx}}" cy="{{ef.d4.cy}}" r="{{ef.d4.r}}" fill="{{ef.d4.fill}}" onClick="{{ef.d4.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d5.cx}}" cy="{{ef.d5.cy}}" r="{{ef.d5.r}}" fill="{{ef.d5.fill}}" onClick="{{ef.d5.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d6.cx}}" cy="{{ef.d6.cy}}" r="{{ef.d6.r}}" fill="{{ef.d6.fill}}" onClick="{{ef.d6.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d7.cx}}" cy="{{ef.d7.cy}}" r="{{ef.d7.r}}" fill="{{ef.d7.fill}}" onClick="{{ef.d7.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d8.cx}}" cy="{{ef.d8.cy}}" r="{{ef.d8.r}}" fill="{{ef.d8.fill}}" onClick="{{ef.d8.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d9.cx}}" cy="{{ef.d9.cy}}" r="{{ef.d9.r}}" fill="{{ef.d9.fill}}" onClick="{{ef.d9.pick}}" style="cursor: pointer"></circle></svg>
+</sc-if>
+<sc-if value="{{rpe.isSet}}" hint-placeholder-val="{{ true }}">
+<svg width="402" height="150" viewBox="0 0 402 150" role="img" aria-label="RPE {{rpe.big}}" style="display: block"><path d="{{rb.b0.d}}" fill="{{rb.b0.fill}}" onClick="{{rb.b0.pick}}" style="cursor: pointer"></path><path d="{{rb.b1.d}}" fill="{{rb.b1.fill}}" onClick="{{rb.b1.pick}}" style="cursor: pointer"></path><path d="{{rb.b2.d}}" fill="{{rb.b2.fill}}" onClick="{{rb.b2.pick}}" style="cursor: pointer"></path><path d="{{rb.b3.d}}" fill="{{rb.b3.fill}}" onClick="{{rb.b3.pick}}" style="cursor: pointer"></path><path d="{{rb.b4.d}}" fill="{{rb.b4.fill}}" onClick="{{rb.b4.pick}}" style="cursor: pointer"></path><path d="{{rb.b5.d}}" fill="{{rb.b5.fill}}" onClick="{{rb.b5.pick}}" style="cursor: pointer"></path><path d="{{rb.b6.d}}" fill="{{rb.b6.fill}}" onClick="{{rb.b6.pick}}" style="cursor: pointer"></path><path d="{{rb.b7.d}}" fill="{{rb.b7.fill}}" onClick="{{rb.b7.pick}}" style="cursor: pointer"></path><path d="{{rb.b8.d}}" fill="{{rb.b8.fill}}" onClick="{{rb.b8.pick}}" style="cursor: pointer"></path><path d="{{rb.b9.d}}" fill="{{rb.b9.fill}}" onClick="{{rb.b9.pick}}" style="cursor: pointer"></path><path d="{{rb.b10.d}}" fill="{{rb.b10.fill}}" onClick="{{rb.b10.pick}}" style="cursor: pointer"></path></svg>
+<div style="position: relative; height: 24px; margin-top: 6px; font-size: 16px; font-weight: 600; color: #9C9CA3; font-variant-numeric: tabular-nums"><sc-for list="{{rb.labels}}" as="o" hint-placeholder-count="6"><span style="position: absolute; left: {{o.x}}px; transform: translateX(-50%)">{{o.t}}</span></sc-for></div>
+</sc-if>
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 14px">
+        <button onClick="{{rpe.clear}}" style="min-height: 72px; border: 0; border-radius: 36px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #FFFFFF; font: inherit; font-size: 21px; font-weight: 600; cursor: pointer">Clear</button>
+        <button onClick="{{pop}}" style="min-height: 72px; border: 0; border-radius: 36px; background: #0A84FF; box-shadow: inset 0 1px 0 rgba(255,255,255,0.35); color: #FFFFFF; font: inherit; font-size: 21px; font-weight: 600; cursor: pointer">Done</button>
+      </div>
+    </sc-if>
+
+    <!-- EXERCISE PICKER -->
+    <sc-if value="{{is.picker}}" hint-placeholder-val="{{ false }}">
+      <div style="margin: 0 8px 12px; font-size: 30px; font-weight: 700">{{pk.title}}</div>
+      <button style="display: flex; align-items: center; gap: 10px; width: 100%; min-height: 68px; padding: 0 20px; border: 0; border-radius: 34px; background: rgba(255,255,255,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.22); color: #9C9CA3; font: inherit; font-size: 21px; text-align: left; cursor: pointer; box-sizing: border-box">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="M15.5 15.5L20.5 20.5"></path></svg>
+        <span style="flex-grow: 1">Search</span>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"></path></svg>
+      </button>
+      <div style="margin: 22px 8px 10px; font-size: 19px; font-weight: 600; color: #9C9CA3">Recent</div>
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <sc-for list="{{pk.recent}}" as="o" hint-placeholder-count="4">
+          <button onClick="{{o.pick}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 92px; padding: 12px 16px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+            <div aria-hidden="true" style="width: 52px; height: 52px; border-radius: 26px; background: #FFFFFF; display: flex; align-items: center; justify-content: center; color: #8E8E93; flex-shrink: 0">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11"></path></svg>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+              <div style="font-size: 21px; font-weight: 600">{{o.name}}</div>
+              <div style="font-size: 17px; color: #9C9CA3">{{o.meta}}</div>
+            </div>
+          </button>
+        </sc-for>
+      </div>
+      <div style="margin: 22px 8px 10px; font-size: 19px; font-weight: 600; color: #9C9CA3">All Exercises</div>
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <sc-for list="{{pk.all}}" as="o" hint-placeholder-count="4">
+          <button onClick="{{o.pick}}" style="display: flex; align-items: center; gap: 14px; width: 100%; min-height: 92px; padding: 12px 16px; border: 0; border-radius: 26px; background: #222224; color: #FFFFFF; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box">
+            <div aria-hidden="true" style="width: 52px; height: 52px; border-radius: 26px; background: #FFFFFF; display: flex; align-items: center; justify-content: center; color: #8E8E93; flex-shrink: 0">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11"></path></svg>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+              <div style="font-size: 21px; font-weight: 600">{{o.name}}</div>
+              <div style="font-size: 17px; color: #9C9CA3">{{o.meta}}</div>
+            </div>
+          </button>
+        </sc-for>
+      </div>
+    </sc-if>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"start":{"editor":"enum","default":"home","options":["home","homeIdle","saved","savedDetail","history","historyDetail","settings","workout","empty","aod","exercise","set","rest","finish","done","exSettings","restPicker","superset","setType","rpe","effort","picker","confirm"]},"tall":{"editor":"boolean","default":false},"live":{"editor":"boolean","default":true},"$preview":{"width":422,"height":514}}'>
+function demoEx() {
+  var S = function (t, w, r, done, rpe, last) { return { t: t, w: w, r: r, done: done, rpe: rpe || null, last: last || null }; };
+  return [
+    { name: 'Bench Press: Barbell', meta: 'Barbell · Chest, Triceps', rest: 150, group: null, sets: [S('W', 95, 10, true, null, '95 × 10'), S('N', 185, 8, true, 7, '185 × 8'), S('N', 205, 5, true, 8, '205 × 5'), S('N', 205, 5, false, null, '205 × 5 · RPE 8.5'), S('N', 205, 5, false, null, '200 × 5')] },
+    { name: 'Incline Press: Dumbbell', meta: 'Dumbbell · Upper chest', rest: 90, group: 'A', sets: [S('N', 60, 10, false, null, '55 × 10'), S('N', 60, 10, false, null, '55 × 10'), S('N', 60, 10, false, null, '55 × 9')] },
+    { name: 'Fly: Cable', meta: 'Cable · Chest', rest: 90, group: 'A', sets: [S('N', 30, 12, false, null, '30 × 12'), S('N', 30, 12, false, null, '30 × 12'), S('N', 30, 12, false, null, '30 × 10')] },
+    { name: 'Triceps Pushdown: Cable', meta: 'Cable · Triceps', rest: 60, group: null, sets: [S('N', 50, 12, false, null, '50 × 12'), S('N', 50, 12, false, null, '50 × 12'), S('N', 50, 12, false, null, '45 × 12')] },
+    { name: 'Lateral Raise: Dumbbell', meta: 'Dumbbell · Shoulders', rest: 60, group: null, sets: [S('N', 20, 15, false, null, '20 × 15'), S('N', 20, 15, false, null, '20 × 15'), S('N', 20, 12, false, null, '20 × 12'), S('D', 15, 12, false, null, '15 × 12')] }
+  ];
+}
+var SAVED = [
+  { name: 'Push Day', count: 5, sets: 18, muscles: 'Chest, Triceps, Shoulders', last: 'Last done Oct 20' },
+  { name: 'Pull Day', count: 5, sets: 16, muscles: 'Back, Biceps', last: 'Last done yesterday' },
+  { name: 'Legs', count: 5, sets: 17, muscles: 'Quads, Glutes, Hamstrings', last: 'Last done Oct 22' },
+  { name: 'Upper Body', count: 7, sets: 21, muscles: 'Chest, Back, Arms', last: 'Last done Oct 15' }
+];
+var HIST = [
+  { name: 'Pull Day', date: 'Yesterday · 6:12 PM', dur: '1h 04m', sets: 16, vol: '14.8k', hr: 124, kcal: 398 },
+  { name: 'Legs', date: 'Thu, Oct 22 · 7:05 AM', dur: '1h 12m', sets: 17, vol: '21.3k', hr: 131, kcal: 472 },
+  { name: 'Push Day', date: 'Tue, Oct 20 · 6:30 PM', dur: '58m', sets: 18, vol: '16.9k', hr: 126, kcal: 361 },
+  { name: 'Upper Body', date: 'Thu, Oct 15 · 6:48 PM', dur: '1h 21m', sets: 21, vol: '19.2k', hr: 122, kcal: 455 }
+];
+var HIST_EX = [
+  { name: 'Deadlift: Barbell', sets: 4, best: '315 lb × 5', pr: true },
+  { name: 'Pull-up', sets: 4, best: 'BW × 10', pr: false },
+  { name: 'Row: Barbell', sets: 3, best: '165 lb × 8', pr: false },
+  { name: 'Lat Pulldown: Cable', sets: 3, best: '140 lb × 10', pr: false },
+  { name: 'Curl: Dumbbell', sets: 2, best: '35 lb × 12', pr: false }
+];
+var RECENT = [
+  { name: 'Overhead Press: Barbell', meta: 'Barbell · Shoulders', w: 95, r: 8 },
+  { name: 'Dip', meta: 'Bodyweight · Chest, Triceps', w: 0, r: 10 },
+  { name: 'Pec Deck: Machine', meta: 'Machine · Chest', w: 120, r: 12 },
+  { name: 'Skull Crusher: EZ Bar', meta: 'EZ bar · Triceps', w: 60, r: 10 }
+];
+var ALL = [
+  { name: 'Ab Wheel', meta: 'Bodyweight · Abs', w: 0, r: 10 },
+  { name: 'Arnold Press: Dumbbell', meta: 'Dumbbell · Shoulders', w: 35, r: 10 },
+  { name: 'Back Extension', meta: 'Bodyweight · Lower back', w: 0, r: 12 },
+  { name: 'Bench Press: Dumbbell', meta: 'Dumbbell · Chest', w: 70, r: 8 }
+];
+var TYPES = {
+  N: { name: 'Normal', badge: '1', bg: '#333336', fg: '#FFFFFF', done: 'rgba(10,132,255,0.22)' },
+  W: { name: 'Warm-up', badge: 'W', bg: 'rgba(255,159,10,0.26)', fg: '#FF9F0A', done: 'rgba(255,159,10,0.16)' },
+  D: { name: 'Drop Set', badge: 'D', bg: 'rgba(94,92,230,0.34)', fg: '#A5A3FF', done: 'rgba(94,92,230,0.22)' },
+  F: { name: 'Failure', badge: 'F', bg: 'rgba(255,69,58,0.26)', fg: '#FF6961', done: 'rgba(255,69,58,0.16)' }
+};
+function mmss(sec) {
+  sec = Math.max(0, Math.round(sec));
+  var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(s).padStart(2, '0');
+}
+function wfmt(w) { var v = Math.round(w * 2) / 2; return v % 1 ? v.toFixed(1) : String(v); }
+function num(n) { return Math.round(n).toLocaleString('en-US'); }
+function shortName(n) { return n.split(':')[0]; }
+function rpeText(v) {
+  if (v == null) return 'Not rated';
+  if (v >= 10) return 'Max effort';
+  if (v >= 9.5) return 'Maybe 1 more';
+  if (v >= 9) return '1 rep left';
+  if (v >= 8.5) return '1–2 reps left';
+  if (v >= 8) return '2 reps left';
+  if (v >= 7.5) return '2–3 reps left';
+  if (v >= 7) return '3 reps left';
+  if (v >= 6) return '4+ reps left';
+  return 'Easy';
+}
+function nextOf(ex) {
+  for (var i = 0; i < ex.length; i++) {
+    var open = ex[i].sets.findIndex(function (x) { return !x.done; });
+    if (open < 0) continue;
+    if (!ex[i].group) return { e: i, i: open };
+    var best = null, bestDone = 1e9, g = ex[i].group;
+    ex.forEach(function (x, j) {
+      if (x.group !== g) return;
+      var o = x.sets.findIndex(function (y) { return !y.done; });
+      if (o < 0) return;
+      var d = x.sets.filter(function (y) { return y.done; }).length;
+      if (d < bestDone) { bestDone = d; best = { e: j, i: o }; }
+    });
+    return best;
+  }
+  return null;
+}
+function slantPath(x0, x1, yl, yr, yb, r) {
+  var s = (yl - yr) / (x1 - x0);
+  var f = function (n) { return n.toFixed(1); };
+  return 'M' + f(x0) + ',' + f(yb - r) + ' L' + f(x0) + ',' + f(yl + r) + ' Q' + f(x0) + ',' + f(yl) + ' ' + f(x0 + r) + ',' + f(yl - s * r) +
+    ' L' + f(x1 - r) + ',' + f(yr + s * r) + ' Q' + f(x1) + ',' + f(yr) + ' ' + f(x1) + ',' + f(yr + r) + ' L' + f(x1) + ',' + f(yb - r) +
+    ' Q' + f(x1) + ',' + f(yb) + ' ' + f(x1 - r) + ',' + f(yb) + ' L' + f(x0 + r) + ',' + f(yb) + ' Q' + f(x0) + ',' + f(yb) + ' ' + f(x0) + ',' + f(yb - r) + 'Z';
+}
+var EFFORT_GROUPS = [
+  { n: 3, name: 'Easy', c: '#30D158', hl: 0.22, hr: 0.385 },
+  { n: 3, name: 'Moderate', c: '#FFD60A', hl: 0.48, hr: 0.64 },
+  { n: 2, name: 'Hard', c: '#FF9F0A', hl: 0.74, hr: 0.82 },
+  { n: 2, name: 'All Out', c: '#FF453A', hl: 0.905, hr: 1 }
+];
+function effortName(v) { if (v == null) return 'Not rated'; return v <= 3 ? 'Easy' : (v <= 6 ? 'Moderate' : (v <= 8 ? 'Hard' : 'All Out')); }
+function effortColor(v) { if (v == null) return '#9C9CA3'; return v <= 3 ? '#30D158' : (v <= 6 ? '#FFD60A' : (v <= 8 ? '#FF9F0A' : '#FF453A')); }
+function effortGeo(W, H, gap, r, v, base, onPick) {
+  var unit = (W - 3 * gap) / 10, x = 0, lvl = 0, out = {};
+  EFFORT_GROUPS.forEach(function (g, gi) {
+    var gw = unit * g.n, x0 = x, x1 = x + gw, first = lvl + 1, last = lvl + g.n;
+    var on = v != null && v >= first;
+    out['g' + gi] = { d: slantPath(x0, x1, H - g.hl * H, H - g.hr * H, H, r), fill: on ? g.c : base, pick: onPick(v != null && v >= first && v <= last ? v : first) };
+    for (var k = 0; k < g.n; k++) {
+      var L = ++lvl;
+      out['d' + (L - 1)] = { cx: (x0 + (k + 0.5) * gw / g.n).toFixed(1), cy: (H - 18).toFixed(1), r: v === L ? '7' : '5',
+        fill: v === L ? '#FFFFFF' : (on ? (L < v ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.28)') : 'rgba(255,255,255,0.3)'), pick: onPick(L) };
+    }
+    x = x1 + gap;
+  });
+  return out;
+}
+function rpeGeo(W, H, gap, v, base, onPick) {
+  var n = 11, unit = (W - (n - 1) * gap) / n, out = { labels: [] };
+  var hAt = function (x) { return H * (0.28 + 0.72 * x / W); };
+  for (var k = 0; k < n; k++) {
+    var x0 = k * (unit + gap), x1 = x0 + unit, val = 5 + k * 0.5;
+    out['b' + k] = { d: slantPath(x0, x1, H - hAt(x0), H - hAt(x1), H, Math.min(8, unit / 2.6)), fill: v != null && val <= v ? '#FF375F' : base, pick: onPick(val) };
+    if (val % 1 === 0) out.labels.push({ x: ((x0 + x1) / 2).toFixed(1), t: String(val) });
+  }
+  return out;
+}
+function clone(x) { return JSON.parse(JSON.stringify(x)); }
+
+class Component extends DCLogic {
+  t0() { if (!this._t0) this._t0 = Date.now(); return this._t0; }
+  base() {
+    var p = this.props || {};
+    var start = p.start || 'home';
+    var H = { s: 'home' }, W = { s: 'workout' }, E0 = { s: 'exercise', e: 0 };
+    var map = {
+      home: [H], homeIdle: [H], saved: [H, { s: 'saved' }], savedDetail: [H, { s: 'saved' }, { s: 'savedDetail', k: 0 }],
+      history: [H, { s: 'history' }], historyDetail: [H, { s: 'history' }, { s: 'historyDetail', k: 0 }], settings: [H, { s: 'settings' }],
+      workout: [H, W], aod: [H, W], empty: [H, W], exercise: [H, W, E0], set: [H, W, E0, { s: 'set', e: 0, i: 3 }],
+      rest: [H, W, E0, { s: 'rest' }], finish: [H, W, { s: 'finish' }], done: [H, { s: 'done' }],
+      exSettings: [H, W, E0, { s: 'exSettings', e: 0 }], restPicker: [H, W, E0, { s: 'exSettings', e: 0 }, { s: 'restPicker', e: 0 }],
+      superset: [H, W, { s: 'exercise', e: 1 }, { s: 'exSettings', e: 1 }, { s: 'superset', e: 1 }],
+      setType: [H, W, E0, { s: 'set', e: 0, i: 4 }, { s: 'setType', e: 0, i: 4 }],
+      rpe: [H, W, E0, { s: 'set', e: 0, i: 2 }, { s: 'rpe', e: 0, i: 2 }], effort: [H, W, { s: 'finish' }, { s: 'rpe', wk: true }],
+      picker: [H, W, { s: 'picker', mode: 'add' }], confirm: [H, W, { s: 'confirm', kind: 'discard' }]
+    };
+    return {
+      stack: map[start] || [H], ex: start === 'empty' ? [] : demoEx(), title: start === 'empty' ? 'Workout' : 'Push Day',
+      active: !(start === 'homeIdle' || start === 'done'), focus: 'w', unit: 'lb', wEffort: start === 'effort' ? 7 : null,
+      restEnd: start === 'rest' ? this.t0() + 102000 : null, restTotal: 150,
+      now: this.t0(), startAt: this.t0(), elapsedBase: start === 'empty' ? 41 : 1453, aod: start === 'aod',
+      doneTitle: 'Push Day', doneDur: '1:04:12'
+    };
+  }
+  S() { return Object.assign(this.base(), this.state || {}); }
+  put(patch) { this.setState(Object.assign(this.S(), patch)); }
+  push(entry, extra) { var s = this.S(); this.put(Object.assign({ stack: s.stack.concat([entry]) }, extra || {})); }
+  pop() { var s = this.S(); if (s.stack.length > 1) this.put({ stack: s.stack.slice(0, -1) }); }
+  componentDidMount() {
+    if (this.props && this.props.live === false) return;
+    var self = this;
+    this._iv = setInterval(function () {
+      var s = self.S(); var now = Date.now(); var patch = { now: now };
+      var top = s.stack[s.stack.length - 1];
+      if (top.s === 'rest' && s.restEnd && now >= s.restEnd) { patch.stack = s.stack.slice(0, -1); patch.restEnd = null; }
+      self.setState(Object.assign(s, patch));
+    }, 1000);
+  }
+  componentWillUnmount() { if (this._iv) clearInterval(this._iv); }
+
+  renderVals() {
+    var self = this;
+    var s = this.S(); var p = this.props || {};
+    var tall = !!p.tall;
+    var top = s.stack[s.stack.length - 1];
+    var scr = top.s;
+    var ex = s.ex;
+    var now = s.now;
+    var live = p.live !== false;
+    var elapsedSec = s.elapsedBase + Math.max(0, (now - s.startAt) / 1000);
+    var hr = live ? 128 + Math.round(3 * Math.sin(now / 4000)) : 128;
+    var kcal = 142 + Math.floor(Math.max(0, now - this.t0()) / 20000);
+    var activeScreens = ['workout', 'exercise', 'set', 'rest', 'finish', 'exSettings', 'restPicker', 'superset', 'setType', 'rpe', 'picker', 'confirm'];
+    var isActive = activeScreens.indexOf(scr) >= 0;
+    var is = {};
+    ['home', 'saved', 'savedDetail', 'history', 'historyDetail', 'settings', 'workout', 'exercise', 'set', 'rest', 'finish', 'done', 'exSettings', 'restPicker', 'superset', 'setType', 'rpe', 'picker', 'confirm'].forEach(function (k) { is[k] = scr === k; });
+    var pop = function () { self.pop(); };
+    var go = function (entry) { return function () { self.push(entry); }; };
+    var mut = function (fn, extra) { var c = clone(self.S().ex); fn(c); self.put(Object.assign({ ex: c }, extra || {})); };
+    var fresh = function () { var d = demoEx(); d.forEach(function (x) { x.sets.forEach(function (y) { y.done = false; y.rpe = null; }); }); return d; };
+    var startFrom = function (name) { return function () { self.put({ ex: fresh(), title: name, active: true, elapsedBase: 0, startAt: Date.now(), stack: [{ s: 'home' }, { s: 'workout' }] }); }; };
+    var logSet = function (e, i, fromEditor) {
+      var st = self.S(); var c = clone(st.ex); c[e].sets[i].done = true;
+      var baseStack = fromEditor ? st.stack.slice(0, -1) : st.stack;
+      var total = c[e].rest || 120;
+      self.put({ ex: c, stack: baseStack.concat([{ s: 'rest' }]), restEnd: Date.now() + total * 1000, restTotal: total, now: Date.now() });
+    };
+
+    var setsDone = 0, setsTotal = 0, volume = 0;
+    ex.forEach(function (x) { x.sets.forEach(function (y) { setsTotal++; if (y.done) { setsDone++; volume += y.w * y.r; } }); });
+    var nx = nextOf(ex);
+    var nxEx = nx ? ex[nx.e] : null; var nxSet = nx ? nxEx.sets[nx.i] : null;
+
+    var hdr = { back: s.stack.length > 1 && scr !== 'rest' && scr !== 'done', appTitle: scr === 'home', vitals: isActive, hr: String(hr), kcal: String(kcal) };
+    var b = tall ? { pos: 'relative', h: 'auto', ov: 'visible' } : { pos: 'absolute', h: '514px', ov: 'auto' };
+    b.opacity = s.aod ? '0.45' : '1';
+
+    var cellsAll = [];
+    ex.forEach(function (x) { x.sets.forEach(function (y) { cellsAll.push({ bg: y.done ? '#0A84FF' : 'rgba(255,255,255,0.2)' }); }); });
+    var savedRow = function (w, k) { return Object.assign({}, w, { open: go({ s: 'savedDetail', k: k }) }); };
+    var histRow = function (h, k) { return Object.assign({}, h, { open: go({ s: 'historyDetail', k: k }) }); };
+    var home = {
+      active: s.active, idle: !s.active, cells: cellsAll,
+      resume: function () { self.put({ stack: [{ s: 'home' }, { s: 'workout' }] }); },
+      newWorkout: function () { self.put({ ex: [], title: 'Workout', active: true, elapsedBase: 0, startAt: Date.now(), stack: [{ s: 'home' }, { s: 'workout' }] }); },
+      saved: SAVED.slice(0, 3).map(savedRow), history: HIST.slice(0, 3).map(histRow),
+      allSaved: go({ s: 'saved' }), allHistory: go({ s: 'history' }), settings: go({ s: 'settings' })
+    };
+
+    var rows = [];
+    ex.forEach(function (x, j) {
+      var prev = ex[j - 1], next = ex[j + 1];
+      var inG = !!x.group;
+      var first = inG && !(prev && prev.group === x.group);
+      var last = inG && !(next && next.group === x.group);
+      var d = x.sets.filter(function (y) { return y.done; }).length; var n = x.sets.length;
+      var cur = nx && nx.e === j;
+      rows.push({
+        name: x.name, done: n > 0 && d === n,
+        progress: n > 0 && d === n ? 'All ' + n + ' sets done' : d + ' of ' + n + ' sets',
+        cells: x.sets.map(function (y) { return { bg: y.done ? '#0A84FF' : 'rgba(255,255,255,0.2)' }; }),
+        supHeader: first,
+        mt: (inG && !first) ? '3px' : ((j === 0 || first) ? '0px' : '8px'),
+        radius: !inG ? '26px' : (first && last ? '26px' : (first ? '26px 26px 10px 10px' : (last ? '10px 10px 26px 26px' : '10px'))),
+        bg: cur ? 'rgba(10,132,255,0.16)' : '#222224',
+        open: go({ s: 'exercise', e: j })
+      });
+    });
+    var wk = {
+      elapsed: s.aod ? Math.floor(elapsedSec / 60) + ' min' : mmss(elapsedSec),
+      setsDone: setsDone, setsTotal: setsTotal, volume: num(volume), rows: rows,
+      hasNext: !!nx, empty: ex.length === 0, allDone: ex.length > 0 && !nx, hasEx: ex.length > 0,
+      nextName: nxEx ? nxEx.name : '', nextCaption: nxEx && nxEx.group ? 'UP NEXT · SUPERSET' : 'UP NEXT',
+      nextLine: nx ? 'Set ' + (nx.i + 1) + ' of ' + nxEx.sets.length + ' · ' + wfmt(nxSet.w) + ' lb × ' + nxSet.r : '',
+      openNext: nx ? go({ s: 'set', e: nx.e, i: nx.i }) : pop,
+      logNext: nx ? function () { logSet(nx.e, nx.i, false); } : pop,
+      add: go({ s: 'picker', mode: 'add' }), finish: go({ s: 'finish' }), discard: go({ s: 'confirm', kind: 'discard' })
+    };
+
+    var eIdx = top.e != null ? top.e : 0; var X = ex[eIdx];
+    var exv = {}, exs = {}, rp = {}, sp = {};
+    if (X) {
+      var firstOpen = X.sets.findIndex(function (y) { return !y.done; });
+      var partners = ex.filter(function (y, j) { return j !== eIdx && X.group && y.group === X.group; });
+      var count = 0;
+      exv = {
+        name: X.name, meta: X.meta, rest: mmss(X.rest), sup: !!X.group && partners.length > 0,
+        supName: partners.map(function (y) { return shortName(y.name); }).join(', '),
+        openRest: go({ s: 'restPicker', e: eIdx }), openSup: go({ s: 'superset', e: eIdx }), openSettings: go({ s: 'exSettings', e: eIdx }),
+        addSet: function () { mut(function (c) { var L = c[eIdx].sets[c[eIdx].sets.length - 1]; c[eIdx].sets.push({ t: 'N', w: L ? L.w : 45, r: L ? L.r : 10, done: false, rpe: null, last: null }); }); },
+        sets: X.sets.map(function (y, i) {
+          var T = TYPES[y.t]; if (y.t !== 'W') count++;
+          var cur = i === firstOpen;
+          var sub, subColor;
+          if (y.done) { sub = y.rpe ? 'RPE ' + y.rpe : (y.t !== 'N' ? T.name : 'Done'); subColor = y.rpe ? '#FF375F' : (y.t !== 'N' ? T.fg : '#9C9CA3'); }
+          else { sub = (cur ? 'Next' : (y.t !== 'N' ? T.name : 'Last')) + (y.last ? (cur || y.t !== 'N' ? ' · ' : ' ') + y.last : ''); subColor = cur ? '#409CFF' : (y.t !== 'N' ? T.fg : '#9C9CA3'); }
+          return {
+            label: y.t === 'N' ? String(count) : T.badge,
+            badgeBg: y.t === 'N' ? (y.done ? 'rgba(10,132,255,0.4)' : '#333336') : T.bg, badgeFg: y.t === 'N' ? '#FFFFFF' : T.fg,
+            w: wfmt(y.w), r: String(y.r), valueColor: (y.done || cur) ? '#FFFFFF' : '#C7C7CC', sub: sub, subColor: subColor,
+            bg: y.done ? T.done : '#222224', ring: cur ? 'inset 0 0 0 3px #0A84FF' : 'none',
+            done: y.done, notDone: !y.done, ringColor: cur ? '#0A84FF' : 'rgba(255,255,255,0.28)',
+            open: go({ s: 'set', e: eIdx, i: i })
+          };
+        })
+      };
+      var move = function (d) {
+        var to = eIdx + d; var st = self.S();
+        if (to < 0 || to >= st.ex.length) return;
+        var c = clone(st.ex); var tmp = c[eIdx]; c[eIdx] = c[to]; c[to] = tmp;
+        var stack = st.stack.map(function (en) { return en.e === eIdx ? Object.assign({}, en, { e: to }) : (en.e === to ? Object.assign({}, en, { e: eIdx }) : en); });
+        self.put({ ex: c, stack: stack });
+      };
+      exs = {
+        name: X.name, short: shortName(X.name), rest: mmss(X.rest), sup: partners.length ? partners.map(function (y) { return shortName(y.name); }).join(', ') : 'None',
+        openRest: go({ s: 'restPicker', e: eIdx }), openSup: go({ s: 'superset', e: eIdx }), replace: go({ s: 'picker', mode: 'replace', e: eIdx }),
+        up: function () { move(-1); }, down: function () { move(1); },
+        upOpacity: eIdx > 0 ? '1' : '0.4', downOpacity: eIdx < ex.length - 1 ? '1' : '0.4',
+        del: go({ s: 'confirm', kind: 'deleteEx', e: eIdx })
+      };
+      var setRest = function (v) { mut(function (c) { c[eIdx].rest = Math.max(0, Math.min(600, v)); }); };
+      rp = {
+        value: X.rest ? mmss(X.rest) : 'Off',
+        minus: function () { setRest(self.S().ex[eIdx].rest - 15); }, plus: function () { setRest(self.S().ex[eIdx].rest + 15); },
+        presets: [60, 90, 120, 150, 180, 240].map(function (v) { var on = X.rest === v; return { label: mmss(v), bg: on ? '#64D2FF' : 'rgba(255,255,255,0.16)', fg: on ? '#000000' : '#FFFFFF', pick: function () { setRest(v); } }; })
+      };
+      sp = {
+        rows: ex.map(function (y, j) { return { y: y, j: j }; }).filter(function (o) { return o.j !== eIdx; }).map(function (o) {
+          var on = !!X.group && o.y.group === X.group;
+          return {
+            name: o.y.name, on: on, bg: on ? 'rgba(10,132,255,0.2)' : '#222224', markBg: on ? '#0A84FF' : 'transparent', markRing: on ? 'none' : 'inset 0 0 0 3px rgba(255,255,255,0.28)',
+            toggle: function () {
+              mut(function (c) {
+                var g = c[eIdx].group || ('G' + eIdx + o.j);
+                if (on) {
+                  c[o.j].group = null;
+                  var left = c.filter(function (z, k) { return k !== eIdx && z.group === g; }).length;
+                  if (!left) c[eIdx].group = null;
+                } else { c[eIdx].group = g; c[o.j].group = g; }
+              });
+            }
+          };
+        })
+      };
+    }
+
+    var sv = {};
+    var Y = (top.i != null && X) ? X.sets[top.i] : null;
+    if (Y) {
+      var T = TYPES[Y.t]; var e = eIdx, i = top.i; var f = s.focus;
+      var step = function (d) { mut(function (c) { var z = c[e].sets[i]; if (self.S().focus === 'w') z.w = Math.max(0, Math.round((z.w + d * 0.5) * 2) / 2); else z.r = Math.max(0, z.r + d); }); };
+      sv = {
+        exName: X.name, title: 'Set ' + (i + 1) + ' of ' + X.sets.length, typed: Y.t !== 'N', typeName: T.name, typeBg: T.bg, typeFg: T.fg,
+        w: wfmt(Y.w), r: String(Y.r), focusName: f === 'w' ? 'weight' : 'reps',
+        focusW: function () { self.put({ focus: 'w' }); }, focusR: function () { self.put({ focus: 'r' }); },
+        wBg: f === 'w' ? 'rgba(10,132,255,0.2)' : '#222224', wRing: f === 'w' ? 'inset 0 0 0 3px #0A84FF' : 'none', wLabel: f === 'w' ? '#409CFF' : '#9C9CA3',
+        rBg: f === 'r' ? 'rgba(10,132,255,0.2)' : '#222224', rRing: f === 'r' ? 'inset 0 0 0 3px #0A84FF' : 'none', rLabel: f === 'r' ? '#409CFF' : '#9C9CA3',
+        dec: function () { step(-1); }, inc: function () { step(1); },
+        last: Y.last ? 'Last time ' + Y.last : 'No previous set',
+        primary: Y.done ? 'Save Changes' : 'Log Set',
+        log: Y.done ? pop : function () { logSet(e, i, true); },
+        rpe: Y.rpe ? String(Y.rpe) : 'Add', rpeColor: Y.rpe ? '#FF375F' : '#409CFF', openRpe: go({ s: 'rpe', e: e, i: i }),
+        typeValue: T.name, openType: go({ s: 'setType', e: e, i: i }), done: Y.done,
+        undo: function () { mut(function (c) { c[e].sets[i].done = false; }); },
+        del: function () { var st = self.S(); var c = clone(st.ex); c[e].sets.splice(i, 1); self.put({ ex: c, stack: st.stack.slice(0, -1) }); }
+      };
+    }
+
+    var ty = { rows: [] };
+    if (Y) {
+      ty.rows = ['N', 'W', 'D', 'F'].map(function (k) {
+        var T2 = TYPES[k];
+        return { badge: T2.badge, name: T2.name, bg: T2.bg, fg: T2.fg, on: Y.t === k, pick: function () { mut(function (c) { c[eIdx].sets[top.i].t = k; }, { stack: self.S().stack.slice(0, -1) }); } };
+      });
+    }
+
+    var rpeWk = !!top.wk;
+    var rv = rpeWk ? s.wEffort : (Y ? Y.rpe : null);
+    var setR = function (v) {
+      if (rpeWk) self.put({ wEffort: v });
+      else mut(function (c) { c[eIdx].sets[top.i].rpe = v; });
+    };
+    var lo = rpeWk ? 1 : 5, stepR = rpeWk ? 1 : 0.5, startR = rpeWk ? 5 : 8;
+    var pickR = function (v) { return function () { setR(v); }; };
+    var ef = effortGeo(402, 170, 8, 16, rpeWk ? rv : null, '#262628', pickR);
+    var rb = rpeGeo(402, 150, 5, rpeWk ? null : rv, '#262628', pickR);
+    var rpe = {
+      title: rpeWk ? 'Rate Your Effort' : 'RPE', isWk: rpeWk, isSet: !rpeWk,
+      color: rpeWk ? effortColor(rv) : '#FF375F',
+      context: rpeWk ? s.title + ' · ' + mmss(elapsedSec) : (Y ? shortName(X.name) + ' · Set ' + (top.i + 1) + ' · ' + wfmt(Y.w) + ' lb × ' + Y.r : ''),
+      big: rv == null ? '–' : String(rv), text: rpeWk ? effortName(rv) : rpeText(rv),
+      minus: function () { setR(rv == null ? startR : Math.max(lo, rv - stepR)); }, plus: function () { setR(rv == null ? startR : Math.min(10, rv + stepR)); },
+      clear: function () { if (rpeWk) self.put({ wEffort: null, stack: self.S().stack.slice(0, -1) }); else mut(function (c) { c[eIdx].sets[top.i].rpe = null; }, { stack: self.S().stack.slice(0, -1) }); },
+    };
+
+    var total = s.restTotal || 1;
+    var left = s.restEnd ? (s.restEnd - now) / 1000 : 0;
+    left = Math.min(total, Math.max(0, left));
+    var rest = {
+      left: mmss(left), total: mmss(total), dash: (628.3 * left / total).toFixed(1) + ' 628.3',
+      aria: mmss(left) + ' of rest remaining',
+      minus: function () { var st = self.S(); self.put({ restEnd: st.restEnd - 15000 }); },
+      plus: function () { var st = self.S(); var l = (st.restEnd - st.now) / 1000 + 15; self.put({ restEnd: st.restEnd + 15000, restTotal: Math.max(st.restTotal, Math.ceil(l)) }); },
+      skip: function () { var st = self.S(); self.put({ stack: st.stack.slice(0, -1), restEnd: null }); },
+      next: nx ? shortName(nxEx.name) + ' · ' + wfmt(nxSet.w) + ' lb × ' + nxSet.r : 'Finish your workout'
+    };
+
+    var fin = {
+      tiles: [
+        { label: 'Duration', value: mmss(elapsedSec), unit: '', color: '#64D2FF' },
+        { label: 'Volume', value: num(volume), unit: ' lb', color: '#30D158' },
+        { label: 'Sets', value: String(setsDone), unit: ' of ' + setsTotal, color: '#FF9F0A' },
+        { label: 'Avg Heart Rate', value: '126', unit: ' bpm', color: '#FF453A' },
+        { label: 'Active Calories', value: String(kcal), unit: ' kcal', color: '#FF9F0A' },
+        { label: 'Records', value: '1', unit: ' PR', color: '#FFD60A' }
+      ],
+      effort: go({ s: 'rpe', wk: true }), effortValue: s.wEffort == null ? 'Add' : s.wEffort + ' · ' + effortName(s.wEffort), effortColor: s.wEffort == null ? '#409CFF' : effortColor(s.wEffort),
+      save: function () { self.put({ stack: [{ s: 'home' }, { s: 'done' }], active: false, doneDur: mmss(elapsedSec), doneTitle: s.title }); },
+      discard: go({ s: 'confirm', kind: 'discard' })
+    };
+    var dn = { title: s.doneTitle, dur: s.doneDur, close: function () { self.put({ stack: [{ s: 'home' }] }); } };
+
+    var cf = {};
+    if (scr === 'confirm') {
+      if (top.kind === 'deleteEx' && X) {
+        cf = { title: 'Delete Exercise?', msg: X.name + ' and its ' + X.sets.length + ' sets will be removed.', label: 'Delete',
+          act: function () { var st = self.S(); var c = clone(st.ex); c.splice(eIdx, 1); var wi = st.stack.findIndex(function (en) { return en.s === 'workout'; }); self.put({ ex: c, stack: st.stack.slice(0, wi + 1) }); } };
+      } else {
+        cf = { title: 'Discard Workout?', msg: setsDone + ' logged sets will be deleted. This can’t be undone.', label: 'Discard',
+          act: function () { self.put({ active: false, ex: fresh(), stack: [{ s: 'home' }] }); } };
+      }
+    }
+
+    var pickFrom = function (o) {
+      return function () {
+        var st = self.S(); var c = clone(st.ex);
+        if (top.mode === 'replace' && c[eIdx]) { c[eIdx].name = o.name; c[eIdx].meta = o.meta; }
+        else c.push({ name: o.name, meta: o.meta, rest: 90, group: null, sets: [0, 1, 2].map(function () { return { t: 'N', w: o.w, r: o.r, done: false, rpe: null, last: null }; }) });
+        self.put({ ex: c, stack: st.stack.slice(0, -1) });
+      };
+    };
+    var pk = {
+      title: top.mode === 'replace' ? 'Replace Exercise' : 'Add Exercise',
+      recent: RECENT.map(function (o) { return { name: o.name, meta: o.meta, pick: pickFrom(o) }; }),
+      all: ALL.map(function (o) { return { name: o.name, meta: o.meta, pick: pickFrom(o) }; })
+    };
+
+    var k = top.k || 0;
+    var SW = SAVED[k] || SAVED[0];
+    var sd = Object.assign({}, SW, {
+      start: startFrom(SW.name),
+      ex: demoEx().map(function (x) { return { name: x.name, plan: x.sets.length + ' sets · ' + wfmt(x.sets[x.sets.length - 1].w) + ' lb × ' + x.sets[x.sets.length - 1].r }; })
+    });
+    var HW = HIST[k] || HIST[0];
+    var hd = Object.assign({}, HW, { ex: HIST_EX, repeat: startFrom(HW.name) });
+    var stv = {
+      lb: function () { self.put({ unit: 'lb' }); }, kg: function () { self.put({ unit: 'kg' }); },
+      lbBg: s.unit === 'lb' ? '#0A84FF' : 'transparent', kgBg: s.unit === 'kg' ? '#0A84FF' : 'transparent'
+    };
+
+    return {
+      rootH: tall ? 'auto' : '514px', fold: tall && p.fold !== false, b: b, hdr: hdr, is: is, pop: pop, title: s.title,
+      home: home, wk: wk, exv: exv, exs: exs, rp: rp, sp: sp, sv: sv, ty: ty, rpe: rpe, rest: rest, fin: fin, dn: dn, cf: cf, pk: pk,
+      sd: sd, hd: hd, st: stv, ef: ef, rb: rb,
+      savedAll: SAVED.map(savedRow), histAll: HIST.map(histRow)
+    };
+  }
+}
+</script>
+</body>
+</html>

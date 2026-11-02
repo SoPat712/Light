@@ -10,10 +10,66 @@ import SwiftUI
 import WorkoutDataKit
 import CoreData
 
+/// Prepared once, so a keystroke only filters. Sorting the library and rereading the
+/// hidden exercises several times for every letter is what made typing lag.
+final class AddExerciseCatalog {
+    private struct Entry {
+        let exercise: Exercise
+        let searchTitles: [String]
+        let isBrowsable: Bool
+    }
+
+    private let entries: [Entry]
+    private var last: (search: String, muscleGroup: String?, equipment: String?, entries: [Entry])?
+    let muscleGroups: [String]
+    let equipment: [String]
+    /// Matching exercises the last result left out until the person asks for more.
+    private(set) var moreCount = 0
+
+    init(exercises: [Exercise], store: ExerciseStore) {
+        let sorted = exercises.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        entries = store.orderedByRecency(sorted).map { exercise in
+            Entry(exercise: exercise, searchTitles: ([exercise.title] + exercise.alias).map { $0.lowercased() },
+                  isBrowsable: store.isBrowsable(exercise))
+        }
+        muscleGroups = Array(Set(exercises.map(\.muscleGroup))).sorted()
+        var counts: [String: Int] = [:]
+        exercises.forEach { exercise in
+            exercise.equipment.forEach { counts[$0, default: 0] += 1 }
+        }
+        equipment = counts.keys.sorted { (counts[$0] ?? 0) > (counts[$1] ?? 0) }
+    }
+
+    /// Keeps the prepared order. Words match anywhere in the title or an alias, as in `ExerciseStore.filter`.
+    func matches(search: String, muscleGroup: String?, equipment: String?, showingAll: Bool = false) -> [Exercise] {
+        let search = search.lowercased()
+        let words = search.split(whereSeparator: \.isWhitespace)
+        // Another letter can only narrow the results, so it searches the last matches.
+        let narrows = last.map {
+            $0.muscleGroup == muscleGroup && $0.equipment == equipment && search.hasPrefix($0.search)
+        } ?? false
+        let matches = (narrows ? last?.entries ?? entries : entries).filter { entry in
+            (muscleGroup == nil || entry.exercise.muscleGroup == muscleGroup)
+                && (equipment == nil || entry.exercise.equipment.contains(equipment!))
+                && (words.isEmpty || entry.searchTitles.contains { title in words.allSatisfy { title.contains($0) } })
+        }
+        // The cache keeps every match, so a later letter can still find an unlisted exercise.
+        last = (search, muscleGroup, equipment, matches)
+        // Mirrors ExerciseStore.listed, using the flags prepared once per entry.
+        let browsable = matches.filter(\.isBrowsable)
+        let listed = !words.isEmpty || showingAll
+            ? browsable + matches.filter { !$0.isBrowsable }
+            : (browsable.isEmpty ? matches : browsable)
+        moreCount = matches.count - listed.count
+        return listed.map(\.exercise)
+    }
+}
+
 struct AddExercisesSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var exerciseStore: ExerciseStore
+    @ScaledMetric(relativeTo: .subheadline) private var selectionIndicatorSize: CGFloat = 26
 
     private let exercises: [Exercise]
     private let title: String
@@ -27,8 +83,11 @@ struct AddExercisesSheet: View {
     @State private var search = ""
     @State private var selectedMuscleGroup: String?
     @State private var selectedEquipment: String?
+    @State private var showingAllExercises = false
     @State private var detailExercise: Exercise?
+    @State private var selectionFeedback = 0
     @State private var showingCreateExercise = false
+    @State private var catalog: AddExerciseCatalog?
 
     init(
         exercises: [Exercise],
@@ -51,40 +110,9 @@ struct AddExercisesSheet: View {
         self.onAdd = onAdd
     }
 
-    private var muscleGroups: [String] {
-        Array(Set(availableExercises.map { $0.muscleGroup })).sorted()
-    }
-
-    private var equipment: [String] {
-        var counts: [String: Int] = [:]
-        availableExercises.forEach { exercise in
-            exercise.equipment.forEach { counts[$0, default: 0] += 1 }
-        }
-        return counts.keys.sorted { (counts[$0] ?? 0) > (counts[$1] ?? 0) }
-    }
-
-    private var availableExercises: [Exercise] {
-        exerciseStore.shownExercises.isEmpty ? exercises : exerciseStore.shownExercises
-    }
-
-    private var matchingExercises: [Exercise] {
-        let matches = ExerciseStore.filter(exercises: availableExercises, using: search)
-            .filter { selectedMuscleGroup == nil || $0.muscleGroup == selectedMuscleGroup }
-            .filter { selectedEquipment == nil || $0.equipment.contains(selectedEquipment!) }
-            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        return exerciseStore.orderedByRecency(matches)
-    }
-
-    private var recentExercises: [Exercise] {
-        matchingExercises.filter { exerciseStore.lastPerformedDates[$0.uuid] != nil }
-    }
-
-    /// Search and filters use a flat list with exactly the same recency order.
-    private var showsRecentSection: Bool {
-        search.isEmpty
-            && selectedMuscleGroup == nil
-            && selectedEquipment == nil
-            && !recentExercises.isEmpty
+    private func refreshCatalog() {
+        let shown = exerciseStore.shownExercises
+        catalog = AddExerciseCatalog(exercises: shown.isEmpty ? exercises : shown, store: exerciseStore)
     }
 
     private func resetAndDismiss() {
@@ -109,38 +137,61 @@ struct AddExercisesSheet: View {
             .prefix(maxCount))
     }
 
+    @ViewBuilder
+    private func showMoreRow(count: Int) -> some View {
+        if count > 0 {
+            Button("Show \(count.formatted()) More Exercises") { showingAllExercises = true }
+                .foregroundStyle(IronTheme.accent)
+        }
+    }
+
     var body: some View {
+        let matches = catalog?.matches(search: search, muscleGroup: selectedMuscleGroup, equipment: selectedEquipment,
+                                       showingAll: showingAllExercises) ?? []
+        let moreCount = catalog?.moreCount ?? 0
+        // Search and filters use a flat list with exactly the same recency order.
+        let recents = search.isEmpty && selectedMuscleGroup == nil && selectedEquipment == nil
+            ? matches.filter { exerciseStore.lastPerformedDates[$0.uuid] != nil }
+            : []
         NavigationStack {
             List {
-                if matchingExercises.isEmpty {
+                if catalog == nil {
+                    EmptyView()
+                } else if matches.isEmpty {
                     emptyState
-                } else if showsRecentSection {
+                } else if !recents.isEmpty {
                     Section("Recent") {
-                        ForEach(recentExercises) { exercise in
+                        ForEach(recents) { exercise in
                             exerciseRow(exercise)
                         }
                     }
 
-                    let recentSet = Set(recentExercises)
+                    let recentSet = Set(recents)
                     Section("All Exercises") {
-                        ForEach(matchingExercises.filter { !recentSet.contains($0) }) { exercise in
+                        ForEach(matches.filter { !recentSet.contains($0) }) { exercise in
                             exerciseRow(exercise)
                         }
+                        showMoreRow(count: moreCount)
                     }
                 } else {
                     Section {
-                        ForEach(matchingExercises) { exercise in
+                        ForEach(matches) { exercise in
                             exerciseRow(exercise)
                         }
+                        showMoreRow(count: moreCount)
                     } footer: {
-                        Text("\(matchingExercises.count) exercises")
+                        Text("^[\(matches.count) exercise](inflect: true)")
                     }
                 }
             }
             .listStyle(.insetGrouped)
+            .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
+            .sensoryFeedback(.selection, trigger: [selectedMuscleGroup, selectedEquipment]) { _, _ in SettingsStore.shared.workoutHaptics }
+            .contentMargins(.horizontal, 10, for: .scrollContent)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $search, prompt: "Search exercises")
+            .keepsToolbarWhileSearching()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: resetAndDismiss)
@@ -154,28 +205,30 @@ struct AddExercisesSheet: View {
                     Menu {
                         Picker("Muscle", selection: $selectedMuscleGroup) {
                             Text("All Muscles").tag(String?.none)
-                            ForEach(muscleGroups, id: \.self) { group in
+                            ForEach(catalog?.muscleGroups ?? [], id: \.self) { group in
                                 Text(group.capitalized).tag(String?.some(group))
                             }
                         }
                     } label: {
-                        Text(selectedMuscleGroup?.capitalized ?? "Muscle")
-                            .lineLimit(1)
+                        Image(systemName: "figure.arms.open")
+                            .foregroundStyle(selectedMuscleGroup == nil ? IronTheme.primaryText : IronTheme.accent)
                     }
                     .accessibilityLabel("Filter by muscle group")
+                    .accessibilityValue(selectedMuscleGroup?.capitalized ?? "All muscles")
 
                     Menu {
                         Picker("Equipment", selection: $selectedEquipment) {
                             Text("All Equipment").tag(String?.none)
-                            ForEach(equipment, id: \.self) { item in
-                                Text(item.capitalized).tag(String?.some(item))
+                            ForEach(catalog?.equipment ?? [], id: \.self) { item in
+                                Text(item.equipmentTitle).tag(String?.some(item))
                             }
                         }
                     } label: {
-                        Text(selectedEquipment?.capitalized ?? "Equipment")
-                            .lineLimit(1)
+                        Image(systemName: "dumbbell")
+                            .foregroundStyle(selectedEquipment == nil ? IronTheme.primaryText : IronTheme.accent)
                     }
                     .accessibilityLabel("Filter by equipment")
+                    .accessibilityValue(selectedEquipment?.equipmentTitle ?? "All equipment")
 
                     Spacer()
 
@@ -186,6 +239,9 @@ struct AddExercisesSheet: View {
                 }
             }
         }
+        .onAppear { if catalog == nil { refreshCatalog() } }
+        // Fires before the change lands, so read the store on the next turn.
+        .onReceive(exerciseStore.objectWillChange) { DispatchQueue.main.async(execute: refreshCatalog) }
         .sheet(isPresented: $showingCreateExercise) {
             CreateCustomExerciseSheet(
                 onDismiss: { showingCreateExercise = false }
@@ -229,86 +285,71 @@ struct AddExercisesSheet: View {
 
     private func exerciseRow(_ exercise: Exercise) -> some View {
         let selectionNumber = exerciseSelectorSelection.firstIndex(of: exercise).map { $0 + 1 }
-        let muscleTitle = exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized
-        let equipmentTitle = exercise.equipment.first?.capitalized
+        let metadata = ExerciseLibraryMetadata(
+            exercise: exercise,
+            lastPerformed: exerciseStore.lastPerformedDates[exercise.uuid]
+        )
 
-        return HStack(spacing: 12) {
-            Button(action: { toggle(exercise) }) {
-                HStack(spacing: 12) {
-                    selectionIndicator(number: selectionNumber)
+        return Button(action: { toggle(exercise) }) {
+            HStack(spacing: 12) {
+                selectionIndicator(number: selectionNumber)
 
-                    ExerciseDiagramThumbnail(exercise: exercise, size: 52)
+                ExerciseDiagramThumbnail(exercise: exercise, size: 44)
+                    .contentShape(Circle())
+                    // The thumbnail consumes its tap before the row selects.
+                    .highPriorityGesture(
+                        TapGesture().onEnded { detailExercise = exercise }
+                    )
 
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(exercise.title)
-                            .font(.headline)
-                            .foregroundStyle(IronTheme.primaryText)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                        Group {
-                            if dynamicTypeSize.isAccessibilitySize {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    ExerciseLibraryTag(title: muscleTitle)
-                                    if let equipmentTitle {
-                                        ExerciseLibraryTag(title: equipmentTitle)
-                                    }
-                                }
-                                .fixedSize(horizontal: false, vertical: true)
-                            } else {
-                                HStack(spacing: 6) {
-                                    ExerciseLibraryTag(title: muscleTitle)
-                                    if let equipmentTitle {
-                                        ExerciseLibraryTag(title: equipmentTitle)
-                                    }
-                                }
-                                .lineLimit(1)
-                            }
-                        }
-                    }
-
-                    Spacer(minLength: 0)
-                    if let lastPerformed = exerciseStore.lastPerformedDates[exercise.uuid],
-                       !dynamicTypeSize.isAccessibilitySize {
-                        ExerciseRecencyCaption(date: lastPerformed)
-                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(exercise.title)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(IronTheme.primaryText)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(metadata.title)
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .contentShape(Rectangle())
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.plain)
-
-            Button(action: { detailExercise = exercise }) {
-                Image(systemName: "info.circle")
-                    .font(.title3)
-                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("View \(exercise.title) details")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(metadata.accessibilityLabel)
+        .accessibilityValue(selectionNumber.map {
+            maximumSelectionCount == 1 ? "Selected" : "Selection \($0)"
+        } ?? "Not selected")
+        .accessibilityAction(named: Text("Show Details")) {
+            detailExercise = exercise
         }
     }
 
-    /// Ordered selection mirrors Photos: a numbered fill when the order matters,
-    /// a plain checkmark when only one exercise can be chosen.
-    @ViewBuilder
+    /// Ordered selection mirrors Photos; single-selection callers keep a check.
     private func selectionIndicator(number: Int?) -> some View {
-        if let number {
-            if maximumSelectionCount == 1 {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.tint)
-                    .accessibilityLabel("Selected")
+        ZStack {
+            if let number {
+                Circle().fill(IronTheme.accent)
+                if maximumSelectionCount == 1 {
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(IronTheme.onAccent)
+                } else {
+                    Text("\(number)")
+                        .font(.ironMetric(.subheadline, weight: .semibold))
+                        .foregroundStyle(IronTheme.onAccent)
+                }
             } else {
-                Text("\(number)")
-                    .font(.caption.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.white)
-                    .frame(width: 24, height: 24)
-                    .background(Circle().fill(.tint))
-                    .accessibilityLabel("Selection \(number)")
+                Circle().strokeBorder(IronTheme.outline, lineWidth: 2)
             }
-        } else {
-            Image(systemName: "circle")
-                .font(.title3)
-                .foregroundStyle(.tertiary)
-                .accessibilityLabel("Not selected")
         }
+        .frame(width: selectionIndicatorSize, height: selectionIndicatorSize)
+        .accessibilityHidden(true)
     }
 
     private func toggle(_ exercise: Exercise) {
@@ -320,9 +361,7 @@ struct AddExercisesSheet: View {
             exerciseSelectorSelection.append(exercise)
         }
 
-        let feedback = UISelectionFeedbackGenerator()
-        feedback.prepare()
-        feedback.selectionChanged()
+        selectionFeedback += 1
     }
 
     private func addSelectedExercises() {
@@ -336,6 +375,17 @@ struct AddExercisesSheet: View {
         return maximumSelectionCount == 1
             ? actionTitle
             : "\(actionTitle) \(exerciseSelectorSelection.count)"
+    }
+}
+
+private extension View {
+    /// Cancel and Add stay on screen while searching.
+    @ViewBuilder func keepsToolbarWhileSearching() -> some View {
+        if #available(iOS 17.1, *) {
+            searchPresentationToolbarBehavior(.avoidHidingContent)
+        } else {
+            self
+        }
     }
 }
 

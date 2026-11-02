@@ -17,6 +17,22 @@ class NotificationManager: NSObject {
         qos: .utility
     )
     private var restTimerNotificationGeneration: UInt = 0
+    private struct RestTimerRequest {
+        let deadline: Date
+        let totalTime: TimeInterval?
+        let playsSound: Bool
+    }
+    private var restTimerRequest: RestTimerRequest?
+    private var ownershipObserver: NSObjectProtocol?
+    private var watchOwnedRest = NotificationManager.watchOwnsRestAlerts
+
+    /// The existing durable handoff gives Watch priority, including while the
+    /// phone is foregrounded or connectivity drops. Reachability is not proof
+    /// that the Watch session stopped. Without an acknowledged alert-owner
+    /// field, a failed handoff can leave the phone quiet until it is cleared.
+    static var watchOwnsRestAlerts: Bool {
+        UserDefaults.standard.watchWorkoutUuid != nil
+    }
     
     init(notificationCenter: UNUserNotificationCenter) {
         self.notificationCenter = notificationCenter
@@ -35,6 +51,26 @@ class NotificationManager: NSObject {
                                    options: [.hiddenPreviewsShowTitle, .hiddenPreviewsShowSubtitle, .allowAnnouncement])
         // Register the notification type.
         notificationCenter.setNotificationCategories([restTimerUpCategory])
+
+        ownershipObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.notificationOperationQueue.async {
+                let watchOwned = Self.watchOwnsRestAlerts
+                guard watchOwned != self.watchOwnedRest else { return }
+                self.watchOwnedRest = watchOwned
+                self.replaceRestTimerNotification()
+            }
+        }
+        if Self.watchOwnsRestAlerts {
+            // Also remove a phone request left over from the previous launch.
+            notificationOperationQueue.async { self.replaceRestTimerNotification() }
+        }
+    }
+
+    deinit {
+        if let ownershipObserver { NotificationCenter.default.removeObserver(ownershipObserver) }
     }
     
     func requestAuthorization() {
@@ -51,6 +87,7 @@ class NotificationManager: NSObject {
             guard let self else { return }
             if withIdentifiers.contains(.restTimerUp) {
                 self.restTimerNotificationGeneration &+= 1
+                self.restTimerRequest = nil
             }
             self.notificationCenter.removePendingNotificationRequests(withIdentifiers: identifiers)
         }
@@ -101,53 +138,63 @@ class NotificationManager: NSObject {
     ) {
         notificationOperationQueue.async { [weak self] in
             guard let self else { return }
-            self.restTimerNotificationGeneration &+= 1
-            let generation = self.restTimerNotificationGeneration
-            self.notificationCenter.removePendingNotificationRequests(
-                withIdentifiers: [NotificationIdentifier.restTimerUp.rawValue]
-            )
+            self.restTimerRequest = deadline.map {
+                RestTimerRequest(deadline: $0, totalTime: totalTime, playsSound: playsSound)
+            }
+            self.replaceRestTimerNotification()
+        }
+    }
 
-            guard let deadline else { return }
-            self.notificationCenter.getNotificationSettings { [weak self] settings in
-                guard let self else { return }
-                self.notificationOperationQueue.async {
-                    guard generation == self.restTimerNotificationGeneration,
-                          [.authorized, .provisional].contains(settings.authorizationStatus) else { return }
+    /// Called only on notificationOperationQueue. Retain the requested timer
+    /// while Watch owns delivery, so clearing the handoff can rearm the phone.
+    private func replaceRestTimerNotification() {
+        self.restTimerNotificationGeneration &+= 1
+        let generation = self.restTimerNotificationGeneration
+        self.notificationCenter.removePendingNotificationRequests(
+            withIdentifiers: [NotificationIdentifier.restTimerUp.rawValue]
+        )
 
-                    let remainingTime = deadline.timeIntervalSinceNow
-                    guard remainingTime > 0 else { return }
+        guard !Self.watchOwnsRestAlerts, let restRequest = restTimerRequest else { return }
+        self.notificationCenter.getNotificationSettings { [weak self] settings in
+            guard let self else { return }
+            self.notificationOperationQueue.async {
+                guard generation == self.restTimerNotificationGeneration,
+                      !Self.watchOwnsRestAlerts,
+                      [.authorized, .provisional].contains(settings.authorizationStatus) else { return }
 
-                    let content = UNMutableNotificationContent()
-                    content.title = "You've rested enough!"
-                    if let totalTime,
-                       let totalTimeString = restTimerDurationFormatter.string(from: totalTime) {
-                        content.title += " (\(totalTimeString))"
-                    }
-                    content.body = "Back to work 💪"
-                    if Self.shouldPlayRestTimerSound(
-                        appSoundsEnabled: playsSound,
-                        systemSoundSetting: settings.soundSetting
-                    ) {
-                        content.sound = UNNotificationSound(named: UNNotificationSoundName("rest_complete.caf"))
-                    }
-                    content.categoryIdentifier = NotificationCategoryIdentifier.restTimerUp.rawValue
-                    if #available(iOS 15.0, *) {
-                        content.interruptionLevel = .timeSensitive
-                    }
+                let remainingTime = restRequest.deadline.timeIntervalSinceNow
+                guard remainingTime > 0 else { return }
 
-                    let trigger = UNTimeIntervalNotificationTrigger(
-                        timeInterval: remainingTime,
-                        repeats: false
-                    )
-                    let request = UNNotificationRequest(
-                        identifier: NotificationIdentifier.restTimerUp.rawValue,
-                        content: content,
-                        trigger: trigger
-                    )
-                    self.notificationCenter.add(request) { error in
-                        if let error {
-                            print("error \(String(describing: error))")
-                        }
+                let content = UNMutableNotificationContent()
+                content.title = "You've rested enough!"
+                if let totalTime = restRequest.totalTime,
+                   let totalTimeString = restTimerDurationFormatter.string(from: totalTime) {
+                    content.title += " (\(totalTimeString))"
+                }
+                content.body = "Back to work 💪"
+                if Self.shouldPlayRestTimerSound(
+                    appSoundsEnabled: restRequest.playsSound,
+                    systemSoundSetting: settings.soundSetting
+                ) {
+                    content.sound = UNNotificationSound(named: UNNotificationSoundName("rest_complete.caf"))
+                }
+                content.categoryIdentifier = NotificationCategoryIdentifier.restTimerUp.rawValue
+                if #available(iOS 15.0, *) {
+                    content.interruptionLevel = .timeSensitive
+                }
+
+                let trigger = UNTimeIntervalNotificationTrigger(
+                    timeInterval: remainingTime,
+                    repeats: false
+                )
+                let request = UNNotificationRequest(
+                    identifier: NotificationIdentifier.restTimerUp.rawValue,
+                    content: content,
+                    trigger: trigger
+                )
+                self.notificationCenter.add(request) { error in
+                    if let error {
+                        print("error \(String(describing: error))")
                     }
                 }
             }
@@ -203,6 +250,10 @@ class NotificationManager: NSObject {
 extension NotificationManager: UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         if notification.request.content.categoryIdentifier == NotificationCategoryIdentifier.restTimerUp.rawValue {
+            guard !Self.watchOwnsRestAlerts else {
+                completionHandler([])
+                return
+            }
             // RestTimerStore owns the foreground chime and haptic.
             completionHandler([.banner, .list])
         } else {

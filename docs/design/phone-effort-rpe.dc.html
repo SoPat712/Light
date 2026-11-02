@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>iPhone effort and RPE</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; background: {{t.bg}}; color: {{t.label}}; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif; -webkit-font-smoothing: antialiased">
+  <div style="position: absolute; left: 0; right: 0; top: 12px; bottom: 0; border-radius: 38px 38px 0 0; background: {{t.sheet}}; padding: 8px 16px 0; box-sizing: border-box; display: flex; flex-direction: column">
+    <div aria-hidden="true" style="width: 36px; height: 5px; border-radius: 3px; background: {{t.grabber}}; align-self: center"></div>
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px">
+      <button aria-label="Close" style="width: 44px; height: 44px; border: 0; border-radius: 22px; background: {{t.fill}}; color: {{t.label}}; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+      </button>
+      <div style="font-size: 17px; font-weight: 600">Finish Workout</div>
+      <div style="width: 44px"></div>
+    </div>
+    <div style="margin-top: 18px; text-align: center; font-size: 28px; font-weight: 700; letter-spacing: -0.3px">Rate Your Effort</div>
+    <div style="margin-top: 2px; text-align: center; font-size: 15px; color: {{t.label2}}">Push Day · 1h 04m · 18 sets</div>
+    <div style="display: flex; align-items: baseline; justify-content: center; gap: 8px; margin-top: 16px; height: 52px">
+      <div style="font-size: 48px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: {{e.color}}">{{e.big}}</div>
+      <div style="font-size: 22px; font-weight: 600; color: {{e.color}}">{{e.word}}</div>
+    </div>
+    <svg width="358" height="190" viewBox="0 0 358 190" role="img" aria-label="Effort {{e.big}}, {{e.word}}" style="display: block; margin-top: 14px"><path d="{{ef.g0.d}}" fill="{{ef.g0.fill}}" onClick="{{ef.g0.pick}}" style="cursor: pointer"></path><path d="{{ef.g1.d}}" fill="{{ef.g1.fill}}" onClick="{{ef.g1.pick}}" style="cursor: pointer"></path><path d="{{ef.g2.d}}" fill="{{ef.g2.fill}}" onClick="{{ef.g2.pick}}" style="cursor: pointer"></path><path d="{{ef.g3.d}}" fill="{{ef.g3.fill}}" onClick="{{ef.g3.pick}}" style="cursor: pointer"></path><circle cx="{{ef.d0.cx}}" cy="{{ef.d0.cy}}" r="{{ef.d0.r}}" fill="{{ef.d0.fill}}" onClick="{{ef.d0.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d1.cx}}" cy="{{ef.d1.cy}}" r="{{ef.d1.r}}" fill="{{ef.d1.fill}}" onClick="{{ef.d1.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d2.cx}}" cy="{{ef.d2.cy}}" r="{{ef.d2.r}}" fill="{{ef.d2.fill}}" onClick="{{ef.d2.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d3.cx}}" cy="{{ef.d3.cy}}" r="{{ef.d3.r}}" fill="{{ef.d3.fill}}" onClick="{{ef.d3.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d4.cx}}" cy="{{ef.d4.cy}}" r="{{ef.d4.r}}" fill="{{ef.d4.fill}}" onClick="{{ef.d4.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d5.cx}}" cy="{{ef.d5.cy}}" r="{{ef.d5.r}}" fill="{{ef.d5.fill}}" onClick="{{ef.d5.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d6.cx}}" cy="{{ef.d6.cy}}" r="{{ef.d6.r}}" fill="{{ef.d6.fill}}" onClick="{{ef.d6.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d7.cx}}" cy="{{ef.d7.cy}}" r="{{ef.d7.r}}" fill="{{ef.d7.fill}}" onClick="{{ef.d7.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d8.cx}}" cy="{{ef.d8.cy}}" r="{{ef.d8.r}}" fill="{{ef.d8.fill}}" onClick="{{ef.d8.pick}}" style="cursor: pointer"></circle><circle cx="{{ef.d9.cx}}" cy="{{ef.d9.cy}}" r="{{ef.d9.r}}" fill="{{ef.d9.fill}}" onClick="{{ef.d9.pick}}" style="cursor: pointer"></circle></svg>
+    <button style="height: 54px; margin-top: 18px; border: 0; border-radius: 27px; background: {{accent}}; color: #FFFFFF; font: inherit; font-size: 17px; font-weight: 600; cursor: pointer">Save Workout</button>
+
+    <div style="margin: 28px 4px 8px; font-size: 13px; font-weight: 600; color: {{t.label2}}; letter-spacing: 0.2px">SET RPE · IN THE LOGGER</div>
+    <div style="display: flex; flex-direction: column; padding: 16px; border-radius: 22px; background: {{t.card}}">
+      <div style="display: flex; align-items: center; justify-content: space-between">
+        <div style="display: flex; flex-direction: column; gap: 2px">
+          <div style="font-size: 17px; font-weight: 600">RPE</div>
+          <div style="font-size: 13px; color: {{t.label2}}">Bench Press · Set 3 · 205 lb × 5</div>
+        </div>
+        <button onClick="{{r.clear}}" style="height: 34px; padding: 0 14px; border: 0; border-radius: 17px; background: {{t.fill}}; color: {{t.label}}; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer">Clear</button>
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 8px; margin-top: 12px">
+        <div style="font-size: 34px; font-weight: 700; line-height: 1; color: {{t.pink}}; font-variant-numeric: tabular-nums">{{r.big}}</div>
+        <div style="font-size: 17px; font-weight: 600; color: {{t.label2}}">{{r.text}}</div>
+      </div>
+      <svg width="326" height="96" viewBox="0 0 326 96" role="img" aria-label="RPE {{r.big}}" style="display: block; margin-top: 12px"><path d="{{rb.b0.d}}" fill="{{rb.b0.fill}}" onClick="{{rb.b0.pick}}" style="cursor: pointer"></path><path d="{{rb.b1.d}}" fill="{{rb.b1.fill}}" onClick="{{rb.b1.pick}}" style="cursor: pointer"></path><path d="{{rb.b2.d}}" fill="{{rb.b2.fill}}" onClick="{{rb.b2.pick}}" style="cursor: pointer"></path><path d="{{rb.b3.d}}" fill="{{rb.b3.fill}}" onClick="{{rb.b3.pick}}" style="cursor: pointer"></path><path d="{{rb.b4.d}}" fill="{{rb.b4.fill}}" onClick="{{rb.b4.pick}}" style="cursor: pointer"></path><path d="{{rb.b5.d}}" fill="{{rb.b5.fill}}" onClick="{{rb.b5.pick}}" style="cursor: pointer"></path><path d="{{rb.b6.d}}" fill="{{rb.b6.fill}}" onClick="{{rb.b6.pick}}" style="cursor: pointer"></path><path d="{{rb.b7.d}}" fill="{{rb.b7.fill}}" onClick="{{rb.b7.pick}}" style="cursor: pointer"></path><path d="{{rb.b8.d}}" fill="{{rb.b8.fill}}" onClick="{{rb.b8.pick}}" style="cursor: pointer"></path><path d="{{rb.b9.d}}" fill="{{rb.b9.fill}}" onClick="{{rb.b9.pick}}" style="cursor: pointer"></path><path d="{{rb.b10.d}}" fill="{{rb.b10.fill}}" onClick="{{rb.b10.pick}}" style="cursor: pointer"></path></svg>
+      <div style="position: relative; height: 18px; margin-top: 6px; font-size: 13px; font-weight: 600; color: {{t.label2}}; font-variant-numeric: tabular-nums">
+        <sc-for list="{{rb.labels}}" as="o" hint-placeholder-count="6"><span style="position: absolute; left: {{o.x}}px; transform: translateX(-50%)">{{o.t}}</span></sc-for>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"accent":{"editor":"color","default":"#007AFF"},"$preview":{"width":390,"height":844}}'>
+function slantPath(x0, x1, yl, yr, yb, r) {
+  var s = (yl - yr) / (x1 - x0);
+  var f = function (n) { return n.toFixed(1); };
+  return 'M' + f(x0) + ',' + f(yb - r) + ' L' + f(x0) + ',' + f(yl + r) + ' Q' + f(x0) + ',' + f(yl) + ' ' + f(x0 + r) + ',' + f(yl - s * r) +
+    ' L' + f(x1 - r) + ',' + f(yr + s * r) + ' Q' + f(x1) + ',' + f(yr) + ' ' + f(x1) + ',' + f(yr + r) + ' L' + f(x1) + ',' + f(yb - r) +
+    ' Q' + f(x1) + ',' + f(yb) + ' ' + f(x1 - r) + ',' + f(yb) + ' L' + f(x0 + r) + ',' + f(yb) + ' Q' + f(x0) + ',' + f(yb) + ' ' + f(x0) + ',' + f(yb - r) + 'Z';
+}
+var EFFORT_GROUPS = [
+  { n: 3, name: 'Easy', c: '#30D158', hl: 0.22, hr: 0.385 },
+  { n: 3, name: 'Moderate', c: '#FFD60A', hl: 0.48, hr: 0.64 },
+  { n: 2, name: 'Hard', c: '#FF9F0A', hl: 0.74, hr: 0.82 },
+  { n: 2, name: 'All Out', c: '#FF453A', hl: 0.905, hr: 1 }
+];
+function effortName(v) { if (v == null) return 'Not rated'; return v <= 3 ? 'Easy' : (v <= 6 ? 'Moderate' : (v <= 8 ? 'Hard' : 'All Out')); }
+function effortColor(v) { if (v == null) return '#9C9CA3'; return v <= 3 ? '#30D158' : (v <= 6 ? '#FFD60A' : (v <= 8 ? '#FF9F0A' : '#FF453A')); }
+function effortGeo(W, H, gap, r, v, base, onPick) {
+  var unit = (W - 3 * gap) / 10, x = 0, lvl = 0, out = {};
+  EFFORT_GROUPS.forEach(function (g, gi) {
+    var gw = unit * g.n, x0 = x, x1 = x + gw, first = lvl + 1, last = lvl + g.n;
+    var on = v != null && v >= first;
+    out['g' + gi] = { d: slantPath(x0, x1, H - g.hl * H, H - g.hr * H, H, r), fill: on ? g.c : base, pick: onPick(v != null && v >= first && v <= last ? v : first) };
+    for (var k = 0; k < g.n; k++) {
+      var L = ++lvl;
+      out['d' + (L - 1)] = { cx: (x0 + (k + 0.5) * gw / g.n).toFixed(1), cy: (H - 18).toFixed(1), r: v === L ? '7' : '5',
+        fill: v === L ? '#FFFFFF' : (on ? (L < v ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.28)') : 'rgba(255,255,255,0.3)'), pick: onPick(L) };
+    }
+    x = x1 + gap;
+  });
+  return out;
+}
+function rpeGeo(W, H, gap, v, base, onPick) {
+  var n = 11, unit = (W - (n - 1) * gap) / n, out = { labels: [] };
+  var hAt = function (x) { return H * (0.28 + 0.72 * x / W); };
+  for (var k = 0; k < n; k++) {
+    var x0 = k * (unit + gap), x1 = x0 + unit, val = 5 + k * 0.5;
+    out['b' + k] = { d: slantPath(x0, x1, H - hAt(x0), H - hAt(x1), H, Math.min(8, unit / 2.6)), fill: v != null && val <= v ? '#FF375F' : base, pick: onPick(val) };
+    if (val % 1 === 0) out.labels.push({ x: ((x0 + x1) / 2).toFixed(1), t: String(val) });
+  }
+  return out;
+}
+
+function rpeText(v) {
+  if (v == null) return 'Not rated';
+  if (v >= 10) return 'Max effort';
+  if (v >= 9.5) return 'Maybe 1 more';
+  if (v >= 9) return '1 rep left';
+  if (v >= 8.5) return '1–2 reps left';
+  if (v >= 8) return '2 reps left';
+  if (v >= 7.5) return '2–3 reps left';
+  if (v >= 7) return '3 reps left';
+  if (v >= 6) return '4+ reps left';
+  return 'Easy';
+}
+class Component extends DCLogic {
+  renderVals() {
+    var self = this; var st = this.state || {};
+    var dark = this.props.dark ?? false;
+    var ev = st.ev === undefined ? 7 : st.ev;
+    var rv = st.rv === undefined ? 8.5 : st.rv;
+    var t = dark ? { bg: '#000000', sheet: '#1C1C1E', card: '#2C2C2E', fill: 'rgba(118,118,128,0.24)', grabber: 'rgba(235,235,245,0.3)', label: '#FFFFFF', label2: 'rgba(235,235,245,0.62)', base: '#3A3A3C', pink: '#FF375F' }
+                 : { bg: '#8E8E93', sheet: '#F2F2F7', card: '#FFFFFF', fill: 'rgba(118,118,128,0.12)', grabber: 'rgba(60,60,67,0.3)', label: '#000000', label2: 'rgba(60,60,67,0.7)', base: '#E3E3E8', pink: '#E8174B' };
+    var ef = effortGeo(358, 190, 8, 18, ev, t.base, function (v) { return function () { self.setState({ ev: v, rv: rv }); }; });
+    var rb = rpeGeo(326, 96, 4, rv, t.base, function (v) { return function () { self.setState({ ev: ev, rv: v }); }; });
+    if (!dark) { ['b0','b1','b2','b3','b4','b5','b6','b7','b8','b9','b10'].forEach(function (k) { if (ef && rb[k].fill === '#FF375F') rb[k].fill = t.pink; }); }
+    return {
+      t: t, accent: this.props.accent ?? '#007AFF', ef: ef, rb: rb,
+      e: { big: String(ev), word: effortName(ev), color: dark ? effortColor(ev) : ({ '#30D158': '#248A3D', '#FFD60A': '#B25000', '#FF9F0A': '#C93400', '#FF453A': '#D70015' })[effortColor(ev)] },
+      r: { big: rv == null ? '–' : String(rv), text: rpeText(rv), clear: function () { self.setState({ ev: ev, rv: null }); } }
+    };
+  }
+}
+</script>
+</body>
+</html>

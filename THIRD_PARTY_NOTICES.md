@@ -28,7 +28,7 @@ Source: https://github.com/hasaneyldrm/exercises-dataset
 ### OpenGym catalogue updates
 
 Iron also includes the current OpenGym exercise names, muscles, descriptions and instructions,
-adapted from revision `042c9ee42282756ab0e6e86a1cd5c710efaecee6`.
+adapted from revision `b6cfe2bbd3f099523ffbf2677438864e9a09a06f`.
 Copyright (C) 2026 Duarte Santos and contributors. OpenGym-authored text and corrections are
 licensed under GNU AGPL version 3; the original ExerciseDB text retains the MIT notice above.
 
@@ -51,8 +51,8 @@ The media is not covered by the dataset's MIT License. The dataset identifies Gy
 rights holder and says its permission is not transferable, while ExerciseDB presents the official
 V1 hosted media as a free app-development API. These provenance claims are not treated as legally
 resolved by runtime loading. Product distribution may therefore require written confirmation from
-the relevant rights holder. Iron retains its original bundled diagrams as an offline fallback
-where available.
+the relevant rights holder. Iron retains its original bundled diagrams for the exercise detail
+page of any exercise without other media.
 
 Iron saves the first frame of its existing provider's GIFs as a persistent PNG for list
 thumbnails, preserving the original animation for demonstrations. This does not increase the

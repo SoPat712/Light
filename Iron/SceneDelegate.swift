@@ -188,6 +188,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             self.urlContexts = nil // don't process them again
             self.handleURLContexts(urlContexts: urlContexts)
         }
+
+        // A Live Activity can only start while the app is active. SwiftUI's scene phase doesn't report this first activation after a cold launch.
+        if let currentWorkout = try? WorkoutDataStorage.shared.persistentContainer.viewContext.fetch(Workout.currentWorkoutFetchRequest).first {
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: currentWorkout)
+        }
     }
 
     func sceneWillResignActive(_ scene: UIScene) {

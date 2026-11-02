@@ -13,7 +13,10 @@ import WorkoutDataKit
 
 struct SettingsView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.managedObjectContext) private var managedObjectContext
     @EnvironmentObject private var settingsStore: SettingsStore
+    @State private var workoutCount: Int?
+    @State private var firstWorkoutDate: Date?
 
     private struct ActionAlert: Identifiable {
         let id = UUID()
@@ -71,10 +74,17 @@ struct SettingsView: View {
     private var settingsRoot: some View {
         List {
             Section {
+                NavigationLink(destination: AboutView()) {
+                    SettingsHeaderCard(workoutCount: workoutCount, firstWorkoutDate: firstWorkoutDate)
+                }
+            }
+
+            Section {
                 settingsLink(
                     "Appearance",
                     detail: settingsStore.appearance.title,
                     icon: "circle.lefthalf.filled",
+                    tile: .indigo,
                     destination: AppearanceSettingsView()
                 )
             }
@@ -84,46 +94,48 @@ struct SettingsView: View {
                     "Units",
                     detail: settingsStore.weightUnit.title,
                     icon: "scalemass.fill",
+                    tile: .orange,
                     destination: UnitsSettingsView()
                 )
-                settingsLink("Workout preferences", icon: "slider.horizontal.3", destination: GeneralSettingsView())
-                settingsLink("Sounds & haptics", icon: "speaker.wave.2.fill", tint: IronTheme.metricEffort, destination: SoundsSettingsView())
+                settingsLink("Workout preferences", icon: "slider.horizontal.3", tile: .blue, destination: GeneralSettingsView())
+                settingsLink("Sounds & haptics", icon: "speaker.wave.2.fill", tile: .pink, destination: SoundsSettingsView())
                 if HealthSettingsView.isSupported {
-                    settingsLink("Apple Health", icon: "heart.fill", tint: IronTheme.danger, destination: HealthSettingsView())
+                    settingsLink("Apple Health", icon: "heart.fill", tile: .health, destination: HealthSettingsView())
                 }
                 if WatchSettingsView.isSupported {
-                    settingsLink("Apple Watch", icon: "applewatch", destination: WatchSettingsView())
+                    settingsLink("Apple Watch", icon: "applewatch", tile: .watch, destination: WatchSettingsView())
                 }
             } header: {
                 Text("Training")
             }
 
             Section("Your Data") {
-                settingsLink("Import & export", icon: "arrow.up.arrow.down", destination: BackupAndExportView())
+                settingsLink("Import & export", icon: "arrow.up.arrow.down", tile: .green, destination: BackupAndExportView())
             }
 
             Section("Support") {
                 Button(action: sendFeedback) {
-                    settingsRow("Send feedback", icon: "paperplane.fill")
+                    settingsRow("Send feedback", icon: "paperplane.fill", tile: .blue)
                 }
                 .buttonStyle(.plain)
 
                 Button(action: openReview) {
-                    settingsRow("Rate Light", icon: "star.fill", tint: IronTheme.metricRecord)
+                    settingsRow("Rate Light", icon: "star.fill", tile: .yellow)
                 }
                 .buttonStyle(.plain)
 
                 settingsLink(
                     "Licenses & attributions",
-                    icon: "doc.text.magnifyingglass",
+                    icon: "doc.text.fill",
+                    tile: .gray,
                     destination: LicensesAttributionsView()
                 )
-                settingsLink("About Light", icon: "info.circle.fill", destination: AboutView())
+                settingsLink("About Light", icon: "info.circle.fill", tile: .gray, destination: AboutView())
             }
 
             #if DEBUG
             Section("Development") {
-                settingsLink("Developer settings", icon: "hammer.fill", destination: DeveloperSettings())
+                settingsLink("Developer settings", icon: "hammer.fill", tile: .darkGray, destination: DeveloperSettings())
             }
             #endif
         }
@@ -132,17 +144,31 @@ struct SettingsView: View {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
         }
         .ironScreen()
+        .task { loadWorkoutStats() }
+    }
+
+    private func loadWorkoutStats() {
+        let predicate = NSPredicate(format: "\(#keyPath(Workout.isCurrentWorkout)) != %@", NSNumber(booleanLiteral: true))
+        let countRequest: NSFetchRequest<Workout> = Workout.fetchRequest()
+        countRequest.predicate = predicate
+        workoutCount = try? managedObjectContext.count(for: countRequest)
+
+        let firstRequest: NSFetchRequest<Workout> = Workout.fetchRequest()
+        firstRequest.predicate = predicate
+        firstRequest.sortDescriptors = [NSSortDescriptor(keyPath: \Workout.start, ascending: true)]
+        firstRequest.fetchLimit = 1
+        firstWorkoutDate = (try? managedObjectContext.fetch(firstRequest))?.first?.start
     }
 
     private func settingsLink<Destination: View>(
         _ title: String,
         detail: String? = nil,
         icon: String,
-        tint: Color = IronTheme.accent,
+        tile: SettingsIconTile.Style,
         destination: Destination
     ) -> some View {
         NavigationLink(destination: destination) {
-            settingsRow(title, detail: detail, icon: icon, tint: tint)
+            settingsRow(title, detail: detail, icon: icon, tile: tile)
         }
     }
 
@@ -150,14 +176,10 @@ struct SettingsView: View {
         _ title: String,
         detail: String? = nil,
         icon: String,
-        tint: Color = IronTheme.accent
+        tile: SettingsIconTile.Style
     ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(IronTheme.secondaryText)
-                .frame(width: 24)
-                .accessibilityHidden(true)
+        HStack(spacing: 14) {
+            SettingsIconTile(systemImage: icon, style: tile)
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title)
@@ -196,6 +218,111 @@ struct SettingsView: View {
 
     private func sendFeedback() {
         feedbackPresentation = MFMailComposeViewController.canSendMail() ? .composer : .options
+    }
+}
+
+/// iOS Settings-style glyph tile: a white symbol on a colored rounded square.
+private struct SettingsIconTile: View {
+    enum Style {
+        case indigo, orange, blue, pink, green, yellow, gray, darkGray, health, watch
+
+        var fill: Color {
+            switch self {
+            case .indigo: return Color(UIColor.systemIndigo)
+            case .orange: return Color(UIColor.systemOrange)
+            case .blue: return Color(UIColor.systemBlue)
+            case .pink: return Color(UIColor.systemPink)
+            case .green: return Color(UIColor.systemGreen)
+            case .yellow: return Color(UIColor.systemYellow)
+            case .gray: return Color(UIColor.systemGray)
+            case .darkGray: return Color(UIColor.systemGray2)
+            case .health: return IronTheme.diagramCanvas
+            case .watch: return Color(UIColor(white: 0.17, alpha: 1))
+            }
+        }
+
+        var glyph: Color {
+            self == .health ? Color(UIColor.systemPink) : IronTheme.onMedia
+        }
+
+        /// White and near-black tiles need an edge to separate from the cell.
+        var needsEdge: Bool { self == .health || self == .watch }
+    }
+
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 30
+    let systemImage: String
+    let style: Style
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+            .fill(style.fill)
+            .overlay {
+                if style.needsEdge {
+                    RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+                        .strokeBorder(IronTheme.outline, lineWidth: 1)
+                }
+            }
+            .overlay {
+                Image(systemName: systemImage)
+                    .font(.system(size: size * 0.55, weight: .semibold))
+                    .foregroundStyle(style.glyph)
+            }
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct SettingsHeaderCard: View {
+    @ScaledMetric(relativeTo: .title3) private var iconSize: CGFloat = 56
+    let workoutCount: Int?
+    let firstWorkoutDate: Date?
+
+    private var versionString: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        return "Version \(version) (\(build))"
+    }
+
+    private var countTitle: String? {
+        guard let workoutCount else { return nil }
+        return workoutCount == 1 ? "1 workout" : "\(workoutCount.formatted()) workouts"
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            RoundedRectangle(cornerRadius: iconSize * 0.25, style: .continuous)
+                .fill(LinearGradient(
+                    colors: [IronTheme.accent.opacity(0.78), IronTheme.accent],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
+                .overlay {
+                    Image(systemName: "dumbbell.fill")
+                        .font(.system(size: iconSize * 0.46, weight: .semibold))
+                        .foregroundStyle(IronTheme.onAccent)
+                }
+                .frame(width: iconSize, height: iconSize)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Light")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(IronTheme.primaryText)
+                if let countTitle {
+                    (Text(countTitle).foregroundColor(IronTheme.accent)
+                     + Text(firstWorkoutDate.map { " · since \($0.formatted(.dateTime.month(.abbreviated).year()))" } ?? "")
+                        .foregroundColor(IronTheme.secondaryText))
+                        .font(.subheadline.weight(.semibold))
+                }
+                Text(versionString)
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens About Light")
     }
 }
 
@@ -648,7 +775,7 @@ private struct CalendarWorkoutRow: View {
 
     private var volumeText: String {
         WeightUnit.format(
-            weight: workout.totalCompletedWeight ?? 0,
+            weight: workout.trackedCompletedVolume,
             from: .metric,
             to: settingsStore.weightUnit
         )

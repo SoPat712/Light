@@ -13,6 +13,9 @@ import WorkoutDataKit
 import os.log
 
 extension Workout {
+    /// Kept outside Core Data's schema and independent of Health test/export state.
+    var wasStartedOnWatch: Bool { WatchConnectionManager.shared.wasStartedOnWatch(self) }
+
     // TODO: would be better when SettingsStore, WatchConnectionManager, RestTimerStore etc are injected
 
     enum StartError: LocalizedError {
@@ -34,29 +37,78 @@ extension Workout {
     static func startNew(
         in context: NSManagedObjectContext,
         routine: WorkoutRoutine? = nil,
+        notesDefaults: UserDefaults = .standard,
         save: (() throws -> Void)? = nil
     ) throws -> Workout {
         if let routine, routine.managedObjectContext !== context || routine.isDeleted {
             throw StartError.workoutUnavailable
         }
-        return try startCreatedWorkout(in: context, save: save) {
-            routine?.createWorkout(context: context) ?? Workout.create(context: context)
+        return try startCreatedWorkout(in: context, save: save, afterSave: { workout in
+            let sources = routine?.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
+            let destinations = workout.workoutExercises?.array as? [WorkoutExercise] ?? []
+            for (source, destination) in zip(sources, destinations) {
+                if let id = destination.uuid {
+                    WorkoutRoutineNoteLinks.setRoutineExerciseID(source.uuid, for: id, defaults: notesDefaults)
+                }
+            }
+        }) {
+            guard let routine else { return Workout.create(context: context) }
+            let workout = routine.createWorkout(context: context)
+            let sources = routine.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
+            let destinations = workout.workoutExercises?.array as? [WorkoutExercise] ?? []
+            for (source, destination) in zip(sources, destinations) {
+                // Plan cues are displayed through their source; this field belongs only to this session.
+                destination.comment = nil
+                let type = source.setTrackingType
+                let targets = source.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? []
+                let sets = destination.workoutSets?.array as? [WorkoutSet] ?? []
+                for (target, set) in zip(targets, sets) {
+                    set.distanceValue = type.usesDistance ? SetTrackingPreferences.routineDistance(for: target.uuid) : nil
+                    if type.usesReps { set.repetitionsValue = target.maxRepetitionsValue ?? target.minRepetitionsValue ?? 5 }
+                    set.prepare(for: type)
+                }
+            }
+            return workout
         }
     }
 
-    static func startRepeating(_ source: Workout, blank: Bool, save: (() throws -> Void)? = nil) throws -> Workout {
+    static func startRepeating(_ source: Workout, blank: Bool, trackingDefaults: UserDefaults = .standard,
+                               save: (() throws -> Void)? = nil) throws -> Workout {
         guard let context = source.managedObjectContext, !source.isDeleted else {
             throw StartError.workoutUnavailable
         }
-        return try startCreatedWorkout(in: context, save: save) {
+        let trackingDraft = source.repeatTrackingDraft(defaults: trackingDefaults)
+        return try startCreatedWorkout(in: context, save: save, afterSave: { workout in
+            trackingDraft.commit()
+            let sources = source.workoutExercises?.array as? [WorkoutExercise] ?? []
+            let destinations = workout.workoutExercises?.array as? [WorkoutExercise] ?? []
+            for (original, destination) in zip(sources, destinations) {
+                if let id = destination.uuid {
+                    WorkoutRoutineNoteLinks.setRoutineExerciseID(
+                        original.routineNoteSource(defaults: trackingDefaults)?.uuid,
+                        for: id, defaults: trackingDefaults)
+                }
+            }
+        }) {
             guard let copy = source.copyForRepeat(blank: blank) else { throw StartError.workoutUnavailable }
             return copy
+        }
+    }
+
+    /// Call only after the workout save succeeds; defaults cannot roll back with Core Data.
+    func persistRoutineNoteLinks(defaults: UserDefaults = .standard) {
+        for exercise in workoutExercises?.array as? [WorkoutExercise] ?? [] {
+            guard let id = exercise.uuid,
+                  WorkoutRoutineNoteLinks.routineExerciseID(for: id, defaults: defaults) == nil,
+                  let sourceID = exercise.routineNoteSource(defaults: defaults)?.uuid else { continue }
+            WorkoutRoutineNoteLinks.setRoutineExerciseID(sourceID, for: id, defaults: defaults)
         }
     }
 
     private static func startCreatedWorkout(
         in context: NSManagedObjectContext,
         save: (() throws -> Void)?,
+        afterSave: (Workout) -> Void = { _ in },
         create: () throws -> Workout
     ) throws -> Workout {
         guard try context.count(for: Workout.currentWorkoutFetchRequest) == 0 else {
@@ -66,8 +118,12 @@ extension Workout {
             let workout = try create()
             workout.start = Date()
             workout.isCurrentWorkout = true
+            if !workout.isImported && SettingsStore.shared.healthTestMode {
+                workout.healthExportState = "test"
+            }
             return workout
         }
+        afterSave(workout)
         workout.didStart(startWatchCompanionErrorHandler: nil)
         return workout
     }
@@ -83,9 +139,27 @@ extension Workout {
         try context.persistMutation(save: { try save?() ?? context.save() }) {
             start = Date()
             isCurrentWorkout = true
+            if !isImported && SettingsStore.shared.healthTestMode {
+                healthExportState = "test"
+            }
         }
 
         didStart(startWatchCompanionErrorHandler: startWatchCompanionErrorHandler)
+    }
+
+    /// Called synchronously when enabling the debug preference, before a quick
+    /// off/finish can lose the fact that the active workout was a test.
+    static func markCurrentWorkoutAsHealthTestWorkout(in context: NSManagedObjectContext) throws {
+        guard SettingsStore.shared.healthTestMode else { return }
+        try context.performAndWait {
+            let workouts = try context.fetch(Workout.currentWorkoutFetchRequest).filter {
+                !$0.isImported && $0.healthExportState != "test"
+            }
+            guard !workouts.isEmpty else { return }
+            try context.persistMutation(save: { try context.save() }) {
+                for workout in workouts { workout.healthExportState = "test" }
+            }
+        }
     }
 
     private func didStart(startWatchCompanionErrorHandler: WatchConnectionManager.StartWatchCompanionErrorHandler?) {
@@ -155,9 +229,15 @@ extension Workout {
             end = safeEnd
             isCurrentWorkout = false
             // Persist the export intent with completion, before any external effect.
-            healthExportState = healthExportEligibility == .eligible
-                ? (watchWorkoutUuid != nil ? "watch" : (syncToHealth ? "pending" : nil))
-                : nil
+            let isTestWorkout = healthExportState == "test" || SettingsStore.shared.healthTestMode
+            if isTestWorkout && !isImported {
+                // Keep exclusion even if a duration is invalid and repaired later.
+                healthExportState = "test"
+            } else {
+                healthExportState = healthExportEligibility == .eligible
+                    ? (watchWorkoutUuid != nil ? "watch" : (syncToHealth ? "pending" : nil))
+                    : nil
+            }
         }
 
         RestTimerStore.shared.cancel()
@@ -174,7 +254,8 @@ extension Workout {
                 os_log("currentWatchWorkoutUuid=%@ but workout uuid=%@; leaving Health export to Watch", log: .watch, type: .error, watchWorkoutUuid.uuidString, uuid?.uuidString ?? "nil")
             }
             if let start = start, let end = end, let uuid = uuid {
-                WatchConnectionManager.shared.finishWatchWorkout(start: start, end: end, title: optionalDisplayTitle(in: ExerciseStore.shared.exercises), uuid: uuid)
+                WatchConnectionManager.shared.finishWatchWorkout(start: start, end: end, title: optionalDisplayTitle(in: ExerciseStore.shared.exercises), uuid: uuid,
+                    healthTestMode: healthExportState == "test")
             }
         } else if healthExportState == "pending" {
             healthManager.saveWorkout(workout: self, exerciseStore: ExerciseStore.shared)
@@ -199,6 +280,18 @@ extension Workout {
         }
     }
     
+    /// Resolve before blanking the measurements. Publishing is deferred until
+    /// the new session saves, before Watch/Live Activity snapshots are created.
+    func repeatTrackingDraft(defaults: UserDefaults = .standard) -> RoutineSetTrackingDraft {
+        let draft = RoutineSetTrackingDraft(defaults: defaults)
+        for exercise in workoutExercises?.array as? [WorkoutExercise] ?? [] {
+            guard let id = exercise.exerciseUuid else { continue }
+            let type = exercise.trackingType(catalogExercise: ExerciseStore.shared.exercisesByUUID[id], defaults: defaults)
+            draft.setOverride(type, for: id)
+        }
+        return draft
+    }
+
     func copyForRepeat(blank: Bool) -> Workout? {
         guard let context = managedObjectContext else {
             os_log("Attempt to copy workout without context", log: .workoutData, type: .error)
@@ -215,6 +308,8 @@ extension Workout {
                 let newWorkoutExercise = WorkoutExercise.create(context: context)
                 newWorkoutExercise.workout = newWorkout
                 newWorkoutExercise.exerciseUuid = workoutExercise.exerciseUuid
+                // Workout-only notes never become the next session’s notes.
+                newWorkoutExercise.comment = nil
                 
                 if let workoutSets = workoutExercise.workoutSets?.compactMap({ $0 as? WorkoutSet }) {
                     // copy the sets
@@ -226,6 +321,10 @@ extension Workout {
                             let repetitions = workoutSet.repetitionsValue
                             newWorkoutSet.minTargetRepetitionsValue = repetitions
                             newWorkoutSet.maxTargetRepetitionsValue = repetitions
+                            // Timed/distance sets have no separate target attributes.
+                            // Preserve those targets without manufacturing lifting load.
+                            newWorkoutSet.durationValue = workoutSet.durationValue
+                            newWorkoutSet.distanceValue = workoutSet.distanceValue
                             // don't copy weight, RPE, tag, comment, etc.
                         }
                     }
@@ -234,6 +333,33 @@ extension Workout {
         }
         
         return newWorkout
+    }
+}
+
+extension WorkoutExercise {
+    /// Resolve a plan cue without putting it in the logged, workout-only comment.
+    /// The UUID link distinguishes repeated occurrences of the same catalog exercise.
+    func routineNoteSource(defaults: UserDefaults = .standard) -> WorkoutRoutineExercise? {
+        guard let context = managedObjectContext, let exerciseID = exerciseUuid else { return nil }
+        if let sourceID = WorkoutRoutineNoteLinks.routineExerciseID(for: uuid, defaults: defaults) {
+            let request: NSFetchRequest<WorkoutRoutineExercise> = WorkoutRoutineExercise.fetchRequest()
+            request.fetchLimit = 1
+            request.predicate = NSPredicate(format: "uuid == %@ AND exerciseUuid == %@",
+                                            sourceID as NSUUID, exerciseID as NSUUID)
+            return (try? context.fetch(request))?.first
+        }
+        // Older sessions and legacy backups have the workout relationship but no UUID map.
+        let peers = workout?.workoutExercises?.array as? [WorkoutExercise] ?? []
+        let matches = peers.filter { $0.exerciseUuid == exerciseID }
+        guard let occurrence = matches.firstIndex(where: { $0.objectID == objectID }) else { return nil }
+        let sources = workout?.workoutRoutine?.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
+        let candidates = sources.filter { $0.exerciseUuid == exerciseID && !$0.isDeleted }
+        return candidates.indices.contains(occurrence) ? candidates[occurrence] : nil
+    }
+
+    var routineNote: String? {
+        let text = routineNoteSource()?.comment?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text?.isEmpty == false ? text : nil
     }
 }
 
@@ -272,12 +398,13 @@ final class WorkoutLiveActivityManager {
     func startOrUpdate(for workout: Workout, preservingTransition: Bool = true) {
         let workoutID = identifier(for: workout)
         let existingActivity = activity(for: workoutID)
+        let restInterval = RestTimerStore.shared.restTimerInterval
         let state = reconciledState(
             for: workout,
             priorState: preservingTransition ? existingActivity?.content.state : nil,
             now: Date(),
-            restTimerStart: RestTimerStore.shared.restTimerStart,
-            restTimerEnd: RestTimerStore.shared.restTimerEnd,
+            restTimerStart: restInterval?.lowerBound,
+            restTimerEnd: restInterval?.upperBound,
             pausedRestRemaining: pausedRestRemaining
         )
         synchronizeConfirmationTransition(for: workoutID, state: state)
@@ -297,8 +424,9 @@ final class WorkoutLiveActivityManager {
         let completedSnapshot = snapshot(for: set, in: workoutExercise)
         let nextSnapshot = nextIncompleteSnapshot(after: set, in: workout)
         let now = Date()
-        let restTimerStart = RestTimerStore.shared.restTimerStart
-        let restTimerEnd = RestTimerStore.shared.restTimerEnd
+        let restInterval = RestTimerStore.shared.restTimerInterval
+        let restTimerStart = restInterval?.lowerBound
+        let restTimerEnd = restInterval?.upperBound
         let pausedRemaining = self.pausedRestRemaining
         let hasRunningRest = nextSnapshot != nil
             && restTimerStart != nil
@@ -313,8 +441,8 @@ final class WorkoutLiveActivityManager {
             displaySet: completedSnapshot,
             nextSet: nextSnapshot,
             confirmationUntil: confirmationUntil,
-            restTimerStart: hasRunningRest ? restTimerStart : nil,
-            restTimerEnd: hasRunningRest ? restTimerEnd : nil,
+            restTimerStart: hasActiveRest ? restTimerStart : nil,
+            restTimerEnd: hasActiveRest ? restTimerEnd : nil,
             completedSets: counts.completed,
             totalSets: counts.total,
             pausedRestRemaining: hasPausedRest ? pausedRemaining : nil
@@ -399,14 +527,15 @@ final class WorkoutLiveActivityManager {
     )
 
     private func currentPayload(for workout: Workout) -> Payload? {
+        let restInterval = RestTimerStore.shared.restTimerInterval
         return (
             attributes: attributes(for: workout),
             state: reconciledState(
                 for: workout,
                 priorState: nil,
                 now: Date(),
-                restTimerStart: RestTimerStore.shared.restTimerStart,
-                restTimerEnd: RestTimerStore.shared.restTimerEnd,
+                restTimerStart: restInterval?.lowerBound,
+                restTimerEnd: restInterval?.upperBound,
                 pausedRestRemaining: pausedRestRemaining
             )
         )
@@ -479,8 +608,8 @@ final class WorkoutLiveActivityManager {
             displaySet: anchorSnapshot ?? nextSnapshot ?? fallbackSnapshot,
             nextSet: nextSnapshot,
             confirmationUntil: effectiveConfirmationUntil,
-            restTimerStart: hasRunningTimer ? restTimerStart : nil,
-            restTimerEnd: hasRunningTimer ? restTimerEnd : nil,
+            restTimerStart: hasActiveRest ? restTimerStart : nil,
+            restTimerEnd: hasActiveRest ? restTimerEnd : nil,
             completedSets: counts.completed,
             totalSets: counts.total,
             pausedRestRemaining: pausedRemaining
@@ -530,19 +659,23 @@ final class WorkoutLiveActivityManager {
                 return
             }
 
-            await ExerciseMediaStore.shared.prepareLiveActivityArtwork(fileNames: artworkFileNames)
-
             guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
             let canCreateActivity = await MainActor.run {
                 UIApplication.shared.applicationState == .active
             }
             guard canCreateActivity else { return }
             do {
-                _ = try Activity.request(
+                // Start before the artwork: a request only works in the foreground,
+                // so waiting on the IO queue loses it if the app closes meanwhile.
+                let activity = try Activity.request(
                     attributes: attributes,
                     content: content,
                     pushType: nil
                 )
+                Task(priority: .utility) {
+                    await ExerciseMediaStore.shared.prepareLiveActivityArtwork(fileNames: artworkFileNames)
+                    await activity.update(activity.content)
+                }
             } catch {
                 os_log(
                     "Could not start workout Live Activity: %@",
@@ -679,7 +812,7 @@ final class WorkoutLiveActivityManager {
         case .setCompleted:
             return state.confirmationUntil
         case .resting:
-            return state.restTimerEnd
+            return state.isRestPaused ? nil : state.restTimerEnd
         case .currentSet, .finished:
             return nil
         }
@@ -833,8 +966,9 @@ final class WorkoutLiveActivityManager {
     }
 
     private func activity(for workoutID: String) -> Activity<WorkoutActivityAttributes>? {
+        // A dismissed activity can stay listed. Treating it as running would never start a new one.
         Activity<WorkoutActivityAttributes>.activities.first {
-            $0.attributes.workoutID == workoutID
+            $0.attributes.workoutID == workoutID && $0.activityState != .ended && $0.activityState != .dismissed
         }
     }
 
@@ -952,6 +1086,10 @@ enum WorkoutLiveActivityIntentHandler {
             return
         }
 
+        if let exerciseID = workoutExercise.exerciseUuid,
+           SetTrackingPreferences.override(for: exerciseID) == nil {
+            SetTrackingPreferences.setOverride(workoutExercise.setTrackingType, for: exerciseID)
+        }
         if SettingsStore.shared.autoStartRestTimer {
             RestTimerStore.shared.start(duration: restTimerDuration(for: workoutExercise))
         }

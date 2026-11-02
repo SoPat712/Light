@@ -143,16 +143,8 @@ struct ExerciseStatisticsView: View {
                     usesBars: metric == .totalWeight,
                     usesDayLabels: selectedTimeFrame == .month
                 )
-                .frame(height: 170)
-                .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 16))
-
-                if let latest = points.last {
-                    LabeledContent("Latest") {
-                        progress.metricText(latest.value, for: metric)
-                            .contentTransition(reduceMotion ? .opacity : .numericText())
-                            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: latest.value)
-                    }
-                }
+                .frame(height: 236)
+                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
 
                 if let first = points.first, let latest = points.last, points.count > 1 {
                     let difference = latest.value - first.value
@@ -391,11 +383,11 @@ struct ExerciseInlineProgressView: View {
 
     private var rangeCaption: String {
         switch selectedTimeFrame {
-        case .week: return "in 1 week"
-        case .month: return "in 1 month"
-        case .threeMonths: return "in 3 months"
-        case .sixMonths: return "in 6 months"
-        case .year: return "in a year"
+        case .week: return "past week"
+        case .month: return "past month"
+        case .threeMonths: return "past 3 months"
+        case .sixMonths: return "past 6 months"
+        case .year: return "past year"
         case .all: return "all time"
         }
     }
@@ -478,10 +470,9 @@ struct ExerciseProgressData {
         let hasRepetitions = completedWorkoutSets.contains { $0.repetitionsValue > 0 }
         let hasDuration = completedWorkoutSets.contains { $0.durationValue != nil }
         let hasDistance = completedWorkoutSets.contains { $0.distanceValue != nil }
-        let isBodyweight = exercise.equipment.contains { equipment in
-            let normalized = equipment.lowercased().replacingOccurrences(of: "-", with: " ")
-            return normalized.contains("body weight") || normalized.contains("bodyweight")
-        }
+        let preferred = SetTrackingPreferences.override(for: exercise.uuid)
+            ?? SetTrackingType.defaultType(name: exercise.title, equipment: exercise.equipment, category: exercise.muscleGroup)
+        let isBodyweight = preferred == .assistedBodyweight || (preferred == .bodyweightReps && !hasWeight)
 
         if hasDistance {
             var metrics: [ExerciseProgressMetric] = [.totalDistance, .bestDistance]
@@ -495,7 +486,7 @@ struct ExerciseProgressData {
             return metrics
         }
 
-        if hasDuration && !hasWeight {
+        if hasDuration {
             var metrics: [ExerciseProgressMetric] = [.totalDuration, .bestDuration]
             if hasRepetitions {
                 metrics.append(.totalRepetitions)
@@ -504,7 +495,7 @@ struct ExerciseProgressData {
             return metrics
         }
 
-        if isBodyweight && !hasWeight {
+        if isBodyweight {
             var metrics: [ExerciseProgressMetric] = []
             if hasRepetitions {
                 metrics += [.bestRepetitions, .totalRepetitions]
@@ -552,7 +543,8 @@ struct ExerciseProgressData {
             details.append(detailText(Double(repetitions), for: .totalRepetitions) + detailUnit("reps"))
         }
 
-        if let kilograms = workoutExercise.totalCompletedWeight, kilograms > 0 {
+        let kilograms = workoutExercise.trackedCompletedVolume
+        if kilograms > 0 {
             let weight = WeightUnit.convert(
                 weight: kilograms,
                 from: .metric,
@@ -639,9 +631,7 @@ struct ExerciseProgressData {
                 WeightUnit.convert(weight: $0, from: .metric, to: settingsStore.weightUnit)
             }
         case .totalWeight:
-            return workoutExercise.totalCompletedWeight.map {
-                WeightUnit.convert(weight: $0, from: .metric, to: settingsStore.weightUnit)
-            }
+            return WeightUnit.convert(weight: workoutExercise.trackedCompletedVolume, from: .metric, to: settingsStore.weightUnit)
         case .totalSets:
             return Double(sets.count)
         case .totalRepetitions:
@@ -666,7 +656,7 @@ struct ExerciseProgressData {
     /// B6 specifies Epley; the model's estimatedOneRepMax uses Brzycki.
     /// Keep the display calculation local rather than changing stored PR behavior.
     static func epleyEstimate(for set: WorkoutSet, maxReps: Int) -> Double? {
-        guard set.isCompleted, set.weightValue > 0,
+        guard set.isCompleted, set.trackingType.volumeRule == .externalLoadTimesReps, set.weightValue > 0,
               set.repetitionsValue > 0, Int(set.repetitionsValue) <= maxReps else { return nil }
         return set.weightValue * (1 + Double(set.repetitionsValue) / 30)
     }
@@ -742,8 +732,30 @@ struct ExerciseProgressChart: View {
     @State private var selectedDate: Date?
     @State private var hasAppeared = false
 
+    /// Round tick spacing (1, 2, 2.5 or 5 × 10ⁿ) so the axis reads 120 / 140 / 160, not 78.4 / 156.8.
+    private var yTickStep: Double {
+        let values = points.map(\.value)
+        let high = values.max() ?? 0
+        let low = usesBars ? 0 : (values.min() ?? 0)
+        let span = max(high - low, high * 0.1, 1)
+        let rough = span / 2
+        let magnitude = pow(10, floor(log10(rough)))
+        let step = [1, 2, 2.5, 5, 10].map { $0 * magnitude }.first { $0 >= rough } ?? 10 * magnitude
+        return max(step, 1)
+    }
+
+    /// Bars start at zero; lines hug the data so small progress stays visible.
     private var yDomain: ClosedRange<Double> {
-        0...max((points.map(\.value).max() ?? 0) * 1.12, 1)
+        let values = points.map(\.value)
+        let step = yTickStep
+        let high = values.max() ?? 0
+        let low = usesBars ? 0 : max(0, floor(((values.min() ?? 0) - step * 0.25) / step) * step)
+        let top = max(ceil((high + step * 0.25) / step) * step, low + step)
+        return low...top
+    }
+
+    private var yTicks: [Double] {
+        Array(stride(from: yDomain.lowerBound, through: yDomain.upperBound + 0.001, by: yTickStep))
     }
 
     private var chartIdentity: String {
@@ -761,19 +773,14 @@ struct ExerciseProgressChart: View {
     private var latestRecordID: String? { points.last(where: \.isRecord)?.id }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if showsCallout {
-                if let point = selectedPoint {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(dateLabel(point.date)).font(.caption).foregroundStyle(IronTheme.secondaryText)
-                        valueText(point.value, .subheadline, .caption)
-                            .contentTransition(reduceMotion ? .opacity : .numericText())
-                    }
-                } else {
-                    Text("Drag horizontally to inspect a session.")
-                        .font(.caption2)
-                        .foregroundStyle(IronTheme.secondaryText)
-                }
+        VStack(alignment: .leading, spacing: 10) {
+            if showsCallout, let shown = selectedPoint ?? points.last {
+                IronChartHeader(
+                    caption: selectedPoint == nil ? "Latest" : (shown.isRecord ? "Record" : "Session"),
+                    value: valueText(shown.value, .title2, .subheadline),
+                    detail: dateLabel(shown.date)
+                )
+                .contentTransition(reduceMotion ? .opacity : .numericText())
             }
             Group {
                 if reduceMotion {
@@ -805,16 +812,12 @@ struct ExerciseProgressChart: View {
                     // A continuous Date axis has no categorical band for ratio
                     // widths. Keep sessions visible without coarsening timestamps.
                     BarMark(x: .value("Date", point.date), y: .value("Value", value), width: .fixed(8))
-                        .cornerRadius(4)
+                        .cornerRadius(3)
                         .foregroundStyle(color.opacity(opacity))
                 } else {
-                    AreaMark(x: .value("Date", point.date), y: .value("Value", value))
-                        .interpolationMethod(.monotone)
-                        .foregroundStyle(color.opacity(selectedPoint == nil ? 0.15 : 0.15 * 0.45))
                     LineMark(x: .value("Date", point.date), y: .value("Value", value))
-                        .interpolationMethod(.monotone)
-                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                        .foregroundStyle(color.opacity(selectedPoint == nil ? 1 : 0.45))
+                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        .foregroundStyle(color.opacity(selectedPoint == nil ? 1 : IronChartEmphasis.dimmed))
                 }
                 if point.id == latestRecordID {
                     PointMark(x: .value("Date", point.date), y: .value("Value", value))
@@ -830,42 +833,17 @@ struct ExerciseProgressChart: View {
                         }
                 } else if !usesBars {
                     PointMark(x: .value("Date", point.date), y: .value("Value", value))
-                        .symbol { Circle().fill(color.opacity(opacity)).frame(width: 6, height: 6) }
+                        .symbol { Circle().fill(color.opacity(opacity)).frame(width: point.id == selectedPoint?.id ? 8 : 5) }
                 }
             }
             if let selectedPoint {
-                RuleMark(x: .value("Date", selectedPoint.date))
-                    .lineStyle(StrokeStyle(lineWidth: 1))
-                    .foregroundStyle(IronTheme.secondaryText)
+                IronChartSelectionRule(date: selectedPoint.date)
             }
         }
         .chartXScale(domain: domainStart...max(domainEnd, domainStart.addingTimeInterval(60)))
         .chartYScale(domain: yDomain)
-        .chartYAxis {
-            AxisMarks(position: .trailing, values: [0, yDomain.upperBound / 2, yDomain.upperBound]) { value in
-                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
-                    .foregroundStyle(IronTheme.outline.opacity(0.5))
-                AxisValueLabel {
-                    if let raw = value.as(Double.self) {
-                        Text(raw, format: .number.notation(.compactName).precision(.fractionLength(0...1)))
-                            .font(.ironMetric(.footnote, weight: .semibold))
-                            .foregroundStyle(IronTheme.secondaryText)
-                    }
-                }
-            }
-        }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { value in
-                AxisValueLabel(verticalSpacing: 0) {
-                    if let date = value.as(Date.self) {
-                        Text(date, format: usesDayLabels ? .dateTime.day() : .dateTime.month(.abbreviated))
-                            .font(usesDayLabels ? .ironMetric(.footnote, weight: .semibold) : .footnote)
-                            .foregroundStyle(IronTheme.secondaryText)
-                            .frame(minHeight: 14)
-                    }
-                }
-            }
-        }
+        .ironValueAxis(ticks: yTicks) { $0.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))) }
+        .ironDateAxis(.automatic(desiredCount: 4), format: usesDayLabels ? .dateTime.month(.abbreviated).day() : .dateTime.month(.abbreviated))
         .chartPlotStyle { plot in
             plot.mask(alignment: .leading) {
                 Rectangle().scaleEffect(x: usesBars || reduceMotion || hasAppeared ? 1 : 0, anchor: .leading)

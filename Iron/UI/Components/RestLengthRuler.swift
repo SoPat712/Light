@@ -13,7 +13,13 @@ struct RestLengthRuler: View {
     @State private var stepFeedback = 0
     @State private var rulerWidth: CGFloat = 1
     private let presets: [TimeInterval] = [60, 90, 120, 150, 180]
-    private let labels: [TimeInterval] = [30, 60, 120, 180, 240, 300]
+    // Whole minutes only, at most five, spread over whatever range the caller uses
+    // (the logger's 0:30–5:00 or Settings' 0:30–10:00); 0:30 collides with 1:00.
+    private var labels: [TimeInterval] {
+        let minutes = max(1, ((range.upperBound - range.lowerBound) / 60 / 5).rounded(.up))
+        let first = (range.lowerBound / 60).rounded(.up) * 60
+        return Array(stride(from: max(first, 60), through: range.upperBound, by: minutes * 60))
+    }
 
     private var displayedValue: TimeInterval { scrubbedValue ?? value }
     private var pointerValue: TimeInterval { scrubbedPosition ?? displayedValue }
@@ -111,7 +117,7 @@ struct RestLengthRuler: View {
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
         .background(IronTheme.raisedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .sensoryFeedback(.selection, trigger: stepFeedback)
+        .sensoryFeedback(.selection, trigger: stepFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Rest length")
         .accessibilityValue(spokenDuration)
@@ -161,7 +167,9 @@ struct RestLengthRuler: View {
     }
 
     private func timeTitle(_ duration: TimeInterval) -> String {
-        Self.durationTitles[duration] ?? restTimerDurationFormatter.string(from: max(0, duration)) ?? "0:00"
+        let title = Self.durationTitles[duration] ?? restTimerDurationFormatter.string(from: max(0, duration)) ?? "0:00"
+        // Rest lengths read as "2:30", not the clock-style "02:30".
+        return title.count == 5 && title.hasPrefix("0") ? String(title.dropFirst()) : title
     }
 
     private var spokenDuration: String {

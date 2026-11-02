@@ -105,7 +105,15 @@ extension HealthManager {
             completion(.failure(AuthorizationError.unavailable))
             return
         }
-        
+
+        #if DEBUG
+        // Simulator screenshot runs can't pre-grant Health; skip the system sheet.
+        if ProcessInfo.processInfo.arguments.contains("-ironSkipHealthAuthorization") {
+            completion(.failure(AuthorizationError.denied))
+            return
+        }
+        #endif
+
         healthStore.requestAuthorization(toShare: typesToShare, read: typesToRead) { (success, error) in
             guard success else {
                 os_log("Could not request health authorization: %@", log: .health, type: .fault, error?.localizedDescription ?? "nil")
@@ -433,6 +441,12 @@ extension HealthManager {
                 completion(.failure(error))
                 return
             }
+            // A test completion is permanently excluded, even after switching
+            // modes/builds. The debug preference also pauses manual/backfill sync.
+            guard workout.healthExportState != "test", !SettingsStore.shared.healthTestMode else {
+                completion(.success(.alreadyPresent))
+                return
+            }
             guard !workoutID.isTemporaryID,
                   let uuid = workout.uuid, let start = workout.start,
                   let end = workout.end, let duration = workout.duration else {
@@ -459,7 +473,8 @@ extension HealthManager {
                     do {
                         if case .success = result, !workout.isDeleted,
                            workout.healthExportEligibility == .eligible,
-                           workout.healthExportState != "watch" {
+                           workout.healthExportState != "watch", workout.healthExportState != "test",
+                           !SettingsStore.shared.healthTestMode {
                             try self.persistHealthExportState("exported", for: workout, in: context)
                         }
                         completion(result)
@@ -491,7 +506,7 @@ extension HealthManager {
         try stateContext.performAndWait {
             guard let stored = try stateContext.existingObject(with: workoutID) as? Workout,
                   stored.healthExportEligibility == .eligible,
-                  stored.healthExportState != "watch" else {
+                  stored.healthExportState != "watch", stored.healthExportState != "test" else {
                 throw WorkoutSyncError.missingWorkoutData
             }
             stored.healthExportState = state
@@ -531,6 +546,10 @@ extension HealthManager {
                 limit: HKObjectQueryNoLimit,
                 sortDescriptors: nil
             ) { _, samples, error in
+                guard !SettingsStore.shared.healthTestMode else {
+                    completion(.success(.alreadyPresent))
+                    return
+                }
                 if let error {
                     completion(.failure(error))
                     return
@@ -597,6 +616,10 @@ extension HealthManager {
                     replacements: [reconciledWorkout],
                     intent: .replace,
                     save: { replacements, saved in
+                        guard !SettingsStore.shared.healthTestMode else {
+                            saved(.failure(GenericError(description: "Apple Health recording is off in test mode.")))
+                            return
+                        }
                         self.healthStore.save(replacements) { success, error in
                             saved(success
                                 ? .success(())
@@ -1004,6 +1027,7 @@ extension HealthManager {
                     if pendingOnly { request.predicate = NSPredicate(format: "healthExportState == %@", "pending") }
                     let ids = try context.fetch(request).filter {
                         $0.healthExportEligibility == .eligible && $0.healthExportState != "watch"
+                            && $0.healthExportState != "test" && !SettingsStore.shared.healthTestMode
                     }.map(\.objectID)
                     var created = 0
                     var modified = 0
@@ -1044,5 +1068,99 @@ extension HKWorkout {
     var externalUuid: UUID? {
         guard let externalUuidString = metadata?[HKMetadataKeyExternalUUID] as? String else { return nil }
         return UUID(uuidString: externalUuidString)
+    }
+}
+
+// MARK: - Workout vitals
+
+extension HealthManager {
+    /// Heart rate and active energy recorded in Apple Health during a workout's
+    /// time window. Read-only: Light never writes these samples from the iPhone.
+    struct WorkoutVitals: Equatable {
+        struct HeartRatePoint: Equatable {
+            let date: Date
+            let bpm: Double
+        }
+
+        var heartRate: [HeartRatePoint]
+        var activeEnergyKilocalories: Double?
+
+        var isEmpty: Bool { heartRate.isEmpty && activeEnergyKilocalories == nil }
+    }
+
+    private var vitalsReadTypes: Set<HKObjectType> {
+        Set([
+            HKQuantityType.quantityType(forIdentifier: .heartRate),
+            HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)
+        ].compactMap { $0 })
+    }
+
+    /// HealthKit never reveals whether read access was granted; this only says
+    /// whether the permission prompt has yet to be shown.
+    // completion is called on a background queue!
+    func needsVitalsReadRequest(completion: @escaping (Bool) -> Void) {
+        guard HKHealthStore.isHealthDataAvailable() else {
+            completion(false)
+            return
+        }
+        healthStore.getRequestStatusForAuthorization(toShare: [], read: vitalsReadTypes) { status, _ in
+            completion(status == .shouldRequest)
+        }
+    }
+
+    // completion is called on a background queue!
+    func requestVitalsReadPermission(completion: @escaping (Result<Void, Error>) -> Void) {
+        requestPermissions(toShare: nil, read: vitalsReadTypes, completion: completion)
+    }
+
+    // completion is called on a background queue!
+    func fetchWorkoutVitals(start: Date, end: Date, completion: @escaping (WorkoutVitals) -> Void) {
+        guard HKHealthStore.isHealthDataAvailable(), end > start,
+              let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate),
+              let energyType = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) else {
+            completion(WorkoutVitals(heartRate: [], activeEnergyKilocalories: nil))
+            return
+        }
+
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: [])
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var heartRate: [WorkoutVitals.HeartRatePoint] = []
+        var energy: Double?
+
+        group.enter()
+        let bpmUnit = HKUnit.count().unitDivided(by: .minute())
+        let heartRateQuery = HKSampleQuery(
+            sampleType: heartRateType,
+            predicate: predicate,
+            limit: HKObjectQueryNoLimit,
+            sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
+        ) { _, samples, _ in
+            let points = (samples as? [HKQuantitySample] ?? []).map {
+                WorkoutVitals.HeartRatePoint(date: $0.startDate, bpm: $0.quantity.doubleValue(for: bpmUnit))
+            }
+            lock.lock(); heartRate = points; lock.unlock()
+            group.leave()
+        }
+
+        group.enter()
+        let energyQuery = HKStatisticsQuery(
+            quantityType: energyType,
+            quantitySamplePredicate: predicate,
+            options: .cumulativeSum
+        ) { _, statistics, _ in
+            let total = statistics?.sumQuantity()?.doubleValue(for: .kilocalorie())
+            lock.lock(); energy = total.flatMap { $0 > 0 ? $0 : nil }; lock.unlock()
+            group.leave()
+        }
+
+        healthStore.execute(heartRateQuery)
+        healthStore.execute(energyQuery)
+        group.notify(queue: .global(qos: .userInitiated)) {
+            lock.lock()
+            let vitals = WorkoutVitals(heartRate: heartRate, activeEnergyKilocalories: energy)
+            lock.unlock()
+            completion(vitals)
+        }
     }
 }

@@ -12,7 +12,18 @@ import WorkoutDataKit
 import os.log
 
 enum Shortcuts {
+    /// The IronIntents and IronIntentsUI extensions are shelved until a real release, so nothing can run these shortcuts.
+    /// Set to true when they're embedded again (see docs/HANDOFF.md).
+    private static let isAvailable = false
+
     static func setShortcutSuggestions() {
+        guard isAvailable else {
+            // clear what earlier builds published, it would only fail now
+            INVoiceShortcutCenter.shared.setShortcutSuggestions([])
+            INInteraction.deleteAll()
+            return
+        }
+
         let exercises = ExerciseStore.shared.shownExercises.filter { exercise in
             ["Bench Press: Barbell", "Squat: Barbell", "Deadlift: Barbell"].contains(exercise.title)
         }
@@ -55,7 +66,7 @@ enum Shortcuts {
     
     /// Should be called when a new *empty* workout is created by the user
     static func donateStartWorkoutInteraction(for workout: Workout) {
-        guard let uuid = workout.uuid else { return }
+        guard isAvailable, let uuid = workout.uuid else { return }
         let intent = INStartWorkoutIntent()
         intent.suggestedInvocationPhrase = "Weight lifting time"
         let interaction = INInteraction(intent: intent, response: nil)

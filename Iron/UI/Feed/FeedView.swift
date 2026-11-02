@@ -30,7 +30,13 @@ struct FeedView : View {
     @State private var showingMeasurements = false
     @State private var showingChartSelector = false
     @State private var showingChartEditor = false
+    @State private var showingCustomize = false
     @State private var persistenceError: String?
+    @AppStorage(HomeWeekStyle.storageKey) private var weekStyleRaw = HomeWeekStyle.rings.rawValue
+    @AppStorage(HomeSection.orderKey) private var sectionOrder = ""
+    @AppStorage(HomeSection.hiddenKey) private var hiddenSections = ""
+    @AppStorage(WeeklySetTarget.lowKey) private var setTargetLow = WeeklySetTarget.defaultLow
+    @AppStorage(WeeklySetTarget.highKey) private var setTargetHigh = WeeklySetTarget.defaultHigh
 
     static var workoutFetchRequest: NSFetchRequest<Workout> {
         let request: NSFetchRequest<Workout> = Workout.fetchRequest()
@@ -45,20 +51,8 @@ struct FeedView : View {
 
     private var completedWorkouts: [TrainingSessionSnapshot] { historyStore.snapshot.sessions }
     private var recentWorkouts: [TrainingSessionSnapshot] { Array(completedWorkouts.prefix(3)) }
-    private var workoutsThisWeek: [TrainingSessionSnapshot] {
-        guard let week = Calendar.current.dateInterval(of: .weekOfYear, for: Date()) else { return [] }
-        return completedWorkouts.filter { week.contains($0.date) }
-    }
-    private var completedSetsThisWeek: Int { workoutsThisWeek.reduce(0) { $0 + $1.setCount } }
-    private var volumeThisWeek: Double { workoutsThisWeek.reduce(0) { $0 + $1.volume } }
+    private var weekStyle: HomeWeekStyle { HomeWeekStyle(rawValue: weekStyleRaw) ?? .rings }
     private var trainingStreak: Int { historyStore.snapshot.streak() }
-
-    private var greeting: String {
-        let hour = Calendar.current.component(.hour, from: Date())
-        if hour < 12 { return "Good morning" }
-        if hour < 18 { return "Good afternoon" }
-        return "Good evening"
-    }
 
     private var dateText: String {
         let formatter = DateFormatter()
@@ -76,16 +70,67 @@ struct FeedView : View {
         }
     }
 
-    private var weekSection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 16) {
-                weekMetrics
+    private var weekRangeText: String {
+        guard let week = Calendar.current.dateInterval(of: .weekOfYear, for: Date()) else { return "" }
+        let last = week.end.addingTimeInterval(-1)
+        return week.start.formatted(.dateTime.month(.abbreviated).day()) + " – " + last.formatted(.dateTime.month(.abbreviated).day())
+    }
 
-                WeeklyVolumeChart(
-                    days: weekVolumeByDay,
-                    unit: settingsStore.weightUnit.unit.symbol,
-                    valueLabel: { compactWeight($0) }
-                )
+    /// Fitness-style summary: the week drawn the way the user chose, and the way into a workout.
+    private func weekSection(_ summary: HomeWeekSummary) -> some View {
+        let unit = settingsStore.weightUnit.unit.symbol
+        return Section {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .center) {
+                    Text("This Week")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(IronTheme.primaryText)
+                    Spacer(minLength: 8)
+                    Text(weekRangeText)
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                    Menu {
+                        Picker("Show As", selection: $weekStyleRaw) {
+                            ForEach(HomeWeekStyle.allCases) { style in
+                                Label(style.title, systemImage: style.systemImage).tag(style.rawValue)
+                            }
+                        }
+                        Button("Customize Home", systemImage: "slider.horizontal.3") { showingCustomize = true }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.title3)
+                            .frame(minWidth: IronTheme.controlHeight, minHeight: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("This Week Options")
+                    .padding(.trailing, -10)
+                }
+
+                switch weekStyle {
+                case .rings:
+                    WeekRingsView(summary: summary, unit: unit, valueLabel: { compactWeight($0) })
+                case .pace:
+                    WeekPaceView(summary: summary, unit: unit, valueLabel: { compactWeight($0) })
+                    Divider()
+                    weekMetrics(summary, showsTime: true)
+                case .muscles:
+                    weekMetrics(summary)
+                    Divider()
+                    MuscleWeekGrid(summary: summary)
+                case .bars:
+                    weekMetrics(summary)
+                    WeeklyVolumeChart(
+                        days: summary.days.map { DayVolume(date: $0.date, volume: $0.volume, isFuture: $0.isFuture) },
+                        unit: unit,
+                        valueLabel: { compactWeight($0) }
+                    )
+                    if let comparison = weekComparisonText(summary) {
+                        comparison
+                            .font(.footnote)
+                            .foregroundStyle(IronTheme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
 
                 Button {
                     if currentWorkouts.isEmpty {
@@ -108,74 +153,44 @@ struct FeedView : View {
             }
             .padding(16)
             .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: weekStyleRaw)
             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
-        } header: {
-            Text(greeting)
-                .font(.headline)
-                .foregroundStyle(IronTheme.secondaryText)
-                .textCase(nil)
-                .padding(.bottom, 8)
-        } footer: {
-            if let comparison = weekComparisonText {
-                comparison
-                    .font(.footnote)
-                    .foregroundStyle(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
         }
     }
 
-    private var weekMetrics: some View {
+    /// Workouts, sets and volume; Pace swaps volume, already in its header, for time.
+    private func weekMetrics(_ summary: HomeWeekSummary, showsTime: Bool = false) -> some View {
         let layout = dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
             : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
         return layout {
-            weekMetric(
-                value: "\(workoutsThisWeek.count)", label: "Workouts",
-                systemImage: "figure.strengthtraining.traditional",
-                tint: IronTheme.accent, container: IronTheme.accentSoft, index: 0
-            )
-            weekMetric(
-                value: "\(completedSetsThisWeek)", label: "Sets",
-                systemImage: "checklist",
-                tint: IronTheme.metricSets, container: IronTheme.metricSetsContainer, index: 1
-            )
-            weekMetric(
-                value: compactWeight(volumeThisWeek), label: "Volume",
-                unit: settingsStore.weightUnit.unit.symbol, systemImage: "scalemass.fill",
-                tint: IronTheme.metricVolume, container: IronTheme.metricVolumeContainer, index: 2
-            )
+            weekMetric(value: "\(summary.workouts)", label: summary.workouts == 1 ? "Workout" : "Workouts",
+                       tint: IronTheme.accent, index: 0)
+            weekMetric(value: "\(summary.sets)", label: "Sets", tint: IronTheme.metricSets, index: 1)
+            if showsTime {
+                weekMetric(value: Workout.durationFormatter.string(from: summary.duration) ?? "0m", label: "Time",
+                           tint: IronTheme.metricTime, index: 2)
+            } else {
+                weekMetric(value: compactWeight(summary.volume), label: "Volume",
+                           unit: settingsStore.weightUnit.unit.symbol, tint: IronTheme.metricVolume, index: 2)
+            }
         }
     }
 
-    private func weekMetric(
-        value: String,
-        label: String,
-        unit: String? = nil,
-        systemImage: String,
-        tint: Color,
-        container: Color,
-        index: Int
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.body.weight(.semibold))
+    /// A colored label over its number, as Fitness labels Move, Exercise and Stand.
+    private func weekMetric(value: String, label: String, unit: String? = nil, tint: Color, index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(tint)
-                .frame(width: 32, height: 32)
-                .background(Circle().fill(container))
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 2) {
-                IronMetricValue(value: value, unit: unit, tint: tint)
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
-                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: value)
-                Text(label)
-                    .font(.footnote)
-                    .foregroundStyle(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                .textCase(.uppercase)
+            IronMetricValue(value: value, unit: unit, style: .title2, tint: tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: value)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .ironStaggeredEntrance(index: index)
@@ -183,84 +198,61 @@ struct FeedView : View {
         .accessibilityLabel("\(value)\(unit.map { " " + $0 } ?? "") \(label)")
     }
 
-    /// Volume per weekday for the current week, including untrained days so the
-    /// chart keeps a stable seven-column shape.
-    private var weekVolumeByDay: [DayVolume] {
-        let calendar = Calendar.current
-        guard let interval = calendar.dateInterval(of: .weekOfYear, for: Date()) else { return [] }
-        return (0..<7).compactMap { offset in
-            guard let day = calendar.date(byAdding: .day, value: offset, to: interval.start) else { return nil }
-            let volume = (historyStore.snapshot.byDay[calendar.startOfDay(for: day)] ?? []).reduce(0) { $0 + $1.volume }
-            return DayVolume(date: day, volume: volume, isFuture: day > Date())
-        }
-    }
-
-    private var volumeLastWeek: Double {
-        let calendar = Calendar.current
-        guard let thisWeek = calendar.dateInterval(of: .weekOfYear, for: Date()),
-              let previousDay = calendar.date(byAdding: .day, value: -1, to: thisWeek.start),
-              let lastWeek = calendar.dateInterval(of: .weekOfYear, for: previousDay) else { return 0 }
-        return completedWorkouts
-            .filter { lastWeek.contains($0.date) }
-            .reduce(0) { $0 + $1.volume }
-    }
-
-    private var weekComparisonText: Text? {
-        guard volumeLastWeek > 0 else { return nil }
-        let change = (volumeThisWeek - volumeLastWeek) / volumeLastWeek * 100
+    private func weekComparisonText(_ summary: HomeWeekSummary) -> Text? {
+        guard summary.lastVolume > 0 else { return nil }
+        let change = (summary.volume - summary.lastVolume) / summary.lastVolume * 100
         guard abs(change) > 3 else {
-            return Text("Volume is about the same as last week")
+            return Text(Image(systemName: "equal")) + Text("  Volume is about the same as last week")
         }
         let direction = change > 0 ? "up" : "down"
-        return Text("Volume is \(direction) ")
+        let tint = change > 0 ? IronTheme.metricVolume : IronTheme.secondaryText
+        return Text(Image(systemName: change > 0 ? "arrow.up.right" : "arrow.down.right")).foregroundColor(tint)
+            + Text("  Volume is \(direction) ")
             + Text("\(Int(abs(change).rounded()))%")
                 .font(.ironMetric(.footnote, weight: .semibold))
-                .foregroundColor(change > 0 ? IronTheme.metricVolume : IronTheme.secondaryText)
+                .foregroundColor(tint)
             + Text(" on last week")
     }
 
-    /// Share of completed sets by muscle group over the last month, so the user
-    /// can see what they have been neglecting.
-    private var muscleFocus: [MuscleFocusSlice] {
-        let calendar = Calendar.current
-        guard let cutoff = calendar.date(byAdding: .day, value: -28, to: Date()) else { return [] }
-        var setsByGroup: [String: Int] = [:]
-        for workout in completedWorkouts where workout.date >= cutoff {
-            for item in workout.exercises {
-                let group = item.uuid.flatMap { exerciseStore.exercisesByUUID[$0]?.muscleGroup } ?? "other"
-                setsByGroup[group, default: 0] += item.setCount
-            }
-        }
-        let total = setsByGroup.values.reduce(0, +)
-        guard total > 0 else { return [] }
-        return setsByGroup
-            .map { MuscleFocusSlice(muscleGroup: $0.key, sets: $0.value, share: Double($0.value) / Double(total)) }
-            .sorted { $0.sets > $1.sets }
-    }
-
-    private var muscleFocusSection: some View {
-        Section {
-            if muscleFocus.isEmpty {
-                Text("Complete a few workouts to see which muscle groups you train most.")
+    /// Average weekly sets per muscle group over the last four weeks against the user's target,
+    /// so the user can see what they have been neglecting.
+    private func muscleFocusSection(_ summary: HomeWeekSummary) -> some View {
+        let target = setTargetLow...max(setTargetHigh, setTargetLow + 1)
+        let trained = summary.weeklyAverages.values.contains { $0 > 0 }
+        return Section {
+            if trained {
+                WeeklySetsChart(averages: summary.weeklyAverages, target: target)
+                    .padding(.vertical, 6)
+            } else {
+                Text("Complete a few workouts to see how many sets each muscle group gets a week.")
                     .font(.subheadline)
                     .foregroundStyle(IronTheme.secondaryText)
-            } else {
-                ForEach(muscleFocus.prefix(5)) { slice in
-                    MuscleFocusRow(slice: slice)
-                }
             }
         } header: {
             Text("Muscle Focus")
         } footer: {
-            if let top = muscleFocus.first {
-                Text("\(top.muscleGroup.capitalized) leads your last 4 weeks at ")
-                + Text("\(Int((top.share * 100).rounded()))%")
-                    .font(.ironMetric(.footnote, weight: .semibold))
-                + Text(" of completed sets.")
+            if trained {
+                Text(muscleFocusFooter(summary, target: target))
             } else {
                 Text("Based on completed sets over the last 4 weeks.")
             }
         }
+    }
+
+    private func muscleFocusFooter(_ summary: HomeWeekSummary, target: ClosedRange<Int>) -> String {
+        let isDefault = target == WeeklySetTarget.defaultLow...WeeklySetTarget.defaultHigh
+        let guideline = isDefault
+            ? "Many lifters aim for 10–20 sets a week per muscle. Change your target in Customize Home."
+            : "Your target is \(target.lowerBound)–\(target.upperBound) sets a week per muscle."
+        guard let lowest = HomeWeekSummary.muscleGroups.min(by: { (summary.weeklyAverages[$0] ?? 0) < (summary.weeklyAverages[$1] ?? 0) }),
+              let sets = summary.weeklyAverages[lowest], sets < Double(target.lowerBound) else {
+            return "Every group reaches \(target.lowerBound) sets a week. " + guideline
+        }
+        guard sets > 0 else {
+            return "\(HomeWeekSummary.displayName(lowest)) has no sets in the last 4 weeks. " + guideline
+        }
+        let amount = WeeklySetsChart.format(sets)
+        return "\(HomeWeekSummary.displayName(lowest)) averages \(amount) \(amount == "1" ? "set" : "sets") a week. " + guideline
     }
 
     private var calendarSection: some View {
@@ -324,28 +316,25 @@ struct FeedView : View {
             ForEach(homeMeasurementKinds, id: \.self) { kind in
                 let layout = dynamicTypeSize.isAccessibilitySize
                     ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
-                    : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
+                    : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
                 layout {
                     Text(kind.title)
                         .font(.headline)
                         .foregroundStyle(IronTheme.primaryText)
-                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
-                    if dynamicTypeSize.isAccessibilitySize {
-                        VStack(alignment: .leading, spacing: 4) {
-                            measurementValue(kind)
-                            if let change = measurementChange(kind) {
-                                measurementChangeLabel(change)
-                            }
-                        }
-                    } else {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            if let change = measurementChange(kind) {
-                                measurementChangeLabel(change)
-                            }
-                            measurementValue(kind)
+                    if !dynamicTypeSize.isAccessibilitySize {
+                        Spacer(minLength: 0)
+                        BodyTrendSparkline(values: recentValues(kind))
+                    }
+                    // Health-style: the value, with the change since the previous entry under it.
+                    VStack(alignment: dynamicTypeSize.isAccessibilitySize ? .leading : .trailing, spacing: 1) {
+                        measurementValue(kind)
+                        if let change = measurementChange(kind) {
+                            measurementChangeLabel(change)
                         }
                     }
+                    .fixedSize()
                 }
+                .padding(.vertical, 2)
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .accessibilityElement(children: .combine)
             }
@@ -376,9 +365,9 @@ struct FeedView : View {
 
     private func measurementChangeLabel(_ change: Double) -> some View {
         let value = String(format: "%.1f", abs(change))
-        return Label(value, systemImage: change > 0 ? "arrow.up" : "arrow.down")
+        return (Text(Image(systemName: change > 0 ? "arrow.up" : "arrow.down")) + Text(" " + value))
             .font(.ironMetric(.caption, weight: .semibold))
-            .foregroundStyle(IronTheme.metricBody)
+            .foregroundStyle(IronTheme.secondaryText)
             .accessibilityLabel("\(change > 0 ? "Up" : "Down") \(value) since the previous measurement")
     }
 
@@ -395,6 +384,11 @@ struct FeedView : View {
         } else {
             Text("—").font(.ironMetric(.body))
         }
+    }
+
+    /// Up to the last 12 entries for this kind, oldest first, for the row's sparkline.
+    private func recentValues(_ kind: BodyMeasurementKind) -> [Double] {
+        Array(bodyMetricsStore.entries.compactMap { $0[kind] }.prefix(12).reversed())
     }
 
     /// Change between the two most recent entries that recorded this kind, in
@@ -450,25 +444,25 @@ struct FeedView : View {
                     NavigationLink {
                         WorkoutDetailView(workout: managedObjectContext.object(with: workout.id) as! Workout)
                     } label: {
-                        let layout = dynamicTypeSize.isAccessibilitySize
-                            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
-                            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
-                        layout {
-                            VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(alignment: .firstTextBaseline) {
                                 Text(workout.displayTitle(in: exerciseStore))
                                     .font(.headline)
                                     .foregroundStyle(IronTheme.primaryText)
+                                    .lineLimit(2)
+                                Spacer(minLength: 8)
                                 Text(WorkoutPreviewFormatting.date(workout.date))
                                     .font(.subheadline)
                                     .foregroundStyle(IronTheme.secondaryText)
                             }
-                            if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
-                            IronMetricValue(
-                                value: "\(workout.setCount)", unit: "sets",
-                                style: .subheadline, weight: .semibold, unitStyle: .caption,
-                                tint: IronTheme.metricSets
+                            IronWorkoutMetricLine(
+                                duration: Workout.durationFormatter.string(from: workout.duration) ?? "0m",
+                                sets: workout.setCount,
+                                volume: compactWeight(workout.volume),
+                                unit: settingsStore.weightUnit.unit.symbol
                             )
                         }
+                        .padding(.vertical, 2)
                     }
                 }
 
@@ -479,7 +473,25 @@ struct FeedView : View {
         }
     }
 
+    private var visibleSections: [HomeSection] {
+        let hidden = HomeSection.hidden(hiddenSections)
+        return HomeSection.ordered(sectionOrder).filter { !hidden.contains($0) }
+    }
+
+    @ViewBuilder
+    private func homeSection(_ section: HomeSection, summary: HomeWeekSummary) -> some View {
+        switch section {
+        case .week: weekSection(summary)
+        case .calendar: calendarSection
+        case .recent: recentSection
+        case .muscles: muscleFocusSection(summary)
+        case .body: measurementsSection
+        case .pinned: pinnedChartsSection
+        }
+    }
+
     var body: some View {
+        let summary = HomeWeekSummary(sessions: completedWorkouts, muscleGroup: { exerciseStore.exercisesByUUID[$0]?.muscleGroup })
         NavigationStack {
             List {
                 if historyStore.isLoading && completedWorkouts.isEmpty {
@@ -488,18 +500,19 @@ struct FeedView : View {
                 if let error = historyStore.error {
                     Section { Button("Retry Loading Training") { historyStore.refresh() } } footer: { Text(error) }
                 }
-                weekSection
-                calendarSection
-                recentSection
-                muscleFocusSection
-                measurementsSection
-                pinnedChartsSection
+                ForEach(visibleSections) { section in
+                    homeSection(section, summary: summary)
+                }
+                Section {
+                    Button("Customize Home", systemImage: "slider.horizontal.3") { showingCustomize = true }
+                }
             }
             .listStyle(.insetGrouped)
             .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
             .task { historyStore.observe(in: managedObjectContext) }
             .navigationTitle("Home")
             .navigationBarTitleDisplayMode(.large)
+            .modifier(HomeDateSubtitle(text: dateText))
             .navigationDestination(isPresented: $showingMeasurements) {
                 BodyMeasurementsView(store: bodyMetricsStore)
                     .environmentObject(settingsStore)
@@ -516,6 +529,9 @@ struct FeedView : View {
                     .environmentObject(pinnedChartsStore)
                     .environmentObject(exerciseStore)
             }
+            .sheet(isPresented: $showingCustomize) {
+                CustomizeHomeSheet()
+            }
             .alert("Workout Not Started", isPresented: Binding(
                 get: { persistenceError != nil },
                 set: { if !$0 { persistenceError = nil } }
@@ -525,6 +541,19 @@ struct FeedView : View {
                 Text(persistenceError ?? "Please try again.")
             }
             .sensoryFeedback(.error, trigger: persistenceError) { _, error in error != nil }
+        }
+    }
+}
+
+/// Today's date under the large title, where Fitness and Health put it.
+private struct HomeDateSubtitle: ViewModifier {
+    let text: String
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.navigationSubtitle(text)
+        } else {
+            content
         }
     }
 }
@@ -628,8 +657,8 @@ struct DayVolume: Identifiable {
     }
 }
 
-/// Seven fixed columns for the current week. Untrained days keep a faint
-/// placeholder bar so the week always reads as a week.
+/// Seven fixed columns for the current week, in the volume color, on the shared chart axes.
+/// Scrubbing a day replaces the best-day line with that day's volume.
 private struct WeeklyVolumeChart: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hasAppeared = false
@@ -641,49 +670,45 @@ private struct WeeklyVolumeChart: View {
 
     private var maxVolume: Double {
         let maximum = days.map(\.volume).max() ?? 0
-        return maximum > 0 ? maximum : 1
+        return maximum > 0 ? maximum * 1.1 : 1
+    }
+
+    private var selectedDay: DayVolume? {
+        guard let selectedDayID else { return nil }
+        return days.first { Calendar.current.isDate($0.date, inSameDayAs: selectedDayID) }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Chart(days) { day in
                 BarMark(
                     x: .value("Day", day.date, unit: .day),
-                    yStart: .value("Baseline", 0),
-                    yEnd: .value("Track", maxVolume),
-                    width: .fixed(22)
+                    y: .value("Volume", hasAppeared || reduceMotion ? day.volume : 0),
+                    width: .ratio(0.55)
                 )
-                .clipShape(Capsule())
-                .foregroundStyle(IronTheme.tertiaryFill)
-                .accessibilityHidden(true)
-
-                BarMark(
-                    x: .value("Day", day.date, unit: .day),
-                    yStart: .value("Baseline", 0),
-                    yEnd: .value("Volume", hasAppeared || reduceMotion ? day.volume : 0),
-                    width: .fixed(22)
-                )
-                .clipShape(Capsule())
-                .foregroundStyle(IronTheme.accent)
+                .cornerRadius(4)
+                .foregroundStyle(IronTheme.metricVolume.opacity(IronChartEmphasis.opacity(
+                    isSelected: selectedDay?.id == day.id, hasSelection: selectedDay != nil)))
                 .accessibilityLabel(day.date.formatted(.dateTime.weekday(.wide)))
                 .accessibilityValue("\(valueLabel(day.volume)) \(unit)")
             }
             .chartYScale(domain: 0...maxVolume)
-            .chartYAxis(.hidden)
+            .ironValueAxis(.automatic(desiredCount: 2), label: valueLabel)
             .chartXAxis {
                 AxisMarks(values: .stride(by: .day)) { value in
                     AxisValueLabel(centered: true) {
                         if let date = value.as(Date.self) {
                             let isToday = Calendar.current.isDateInToday(date)
                             Text(date.formatted(.dateTime.weekday(.narrow)))
-                                .font(.footnote.weight(isToday ? .semibold : .regular))
+                                .font(.caption.weight(isToday ? .bold : .regular))
                                 .foregroundStyle(isToday ? IronTheme.accent : IronTheme.secondaryText)
                         }
                     }
                 }
             }
-            .chartPlotStyle { plot in plot.frame(height: 80) }
-            .frame(height: 104)
+            .chartXSelection(value: $selectedDayID)
+            .ironHorizontalChartScrubbing { selectedDayID = nil }
+            .frame(height: 120)
             .opacity(!reduceMotion || hasAppeared ? 1 : 0)
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: days.map(\.volume))
@@ -692,19 +717,19 @@ private struct WeeklyVolumeChart: View {
             .accessibilityLabel("Volume by day this week")
             .accessibilityValue(accessibilitySummary)
             .accessibilityAdjustableAction(adjustDay)
-            .sensoryFeedback(.selection, trigger: selectedDayID)
+            .sensoryFeedback(.selection, trigger: selectedDay?.id)
 
-            if let best = days.max(by: { $0.volume < $1.volume }), best.volume > 0 {
-                (Text("Best day \(best.date.formatted(.dateTime.weekday(.wide))) at ")
-                 + Text(valueLabel(best.volume))
-                    .font(.ironMetric(.footnote))
+            if let day = selectedDay ?? days.max(by: { $0.volume < $1.volume }), day.volume > 0 || selectedDay != nil {
+                (Text(selectedDay == nil ? "Best day \(day.date.formatted(.dateTime.weekday(.wide))) · " : "\(day.date.formatted(.dateTime.weekday(.wide))) · ")
+                 + Text(valueLabel(day.volume))
+                    .font(.ironMetric(.footnote, weight: .semibold))
                     .foregroundColor(IronTheme.metricVolume)
                  + Text(" \(unit)").font(.caption).foregroundColor(IronTheme.secondaryText))
                     .font(.footnote)
                     .foregroundStyle(IronTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                     .contentTransition(reduceMotion ? .opacity : .numericText())
-                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: best.volume)
+                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: day.volume)
             }
         }
     }
@@ -727,41 +752,30 @@ private struct WeeklyVolumeChart: View {
     }
 }
 
-struct MuscleFocusSlice: Identifiable {
-    var id: String { muscleGroup }
-    let muscleGroup: String
-    let sets: Int
-    let share: Double
-}
-
-private struct MuscleFocusRow: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    let slice: MuscleFocusSlice
+/// A small axis-free trend for a Body row, ending on a dot at the latest entry.
+private struct BodyTrendSparkline: View {
+    let values: [Double]
 
     var body: some View {
-        let layout = dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
-            : AnyLayout(HStackLayout(spacing: 8))
-        VStack(alignment: .leading, spacing: 6) {
-            layout {
-                Text(slice.muscleGroup.capitalized)
-                    .font(.headline)
-                    .foregroundStyle(IronTheme.primaryText)
-                if !dynamicTypeSize.isAccessibilitySize { Spacer() }
-                IronMetricValue(
-                    value: "\(slice.sets)", unit: "sets",
-                    style: .subheadline, weight: .semibold, unitStyle: .caption,
-                    tint: IronTheme.metricSets
-                )
+        if values.count >= 2 {
+            let low = values.min() ?? 0, high = values.max() ?? 1
+            let pad = max((high - low) * 0.2, 0.01)
+            Chart {
+                ForEach(Array(values.enumerated()), id: \.offset) { index, value in
+                    LineMark(x: .value("Entry", index), y: .value("Value", value))
+                        .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                        .foregroundStyle(IronTheme.metricBody.opacity(0.7))
+                }
+                PointMark(x: .value("Entry", values.count - 1), y: .value("Value", values[values.count - 1]))
+                    .symbolSize(16)
+                    .foregroundStyle(IronTheme.metricBody)
             }
-
-            ProgressView(value: slice.share)
-                .tint(IronTheme.metricSets)
-                .accessibilityHidden(true)
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .chartYScale(domain: (low - pad)...(high + pad))
+            .frame(width: 40, height: 16)
+            .accessibilityHidden(true)
         }
-        .padding(.vertical, 2)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(slice.muscleGroup), \(slice.sets) sets, \(Int((slice.share * 100).rounded())) percent")
     }
 }
 
@@ -916,12 +930,10 @@ struct BodyMeasurementsDashboardView: View {
                     measurementTitle: selectedKind.title,
                     domainStart: selectedTimeFrame.domainStart(earliestDate: trendSamples.first?.date),
                     domainEnd: Date(),
-                    valueLabel: { value in
-                        let formatted = String(format: value >= 100 ? "%.0f" : "%.1f", value)
-                        return "\(formatted) \(selectedKind.unitLabel(weightUnit: settingsStore.weightUnit))"
-                    }
+                    valueLabel: { value in String(format: value >= 100 ? "%.0f" : "%.1f", value) },
+                    unit: selectedKind.unitLabel(weightUnit: settingsStore.weightUnit)
                 )
-                .frame(height: dynamicTypeSize.isAccessibilitySize ? 320 : 170)
+                .frame(height: dynamicTypeSize.isAccessibilitySize ? 380 : 236)
 
 
                 }
@@ -930,7 +942,6 @@ struct BodyMeasurementsDashboardView: View {
             .sensoryFeedback(.selection, trigger: selectedKind)
             .sensoryFeedback(.selection, trigger: selectedTimeFrame)
             if !trendSamples.isEmpty {
-                LabeledContent("Latest") { measurementValue(store.latestValue(for: selectedKind), kind: selectedKind) }
                 if let delta = selectedDelta {
                     LabeledContent("Change") {
                         Label(delta.text, systemImage: delta.symbol).font(.ironMetric(.body, weight: .semibold)).foregroundStyle(delta.color)
@@ -1134,6 +1145,7 @@ private struct BodyMeasurementTrendChart: View {
     var domainStart: Date? = nil
     var domainEnd: Date? = nil
     let valueLabel: (Double) -> String
+    var unit: String = ""
 
     @State private var selectedDate: Date?
 
@@ -1147,75 +1159,50 @@ private struct BodyMeasurementTrendChart: View {
         }
     }
 
+    /// Body measurements move a little at a time, so the axis hugs the data instead of starting at zero.
+    private var yDomain: ClosedRange<Double> {
+        let values = samples.map(\.value)
+        let low = values.min() ?? 0, high = values.max() ?? 1
+        let pad = max((high - low) * 0.25, high * 0.02, 0.5)
+        return max(0, low - pad)...(high + pad)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let selectedSample {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(selectedSample.date.formatted(date: .abbreviated, time: .omitted))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(valueLabel(selectedSample.value))
-                        .font(.ironMetric(.subheadline))
-                        .contentTransition(reduceMotion ? .opacity : .numericText())
-                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedDate)
-                        .foregroundStyle(IronTheme.metricBody)
-                }
-            } else {
-                Text("Drag across the chart to inspect an entry.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            if let shown = selectedSample ?? samples.last {
+                IronChartHeader(
+                    caption: selectedSample == nil ? "Latest" : "Logged",
+                    value: IronChartText.value(valueLabel(shown.value), unit: unit, tint: IronTheme.metricBody),
+                    detail: shown.date.formatted(date: .abbreviated, time: .omitted)
+                )
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: shown.id)
             }
 
             Chart {
                 ForEach(samples) { sample in
-                    AreaMark(x: .value("Date", sample.date), y: .value(measurementTitle, hasAppeared || reduceMotion ? sample.value : 0))
-                        .interpolationMethod(.monotone)
-                        .foregroundStyle(
-                            .linearGradient(
-                                colors: [IronTheme.metricBody.opacity(0.28), IronTheme.metricBody.opacity(0.02)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
+                    let value = hasAppeared || reduceMotion ? sample.value : yDomain.lowerBound
+                    LineMark(x: .value("Date", sample.date), y: .value(measurementTitle, value))
+                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        .foregroundStyle(IronTheme.metricBody.opacity(selectedSample == nil ? 1 : IronChartEmphasis.dimmed))
 
-                    LineMark(x: .value("Date", sample.date), y: .value(measurementTitle, hasAppeared || reduceMotion ? sample.value : 0))
-                        .interpolationMethod(.monotone)
-                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                        .foregroundStyle(IronTheme.metricBody)
-
-                    PointMark(x: .value("Date", sample.date), y: .value(measurementTitle, hasAppeared || reduceMotion ? sample.value : 0))
-                        .symbolSize(samples.count > 40 ? 0 : 28)
-                        .foregroundStyle(IronTheme.metricBody)
+                    PointMark(x: .value("Date", sample.date), y: .value(measurementTitle, value))
+                        .symbolSize(samples.count > 40 ? 0 : (sample.id == selectedSample?.id ? 64 : 24))
+                        .foregroundStyle(IronTheme.metricBody.opacity(
+                            IronChartEmphasis.opacity(isSelected: sample.id == selectedSample?.id, hasSelection: selectedSample != nil)))
                 }
 
                 if let selectedSample {
-                    RuleMark(x: .value("Date", selectedSample.date))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .foregroundStyle(Color.secondary)
+                    IronChartSelectionRule(date: selectedSample.date)
                 }
             }
-            .chartYScale(domain: 0...max((samples.map(\.value).max() ?? 0) * 1.1, 1))
+            .chartYScale(domain: yDomain)
             .opacity(!reduceMotion || hasAppeared ? 1 : 0)
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
             .onAppear { hasAppeared = true }
             .chartXScale(domain: firstDate...max(lastDate, firstDate.addingTimeInterval(60)))
-            .chartYAxis {
-                AxisMarks(position: .leading, values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 3 : 5)) { value in
-                    AxisGridLine()
-                    AxisValueLabel {
-                        if let raw = value.as(Double.self) {
-                            Text(valueLabel(raw))
-                                .font(.ironMetric(.footnote, weight: .semibold))
-                        }
-                    }
-                }
-            }
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 4)) { _ in
-                    AxisValueLabel(format: .dateTime.month(.abbreviated).day(), anchor: dynamicTypeSize.isAccessibilitySize ? .topTrailing : nil)
-                        .font(.footnote)
-                }
-            }
+            .ironValueAxis(.automatic(desiredCount: 3), label: valueLabel)
+            .ironDateAxis(.automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 4), format: .dateTime.month(.abbreviated).day())
             .chartXSelection(value: $selectedDate)
             .ironHorizontalChartScrubbing { selectedDate = nil }
             .accessibilityLabel("\(measurementTitle) trend with \(samples.count) entries")
@@ -1850,113 +1837,81 @@ struct PinnedExerciseChartRow: View {
         }
     }
 
-    private func label(_ value: Double) -> String {
-        numberLabel(value) + unitSuffix
-    }
-
     private func numberLabel(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(value.rounded() == value ? 0 : 1)).grouping(.automatic))
-    }
-
-    private func metricText(_ value: Double) -> Text {
-        Text(numberLabel(value)).foregroundColor(metricColor)
-            + Text(unitSuffix).font(.caption2).foregroundColor(IronTheme.secondaryText)
+        value.formatted(.number.precision(.fractionLength(value >= 1_000 ? 0...0 : 0...1)).grouping(.automatic))
     }
 
     var body: some View {
         let points = points
 
-        VStack(alignment: .leading, spacing: 8) {
+        // A Health-style summary card: what it is, the number, then the trend without axes.
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(exercise.title)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(measurementType.title)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                if let selected = selectedPoint(in: points) {
-                    VStack(alignment: .trailing, spacing: 1) {
-                        metricText(selected.value)
-                            .font(.ironMetric(.subheadline, weight: .semibold))
-                            .foregroundStyle(metricColor)
-                            .contentTransition(reduceMotion ? .opacity : .numericText())
-                            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedDate)
-                        Text(selected.date.formatted(date: .abbreviated, time: .omitted))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                } else if let latest = points.last {
-                    metricText(latest.value)
-                        .font(.ironMetric(.subheadline, weight: .semibold))
-                        .contentTransition(reduceMotion ? .opacity : .numericText())
-                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: latest.value)
+                Text(exercise.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(metricColor)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                if let shown = selectedPoint(in: points) ?? points.last {
+                    Text(shown.date.formatted(.dateTime.month(.abbreviated).day()))
+                        .font(.footnote)
+                        .foregroundStyle(IronTheme.secondaryText)
                 }
             }
 
             if points.isEmpty {
                 Text("No completed sets in the last 3 months.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(height: 96, alignment: .center)
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
             } else {
-                Chart {
-                    ForEach(points) { point in
-                        AreaMark(x: .value("Date", point.date), y: .value(measurementType.title, hasAppeared || reduceMotion ? point.value : 0))
-                            .interpolationMethod(.monotone)
-                            .foregroundStyle(
-                                .linearGradient(
-                                    colors: [
-                                        metricColor.opacity(0.26),
-                                        metricColor.opacity(0.02)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-
-                        LineMark(x: .value("Date", point.date), y: .value(measurementType.title, hasAppeared || reduceMotion ? point.value : 0))
-                            .interpolationMethod(.monotone)
-                            .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
-                            .foregroundStyle(metricColor)
+                let shown = selectedPoint(in: points) ?? points.last!
+                HStack(alignment: .lastTextBaseline, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        IronChartText.value(numberLabel(shown.value), unit: unitSuffix.trimmingCharacters(in: .whitespaces), tint: metricColor)
+                            .contentTransition(reduceMotion ? .opacity : .numericText())
+                            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: shown.id)
+                        Text(selectedDate == nil ? "\(measurementType.title) · last 3 months" : measurementType.title)
+                            .font(.footnote)
+                            .foregroundStyle(IronTheme.secondaryText)
                     }
+                    .fixedSize()
 
-                    if let selected = selectedPoint(in: points) {
-                        RuleMark(x: .value("Date", selected.date))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                            .foregroundStyle(Color.secondary)
-                    }
-                }
-                .chartYScale(domain: 0...max((points.map(\.value).max() ?? 0) * 1.1, 1))
-                .opacity(!reduceMotion || hasAppeared ? 1 : 0)
-                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
-                .onAppear { hasAppeared = true }
-                .chartYAxis {
-                    AxisMarks(position: .leading, values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 3)) { value in
-                        AxisGridLine()
-                        AxisValueLabel {
-                            if let raw = value.as(Double.self) {
-                                Text(numberLabel(raw)).font(.ironMetric(.footnote, weight: .semibold))
-                            }
+                    Chart {
+                        ForEach(points) { point in
+                            LineMark(x: .value("Date", point.date), y: .value(measurementType.title, hasAppeared || reduceMotion ? point.value : sparkDomain(points).lowerBound))
+                                .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                                .foregroundStyle(metricColor.opacity(selectedDate == nil ? 1 : IronChartEmphasis.dimmed))
+                        }
+                        if let marked = selectedPoint(in: points) ?? points.last {
+                            PointMark(x: .value("Date", marked.date), y: .value(measurementType.title, marked.value))
+                                .symbolSize(36)
+                                .foregroundStyle(metricColor)
+                        }
+                        if let selected = selectedPoint(in: points) {
+                            IronChartSelectionRule(date: selected.date)
                         }
                     }
+                    .chartYScale(domain: sparkDomain(points))
+                    .chartXAxis(.hidden)
+                    .chartYAxis(.hidden)
+                    .opacity(!reduceMotion || hasAppeared ? 1 : 0)
+                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
+                    .onAppear { hasAppeared = true }
+                    .chartXSelection(value: $selectedDate)
+                    .ironHorizontalChartScrubbing { selectedDate = nil }
+                    .frame(height: dynamicTypeSize.isAccessibilitySize ? 120 : 52)
+                    .accessibilityLabel("\(exercise.title) \(measurementType.title) over the last 3 months")
                 }
-                .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 3)) { _ in
-                        AxisValueLabel(format: .dateTime.month(.abbreviated).day(), anchor: dynamicTypeSize.isAccessibilitySize ? .topTrailing : nil)
-                            .font(.footnote)
-                    }
-                }
-                .chartXSelection(value: $selectedDate)
-                .ironHorizontalChartScrubbing { selectedDate = nil }
-                .frame(height: dynamicTypeSize.isAccessibilitySize ? 220 : 96)
-                .accessibilityLabel("\(exercise.title) \(measurementType.title) over the last 3 months")
             }
         }
+    }
+
+    /// The sparkline hugs its data so small progress is visible.
+    private func sparkDomain(_ points: [Point]) -> ClosedRange<Double> {
+        let values = points.map(\.value)
+        let low = values.min() ?? 0, high = values.max() ?? 1
+        let pad = max((high - low) * 0.15, 0.5)
+        return (low - pad)...(high + pad)
     }
 
     private func selectedPoint(in points: [Point]) -> Point? {

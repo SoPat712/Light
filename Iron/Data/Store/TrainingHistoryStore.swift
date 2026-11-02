@@ -50,15 +50,17 @@ struct TrainingHistorySnapshot {
         return count
     }
 
-    static func build(from workouts: [Workout], calendar: Calendar = .current) -> Self {
+    static func build(from workouts: [Workout], calendar: Calendar = .current,
+                      catalog: [UUID: Exercise] = [:]) -> Self {
         var result = Self()
         for workout in workouts where !workout.isCurrentWorkout {
             let exercises = (workout.workoutExercises?.array as? [WorkoutExercise] ?? []).compactMap { exercise -> TrainingExerciseSnapshot? in
                 let sets = (exercise.workoutSets?.array as? [WorkoutSet] ?? []).filter(\.isCompleted)
                 guard !sets.isEmpty else { return nil }
+                let preferred = exercise.trackingType(catalogExercise: exercise.exerciseUuid.flatMap { catalog[$0] })
                 let volume = sets.reduce(0.0) { sum, set in
-                    let value = set.weightValue * Double(set.repetitionsValue)
-                    return sum + (value.isFinite ? value : 0)
+                    let type = SetTrackingType.resolved(preferred, from: set.trackingData)
+                    return sum + type.volume(weight: set.weightValue, reps: Int(set.repetitionsValue))
                 }
                 return TrainingExerciseSnapshot(id: exercise.objectID, uuid: exercise.exerciseUuid,
                     setCount: sets.count, repetitions: sets.reduce(0) { $0 + Int($1.repetitionsValue) }, volume: volume)
@@ -120,6 +122,16 @@ struct TrainingHistorySnapshot {
             .merge(with: NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange))
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.refresh() }.store(in: &observers)
+        // Peer merges save silently, so observe the persisted value as well as
+        // local edits. Ignore unrelated defaults writes to avoid history rescans.
+        NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: UserDefaults.standard)
+            .merge(with: NotificationCenter.default.publisher(for: SetTrackingPreferences.didChangeNotification, object: UserDefaults.standard))
+            .map { _ in UserDefaults.standard.data(forKey: SetTrackingPreferences.storageKey) }
+            .prepend(UserDefaults.standard.data(forKey: SetTrackingPreferences.storageKey))
+            .removeDuplicates()
+            .dropFirst()
+            .debounce(for: .milliseconds(200), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refresh() }.store(in: &observers)
         refresh()
     }
 
@@ -127,6 +139,9 @@ struct TrainingHistorySnapshot {
         guard let context else { return }
         guard !isLoading else { refreshPending = true; return }
         isLoading = true
+        // Capture the catalog on the main actor; the background context must
+        // not read the observable exercise store while it is being updated.
+        let catalog = ExerciseStore.shared.exercisesByUUID
         Task {
             do {
                 let value = try await context.perform {
@@ -135,7 +150,7 @@ struct TrainingHistorySnapshot {
                     request.predicate = NSPredicate(format: "isCurrentWorkout != YES")
                     request.sortDescriptors = [NSSortDescriptor(key: "start", ascending: false)]
                     request.relationshipKeyPathsForPrefetching = ["workoutExercises", "workoutExercises.workoutSets"]
-                    return TrainingHistorySnapshot.build(from: try context.fetch(request))
+                    return TrainingHistorySnapshot.build(from: try context.fetch(request), catalog: catalog)
                 }
                 snapshot = value
                 error = nil
@@ -146,28 +161,40 @@ struct TrainingHistorySnapshot {
     }
 }
 
-/// A small Pareto frontier of weight/repetition pairs, matching the model's
-/// "no earlier set with both weight and reps >= this set" record rule.
+/// Pareto comparisons for lifting records; scalar metrics use the first value
+/// with a zero second value so reps, meters and seconds never mix dimensions.
 private struct TrainingRecordFrontier {
-    private var pairs: [(weight: Double, reps: Int16)] = []
+    private var pairs: [SetTrackingType.PersonalRecordMeasurement] = []
 
-    func dominates(weight: Double, reps: Int16) -> Bool {
-        pairs.contains { $0.weight >= weight && $0.reps >= reps }
+    func dominates(_ value: SetTrackingType.PersonalRecordMeasurement) -> Bool {
+        pairs.contains { $0.dominates(value) }
     }
 
-    mutating func insert(weight: Double, reps: Int16) {
-        guard !dominates(weight: weight, reps: reps) else { return }
-        pairs.removeAll { weight >= $0.weight && reps >= $0.reps }
-        pairs.append((weight, reps))
+    mutating func insert(_ value: SetTrackingType.PersonalRecordMeasurement) {
+        guard !dominates(value) else { return }
+        pairs.removeAll { value.dominates($0) }
+        pairs.append(value)
     }
 }
 
 private enum TrainingRecordIndex {
+    private static func measurement(for set: WorkoutSet, preferred: SetTrackingType) -> (key: String, value: SetTrackingType.PersonalRecordMeasurement)? {
+        let data = set.trackingData
+        let type = SetTrackingType.resolved(preferred, from: data)
+        if type.usesWeight, set.weight == nil { return nil }
+        if type.usesReps, set.repetitions == nil { return nil }
+        guard let value = type.personalRecordMeasurement(from: data) else { return nil }
+        return (type.rawValue, value)
+    }
+
     static func recordSetIDs(in workouts: [Workout]) -> Set<NSManagedObjectID> {
         var records: Set<NSManagedObjectID> = []
-        var trained: Set<UUID> = []
-        var previous: [UUID: TrainingRecordFrontier] = [:]
+        var trained: Set<String> = []
+        var previous: [String: TrainingRecordFrontier] = [:]
         let dated = Dictionary(grouping: workouts.filter { $0.start != nil }, by: { $0.start! })
+        // The model resolves every row using its UUID override (or weight/reps),
+        // independent of catalog metadata and other rows in this exercise.
+        let overrides = SetTrackingPreferences.load().overrides
 
         // Workouts sharing a start are peers, never each other's prior history.
         for date in dated.keys.sorted() {
@@ -175,30 +202,29 @@ private enum TrainingRecordIndex {
             for workout in batch {
                 for exercise in workout.workoutExercises?.array as? [WorkoutExercise] ?? [] {
                     guard let uuid = exercise.exerciseUuid else { continue }
-                    var earlier = TrainingRecordFrontier()
+                    let preferred = overrides[uuid.uuidString]?.type ?? .weightReps
+                    var earlier: [String: TrainingRecordFrontier] = [:]
                     for set in exercise.workoutSets?.array as? [WorkoutSet] ?? [] {
-                        if set.isCompleted, set.weight != nil, set.repetitions != nil,
-                           set.repetitionsValue > 0, trained.contains(uuid),
-                           !(previous[uuid]?.dominates(weight: set.weightValue, reps: set.repetitionsValue) ?? false),
-                           !earlier.dominates(weight: set.weightValue, reps: set.repetitionsValue) {
+                        guard let metric = measurement(for: set, preferred: preferred) else { continue }
+                        let key = uuid.uuidString + ":" + metric.key
+                        if set.isCompleted, trained.contains(key),
+                           !(previous[key]?.dominates(metric.value) ?? false),
+                           !(earlier[key]?.dominates(metric.value) ?? false) {
                             records.insert(set.objectID)
                         }
-                        // The model also considers earlier uncompleted sets in
-                        // the same exercise when suppressing duplicate records.
-                        earlier.insert(weight: set.weightValue, reps: set.repetitionsValue)
+                        earlier[key, default: TrainingRecordFrontier()].insert(metric.value)
                     }
                 }
             }
             for workout in batch {
                 for exercise in workout.workoutExercises?.array as? [WorkoutExercise] ?? [] {
                     guard let uuid = exercise.exerciseUuid else { continue }
+                    let preferred = overrides[uuid.uuidString]?.type ?? .weightReps
                     for set in exercise.workoutSets?.array as? [WorkoutSet] ?? [] where set.isCompleted {
-                        trained.insert(uuid)
-                        if let weight = set.weight, let reps = set.repetitions {
-                            previous[uuid, default: TrainingRecordFrontier()].insert(
-                                weight: weight.doubleValue, reps: reps.int16Value
-                            )
-                        }
+                        guard let metric = measurement(for: set, preferred: preferred) else { continue }
+                        let key = uuid.uuidString + ":" + metric.key
+                        trained.insert(key)
+                        previous[key, default: TrainingRecordFrontier()].insert(metric.value)
                     }
                 }
             }

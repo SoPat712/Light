@@ -1,0 +1,814 @@
+[
+  {
+    "uuid": "3641964C-08E0-40CB-B07E-4FE0F22FB556",
+    "title": "Arnold Press",
+    "art": "Dumbbell Arnold Press",
+    "image": "2137-Xy4jlWA.jpg",
+    "animation": "2137-Xy4jlWA.gif"
+  },
+  {
+    "uuid": "0E2E4708-35DC-4128-8B32-718FF68B5491",
+    "title": "Bench Press: Barbell (Decline, Wide Grip)",
+    "art": "Barbell Decline Wide-grip Press",
+    "image": "0036-hl8DUh8.jpg",
+    "animation": "0036-hl8DUh8.gif"
+  },
+  {
+    "uuid": "8F2612C6-DC64-482C-A024-8EB103E8DF51",
+    "title": "Bench Press: Barbell (Reverse, Triceps)",
+    "art": "Barbell Reverse Close-grip Bench Press",
+    "image": "2187-YqJw82s.jpg",
+    "animation": "2187-YqJw82s.gif"
+  },
+  {
+    "uuid": "039D6D33-98FD-4CC7-A7AD-C96FAA0135AE",
+    "title": "Bench Press: Barbell (Wide Grip)",
+    "art": "Barbell Wide Bench Press",
+    "image": "0122-JsKq9so.jpg",
+    "animation": "0122-JsKq9so.gif"
+  },
+  {
+    "uuid": "5999199F-0BC8-414A-96FD-FA3377AFA5EF",
+    "title": "Bench Press: Dumbbell (Incline, Hammer Grip)",
+    "art": "Dumbbell Incline Hammer Press",
+    "image": "0321-PG1kcIb.jpg",
+    "animation": "0321-PG1kcIb.gif"
+  },
+  {
+    "uuid": "74D42B22-1842-4B9F-B6A7-83B90472CB43",
+    "title": "Bench Press: Machine",
+    "art": "Lever Chest Press",
+    "image": "0577-T0yTjgW.jpg",
+    "animation": "0577-T0yTjgW.gif"
+  },
+  {
+    "uuid": "41CA09C9-E88C-42DF-997E-7D6FEA4A765E",
+    "title": "Bench Press: Machine (Decline)",
+    "art": "Lever Decline Chest Press",
+    "image": "1300-vsVoPHt.jpg",
+    "animation": "1300-vsVoPHt.gif"
+  },
+  {
+    "uuid": "98D2649B-4616-455B-A0FA-481ECD780035",
+    "title": "Bench Press: Machine (Incline)",
+    "art": "Lever Incline Chest Press",
+    "image": "1299-jHAnWmT.jpg",
+    "animation": "1299-jHAnWmT.gif"
+  },
+  {
+    "uuid": "AA58E724-D2BC-43BC-9AF5-BED923FF67D9",
+    "title": "Bench Press: Smith Machine",
+    "art": "Smith Bench Press",
+    "image": "0748-trqKQv2.jpg",
+    "animation": "0748-trqKQv2.gif"
+  },
+  {
+    "uuid": "E420336A-82DA-4EB8-B821-9F29BB1A8D28",
+    "title": "Bench Press: Smith Machine (Close Grip)",
+    "art": "Smith Close-grip Bench Press",
+    "image": "0751-WcHl7ru.jpg",
+    "animation": "0751-WcHl7ru.gif"
+  },
+  {
+    "uuid": "A367C0FE-49B8-484A-B296-6D5EB723E0B2",
+    "title": "Bench Press: Smith Machine (Incline)",
+    "art": "Smith Incline Bench Press",
+    "image": "0757-5v7KYld.jpg",
+    "animation": "0757-5v7KYld.gif"
+  },
+  {
+    "uuid": "EEBD10DB-1C6D-44CE-BB9A-EBC981CF95EB",
+    "title": "Biceps Curl: Cable",
+    "art": "Cable Curl",
+    "image": "0868-G08RZcQ.jpg",
+    "animation": "0868-G08RZcQ.gif"
+  },
+  {
+    "uuid": "42ED76CF-ABF6-42CD-8D2E-B9DDCED4AEC6",
+    "title": "Biceps Curl: Cable (Overhead)",
+    "art": "Cable Overhead Curl",
+    "image": "1636-wDUqY2u.jpg",
+    "animation": "1636-wDUqY2u.gif"
+  },
+  {
+    "uuid": "C0A5BF3D-3D68-4000-BC0F-9E44E2AF8862",
+    "title": "Biceps Curl: Cable (Rope)",
+    "art": "Cable Hammer Curl (with Rope)",
+    "image": "0165-HPlPoQA.jpg",
+    "animation": "0165-HPlPoQA.gif"
+  },
+  {
+    "uuid": "1A3DFD15-984D-4EDE-BD34-B4DA7129B9B6",
+    "title": "Biceps Curl: Dumbbell (Hammer)",
+    "art": "Dumbbell Hammer Curl",
+    "image": "0313-slDvUAU.jpg",
+    "animation": "0313-slDvUAU.gif"
+  },
+  {
+    "uuid": "405E1A53-1383-4DF9-9368-86E3CCF38012",
+    "title": "Biceps Curl: EZ Curl Bar",
+    "art": "EZ Barbell Curl",
+    "image": "0447-6TG6x2w.jpg",
+    "animation": "0447-6TG6x2w.gif"
+  },
+  {
+    "uuid": "3FF4777D-42CE-4B76-B86E-3077165985BA",
+    "title": "Biceps Curl: Machine",
+    "art": "Lever Bicep Curl",
+    "image": "0575-q6y3OhV.jpg",
+    "animation": "0575-q6y3OhV.gif"
+  },
+  {
+    "uuid": "B6223C8A-502E-4AA8-B9C5-AEB8CB301759",
+    "title": "Bridge",
+    "art": "Low Glute Bridge on Floor",
+    "image": "3013-u0cNiij.jpg",
+    "animation": "3013-u0cNiij.gif"
+  },
+  {
+    "uuid": "FD79404B-8BB5-4971-864E-BF28B1E507A2",
+    "title": "Calf Press: Leg Machine",
+    "art": "Sled Calf Press on Leg Press",
+    "image": "1391-ykHcWme.jpg",
+    "animation": "1391-ykHcWme.gif"
+  },
+  {
+    "uuid": "68296D9A-DEAE-4B36-B16B-55F036CE52C0",
+    "title": "Calf Raise: Barbell",
+    "art": "Barbell Standing Calf Raise",
+    "image": "1372-8ozhUIZ.jpg",
+    "animation": "1372-8ozhUIZ.gif"
+  },
+  {
+    "uuid": "0405BCFA-2660-4984-A3A4-3E79F972573F",
+    "title": "Calf Raise: Dumbbell",
+    "art": "Dumbbell Standing Calf Raise",
+    "image": "0417-dPmaUaU.jpg",
+    "animation": "0417-dPmaUaU.gif"
+  },
+  {
+    "uuid": "E24A1E1E-D71C-40F5-8296-9B85E758337D",
+    "title": "Calf Raise: Machine (Seated)",
+    "art": "Lever Seated Calf Raise",
+    "image": "0594-bOOdeyc.jpg",
+    "animation": "0594-bOOdeyc.gif"
+  },
+  {
+    "uuid": "4A5CE1F5-EF10-436C-8ACB-1D6D5928AEC3",
+    "title": "Calf Raise: Machine (Standing)",
+    "art": "Lever Standing Calf Raise",
+    "image": "0605-ykUOVze.jpg",
+    "animation": "0605-ykUOVze.gif"
+  },
+  {
+    "uuid": "3B1EE73B-7ADA-40EA-96E7-2228883D9FD8",
+    "title": "Chin Up (Narrow Parallel Grip)",
+    "art": "Chin-ups (narrow Parallel Grip)",
+    "image": "0253-G70mEAJ.jpg",
+    "animation": "0253-G70mEAJ.gif"
+  },
+  {
+    "uuid": "5E270934-7A46-445D-8399-487A3C7355ED",
+    "title": "Crunch",
+    "art": "Crunch Floor",
+    "image": "0274-TFqbd8t.jpg",
+    "animation": "0274-TFqbd8t.gif"
+  },
+  {
+    "uuid": "D56A7119-1885-47C6-99AC-D0501F62944E",
+    "title": "Crunch: Cable",
+    "art": "Cable Kneeling Crunch",
+    "image": "0175-WW95auq.jpg",
+    "animation": "0175-WW95auq.gif"
+  },
+  {
+    "uuid": "734F6CD7-9787-45BF-91B2-EB61A9C05575",
+    "title": "Deadlift: Smith Machine",
+    "art": "Smith Deadlift",
+    "image": "0752-UfePqpx.jpg",
+    "animation": "0752-UfePqpx.gif"
+  },
+  {
+    "uuid": "AC43FDDC-D3C7-438D-A925-D4EF0F3CE290",
+    "title": "Dips (Chest)",
+    "art": "Chest Dip",
+    "image": "0251-9WTm7dq.jpg",
+    "animation": "0251-9WTm7dq.gif"
+  },
+  {
+    "uuid": "971C7298-186F-4D2E-A79C-E4E3CC30277F",
+    "title": "Dips (Triceps)",
+    "art": "Triceps Dip",
+    "image": "0814-X6C6i5Y.jpg",
+    "animation": "0814-X6C6i5Y.gif"
+  },
+  {
+    "uuid": "FB545B25-89D7-4806-ACF0-B3399DFDE3A9",
+    "title": "Dips: Bench",
+    "art": "Bench Dip (knees Bent)",
+    "image": "0129-RrLske5.jpg",
+    "animation": "0129-RrLske5.gif"
+  },
+  {
+    "uuid": "51C45857-F388-4538-A542-7703EDD5D7A4",
+    "title": "Dips: Machine",
+    "art": "Lever Seated Dip",
+    "image": "1451-BRImeP8.jpg",
+    "animation": "1451-BRImeP8.gif"
+  },
+  {
+    "uuid": "5AE0607D-88F0-4EF5-BB7B-878322FCBA9B",
+    "title": "Drag Curl: EZ Curl Bar",
+    "art": "Barbell Drag Curl",
+    "image": "0038-IENzBdA.jpg",
+    "animation": "0038-IENzBdA.gif"
+  },
+  {
+    "uuid": "6F618906-444F-444C-8AA1-D272623B28D7",
+    "title": "Exercise Ball Pull In",
+    "art": "Pull-in (on Stability Ball)",
+    "image": "0650-UQr48Oi.jpg",
+    "animation": "0650-UQr48Oi.gif"
+  },
+  {
+    "uuid": "C4035736-EAF3-4DAD-8B74-BD1537E6B72D",
+    "title": "Face Pulls",
+    "art": "Cable Standing Rear Delt Row (with Rope)",
+    "image": "0233-ZfyAGhK.jpg",
+    "animation": "0233-ZfyAGhK.gif"
+  },
+  {
+    "uuid": "CAEA1591-7DA3-4607-915A-04CFADA7E461",
+    "title": "Flyes: Cable",
+    "art": "Cable Standing Fly",
+    "image": "0227-Pr9Rhf4.jpg",
+    "animation": "0227-Pr9Rhf4.gif"
+  },
+  {
+    "uuid": "721F71AE-879A-4F6A-87DB-09C7A6906D60",
+    "title": "Flyes: Cable (Incline)",
+    "art": "Cable Incline Fly",
+    "image": "0171-tBWXbIT.jpg",
+    "animation": "0171-tBWXbIT.gif"
+  },
+  {
+    "uuid": "61C900C2-8920-47BC-91E4-DC249F5C6127",
+    "title": "Flyes: Cable (Lying)",
+    "art": "Cable Lying Fly",
+    "image": "0185-lJJ7Yq8.jpg",
+    "animation": "0185-lJJ7Yq8.gif"
+  },
+  {
+    "uuid": "C28FA94C-D311-450F-B208-6366A2992837",
+    "title": "Flyes: Dumbbell",
+    "art": "Dumbbell Fly",
+    "image": "0308-yz9nUhF.jpg",
+    "animation": "0308-yz9nUhF.gif"
+  },
+  {
+    "uuid": "0DB5A1D0-91D7-4A7E-8537-8F1199B3FC0A",
+    "title": "Flyes: Dumbbell (Decline)",
+    "art": "Dumbbell Decline Fly",
+    "image": "0302-xXm4nYq.jpg",
+    "animation": "0302-xXm4nYq.gif"
+  },
+  {
+    "uuid": "635746F0-1E44-4DAA-B2FA-81D1933F3EB3",
+    "title": "Flyes: Dumbbell (Incline)",
+    "art": "Dumbbell Incline Fly",
+    "image": "0319-ESOd5Pl.jpg",
+    "animation": "0319-ESOd5Pl.gif"
+  },
+  {
+    "uuid": "6C2203F8-7DD8-4B18-A6A0-46B17B44F9E5",
+    "title": "Flyes: Machine",
+    "art": "Lever Seated Fly",
+    "image": "0596-v3xmPAR.jpg",
+    "animation": "0596-v3xmPAR.gif"
+  },
+  {
+    "uuid": "670F794D-3D03-4DC9-AC69-68D06CB784D4",
+    "title": "Front Raise and Pullover",
+    "art": "Barbell Front Raise and Pullover",
+    "image": "0040-33AzZeV.jpg",
+    "animation": "0040-33AzZeV.gif"
+  },
+  {
+    "uuid": "D00DE650-3FA1-4A3E-87F7-E512820EB2FE",
+    "title": "Front Raises: Barbell",
+    "art": "Barbell Front Raise",
+    "image": "0041-b2Uoz54.jpg",
+    "animation": "0041-b2Uoz54.gif"
+  },
+  {
+    "uuid": "5CF92AB3-67F6-444C-A9B3-D4812B6CB06E",
+    "title": "Front Raises: Cable",
+    "art": "Cable Front Raise",
+    "image": "0162-u2X71Np.jpg",
+    "animation": "0162-u2X71Np.gif"
+  },
+  {
+    "uuid": "9C3417E1-2B6F-4E2D-9F49-0BF256CCC88D",
+    "title": "Front Raises: Dumbbell",
+    "art": "Dumbbell Front Raise",
+    "image": "0310-3eGE2JC.jpg",
+    "animation": "0310-3eGE2JC.gif"
+  },
+  {
+    "uuid": "3391381C-A3C2-4105-B9A9-9610FFF1912D",
+    "title": "Good Mornings: Barbell",
+    "art": "Barbell Good Morning",
+    "image": "0044-XlZ4lAC.jpg",
+    "animation": "0044-XlZ4lAC.gif"
+  },
+  {
+    "uuid": "2F3CB755-027C-4E47-9C6D-DFD4ACB52B77",
+    "title": "Good Mornings: Smith Machine",
+    "art": "Smith Bent Knee Good Morning",
+    "image": "0749-1bQkKZK.jpg",
+    "animation": "0749-1bQkKZK.gif"
+  },
+  {
+    "uuid": "60790477-29FD-4139-B89E-FE583BBFF658",
+    "title": "Hack Squat: Machine",
+    "art": "Sled Hack Squat",
+    "image": "0743-Qa55kX1.jpg",
+    "animation": "0743-Qa55kX1.gif"
+  },
+  {
+    "uuid": "2C0880E2-B58A-4178-B6E3-0B4E1455726C",
+    "title": "Hack Squat: Machine (Narrow Stance)",
+    "art": "Sled Closer Hack Squat",
+    "image": "0741-gf3ZjB9.jpg",
+    "animation": "0741-gf3ZjB9.gif"
+  },
+  {
+    "uuid": "4C200AB4-2298-4879-A059-46BB1536DF4D",
+    "title": "Hack Squat: Smith Machine",
+    "art": "Smith Hack Squat",
+    "image": "0755-ZuPXtCK.jpg",
+    "animation": "0755-ZuPXtCK.gif"
+  },
+  {
+    "uuid": "DEB57677-680C-442E-AA95-7162C6126B18",
+    "title": "Hyperextensions",
+    "art": "Hyperextension",
+    "image": "0489-zhMwOwE.jpg",
+    "animation": "0489-zhMwOwE.gif"
+  },
+  {
+    "uuid": "B346DE7B-2E5C-4509-83AF-B5E58BA065E1",
+    "title": "Internal Cable Rotation",
+    "art": "Cable Seated Shoulder Internal Rotation",
+    "image": "0216-YPoVrBi.jpg",
+    "animation": "0216-YPoVrBi.gif"
+  },
+  {
+    "uuid": "6C214811-961A-408A-8ABA-365F4F35A7FD",
+    "title": "Lateral Raise: Cable (Bent Over)",
+    "art": "Cable One Arm Lateral Bent-over",
+    "image": "0191-dB07vDu.jpg",
+    "animation": "0191-dB07vDu.gif"
+  },
+  {
+    "uuid": "25B6655E-895A-41CB-835A-247A3A7B2E0F",
+    "title": "Leg Curl (Lying)",
+    "art": "Lever Lying Leg Curl",
+    "image": "0586-17lJ1kr.jpg",
+    "animation": "0586-17lJ1kr.gif"
+  },
+  {
+    "uuid": "8CD1F963-7570-467A-A15E-FAAFFEBF2546",
+    "title": "Leg Curl (Seated)",
+    "art": "Lever Seated Leg Curl",
+    "image": "0599-Zg3XY7P.jpg",
+    "animation": "0599-Zg3XY7P.gif"
+  },
+  {
+    "uuid": "C6B9548C-B1ED-4A85-A200-331D1E08BE33",
+    "title": "Leg Curl (Standing)",
+    "art": "Standing Single Leg Curl",
+    "image": "0795-C5jncD2.jpg",
+    "animation": "0795-C5jncD2.gif"
+  },
+  {
+    "uuid": "62ABB8D5-C8AC-49C8-B870-1A38F731B4CF",
+    "title": "Leg Extension",
+    "art": "Lever Leg Extension",
+    "image": "0585-my33uHU.jpg",
+    "animation": "0585-my33uHU.gif"
+  },
+  {
+    "uuid": "8B3DE466-1552-4978-A378-55F64E8CA66B",
+    "title": "Leg Press",
+    "art": "Sled 45° Leg Press (side Pov)",
+    "image": "1463-2Qh2J1e.jpg",
+    "animation": "1463-2Qh2J1e.gif"
+  },
+  {
+    "uuid": "5DC1047E-AFF0-4717-B9BD-6225B1D39AF5",
+    "title": "Leg Press (Narrow Stance)",
+    "art": "Sled 45° Leg Press (side Pov)",
+    "image": "1463-2Qh2J1e.jpg",
+    "animation": "1463-2Qh2J1e.gif"
+  },
+  {
+    "uuid": "09F6FB3A-A7E9-4E08-8BA2-5F1CE7FDE93F",
+    "title": "Leg Raises",
+    "art": "Lying Leg Raise Flat Bench",
+    "image": "0620-WhuFnR7.jpg",
+    "animation": "0620-WhuFnR7.gif"
+  },
+  {
+    "uuid": "D645140E-5761-4096-AD31-8E66A8D6A562",
+    "title": "Lunges: Barbell",
+    "art": "Barbell Lunge",
+    "image": "0054-t8iSghb.jpg",
+    "animation": "0054-t8iSghb.gif"
+  },
+  {
+    "uuid": "D3BE22C1-9276-4EF9-9888-2E98D76DC618",
+    "title": "Lunges: Dumbbell",
+    "art": "Dumbbell Lunge",
+    "image": "0336-RRWFUcw.jpg",
+    "animation": "0336-RRWFUcw.gif"
+  },
+  {
+    "uuid": "E8763784-DDCF-4A7B-9321-189C1E93A1B7",
+    "title": "Lunges: Dumbbell (Walking)",
+    "art": "Dumbbell Lunge",
+    "image": "0336-RRWFUcw.jpg",
+    "animation": "0336-RRWFUcw.gif"
+  },
+  {
+    "uuid": "3D405857-F1A8-4F85-858C-231F0CEF653A",
+    "title": "Overhead Press: Barbell",
+    "art": "Barbell Standing Close Grip Military Press",
+    "image": "1456-wdRZISl.jpg",
+    "animation": "1456-wdRZISl.gif"
+  },
+  {
+    "uuid": "AA3C081D-2A51-4E20-B112-3B5C265B0A28",
+    "title": "Overhead Press: Machine (Seated)",
+    "art": "Lever Military Press",
+    "image": "0587-CggQhII.jpg",
+    "animation": "0587-CggQhII.gif"
+  },
+  {
+    "uuid": "82008701-4189-4693-9B68-00E32C78AB92",
+    "title": "Plank",
+    "art": "Front Plank with Twist",
+    "image": "0464-CosupLu.jpg",
+    "animation": "0464-CosupLu.gif"
+  },
+  {
+    "uuid": "50EEDCAE-392D-419C-A09A-541D9CEB0B11",
+    "title": "Preacher Curl: Dumbbell (Hammer)",
+    "art": "Dumbbell Alternate Hammer Preacher Curl",
+    "image": "1646-fy7Tgy4.jpg",
+    "animation": "1646-fy7Tgy4.gif"
+  },
+  {
+    "uuid": "C920C06E-AD01-49FC-BEB3-3AA065C001E3",
+    "title": "Preacher Curl: Dumbbell (One Arm)",
+    "art": "Dumbbell Preacher Curl",
+    "image": "0372-jivWf8n.jpg",
+    "animation": "0372-jivWf8n.gif"
+  },
+  {
+    "uuid": "1E56859E-F4E2-42E0-B09E-767424F71AD0",
+    "title": "Preacher Curl: Dumbbell (Two Arm)",
+    "art": "Dumbbell Preacher Curl",
+    "image": "0372-jivWf8n.jpg",
+    "animation": "0372-jivWf8n.gif"
+  },
+  {
+    "uuid": "F2F17343-0B1C-46AA-8DDA-C6D4E14F3280",
+    "title": "Preacher Curl: EZ Curl Bar",
+    "art": "EZ Barbell Close Grip Preacher Curl",
+    "image": "1627-hacCyUv.jpg",
+    "animation": "1627-hacCyUv.gif"
+  },
+  {
+    "uuid": "0C6E6F9F-B09E-4640-8FE6-4AD1374FA0C7",
+    "title": "Preacher Curl: Machine",
+    "art": "Lever Preacher Curl",
+    "image": "0592-b6hQYMb.jpg",
+    "animation": "0592-b6hQYMb.gif"
+  },
+  {
+    "uuid": "BBD6B085-D50C-4BA5-88FA-AAD4A3737F0B",
+    "title": "Pulldown (Overhand)",
+    "art": "Cable Bar Lateral Pulldown",
+    "image": "0150-eYnzaCm.jpg",
+    "animation": "0150-eYnzaCm.gif"
+  },
+  {
+    "uuid": "A7E6CAE5-2000-4E57-8704-D6B867A57439",
+    "title": "Pulldown (Underhand)",
+    "art": "Cable Underhand Pulldown",
+    "image": "0245-xBYcQHj.jpg",
+    "animation": "0245-xBYcQHj.gif"
+  },
+  {
+    "uuid": "91F466BA-1D91-459A-8C5B-81E0B46C54AC",
+    "title": "Pulldown (Wide Grip)",
+    "art": "Cable Pulldown (pro Lat Bar)",
+    "image": "0197-qdRxqCj.jpg",
+    "animation": "0197-qdRxqCj.gif"
+  },
+  {
+    "uuid": "FD99103C-B691-4DD3-A40A-8CCEF23FBEC5",
+    "title": "Pulldown: V Bar",
+    "art": "Cable Lateral Pulldown with V-bar",
+    "image": "2616-4c9BhzB.jpg",
+    "animation": "2616-4c9BhzB.gif"
+  },
+  {
+    "uuid": "2BBF9DB2-8BD8-456E-A0CB-749D19E5FA26",
+    "title": "Push Up (Close)",
+    "art": "Close-grip Push-up",
+    "image": "0259-x6KpKpq.jpg",
+    "animation": "0259-x6KpKpq.gif"
+  },
+  {
+    "uuid": "95A2FF8B-332D-427A-9EBD-7CE3151D5F4A",
+    "title": "Rear Deltoid Raise (Bent Over)",
+    "art": "Dumbbell Rear Delt Raise",
+    "image": "2292-mu5Guxt.jpg",
+    "animation": "2292-mu5Guxt.gif"
+  },
+  {
+    "uuid": "E905CE43-2692-44C4-8E98-6657CAEAA3D4",
+    "title": "Rear Deltoid Raise (Lying)",
+    "art": "Dumbbell Lying Rear Lateral Raise",
+    "image": "0348-53Ttlck.jpg",
+    "animation": "0348-53Ttlck.gif"
+  },
+  {
+    "uuid": "D39C7398-C0DB-4501-95A3-67E8B27C7921",
+    "title": "Rear Deltoid Row: Barbell",
+    "art": "Barbell Rear Delt Row",
+    "image": "0076-S9zHIvU.jpg",
+    "animation": "0076-S9zHIvU.gif"
+  },
+  {
+    "uuid": "0926F2D0-B09A-4D74-9EDF-3654D79A4CDF",
+    "title": "Rear Deltoid Row: Smith Machine",
+    "art": "Smith Rear Delt Row",
+    "image": "0762-nFUwqG6.jpg",
+    "animation": "0762-nFUwqG6.gif"
+  },
+  {
+    "uuid": "19D4F31D-AA33-4013-83DF-342DD6305AD5",
+    "title": "Reverse Flyes: Cable",
+    "art": "Cable Standing Cross-over High Reverse Fly",
+    "image": "0225-P5p0j8B.jpg",
+    "animation": "0225-P5p0j8B.gif"
+  },
+  {
+    "uuid": "37DF9EB1-8E5F-404E-91B2-36210D356F95",
+    "title": "Romanian Deadlift",
+    "art": "Barbell Romanian Deadlift",
+    "image": "0085-wQ2c4XD.jpg",
+    "animation": "0085-wQ2c4XD.gif"
+  },
+  {
+    "uuid": "794F1BDB-9F8C-487E-866D-D6E54E28A522",
+    "title": "Row: Barbell (Bent Over, Reverse)",
+    "art": "Barbell Reverse Grip Bent Over Row",
+    "image": "0118-SzX3uzM.jpg",
+    "animation": "0118-SzX3uzM.gif"
+  },
+  {
+    "uuid": "1C18115B-4985-4CAE-BA7E-FBD86827C6FF",
+    "title": "Row: Dumbbell (One Arm)",
+    "art": "Dumbbell One Arm Bent-over Row",
+    "image": "0292-C0MA9bC.jpg",
+    "animation": "0292-C0MA9bC.gif"
+  },
+  {
+    "uuid": "44694EFA-7D2E-4C7F-AB7D-DC4F66CAFB60",
+    "title": "Row: T-Bar",
+    "art": "Lever T Bar Row",
+    "image": "0606-aaXr7ld.jpg",
+    "animation": "0606-aaXr7ld.gif"
+  },
+  {
+    "uuid": "2E087495-346B-4824-96BB-9CD854029E87",
+    "title": "Shoulder Press: Dumbbell",
+    "art": "Dumbbell Seated Shoulder Press",
+    "image": "0405-znQUdHY.jpg",
+    "animation": "0405-znQUdHY.gif"
+  },
+  {
+    "uuid": "C736BCEB-4699-4FFF-BE53-0D56336BA137",
+    "title": "Shrugs: Barbell",
+    "art": "Barbell Shrug",
+    "image": "0095-dG7tG5y.jpg",
+    "animation": "0095-dG7tG5y.gif"
+  },
+  {
+    "uuid": "BDD44C1A-EDC3-48AE-89BC-DE1CB540BBFD",
+    "title": "Shrugs: Cable",
+    "art": "Cable Shrug",
+    "image": "0220-Eg98Ft9.jpg",
+    "animation": "0220-Eg98Ft9.gif"
+  },
+  {
+    "uuid": "242C1F11-54FE-4EB9-B350-3ED2814E9E2D",
+    "title": "Shrugs: Dumbbell",
+    "art": "Dumbbell Shrug",
+    "image": "0406-NJzBsGJ.jpg",
+    "animation": "0406-NJzBsGJ.gif"
+  },
+  {
+    "uuid": "9A268413-B96A-4943-94BC-C36FC0C91E07",
+    "title": "Shrugs: Smith Machine",
+    "art": "Smith Shrug",
+    "image": "0767-OUQ0ZyW.jpg",
+    "animation": "0767-OUQ0ZyW.gif"
+  },
+  {
+    "uuid": "E76C6B6E-758D-43A1-A04D-618DC7D5D2C7",
+    "title": "Side Plank",
+    "art": "Side Bridge V. 2",
+    "image": "0705-RKjH6Lt.jpg",
+    "animation": "0705-RKjH6Lt.gif"
+  },
+  {
+    "uuid": "7210F17F-91F7-401F-89CF-271332113319",
+    "title": "Skull Crusher",
+    "art": "Barbell Lying Triceps Extension Skull Crusher",
+    "image": "0060-h8LFzo9.jpg",
+    "animation": "0060-h8LFzo9.gif"
+  },
+  {
+    "uuid": "599F78F6-12A3-40D9-8E64-DB407FA47F11",
+    "title": "Skull Crusher (Close Grip)",
+    "art": "Barbell Lying Close-grip Triceps Extension",
+    "image": "0056-HJ63mSO.jpg",
+    "animation": "0056-HJ63mSO.gif"
+  },
+  {
+    "uuid": "1B9ACD34-B41B-48C1-A28E-F576484D8944",
+    "title": "Skull Crusher (Decline, Close Grip)",
+    "art": "Barbell Decline Close Grip to Skull Press",
+    "image": "0035-LMGXZn8.jpg",
+    "animation": "0035-LMGXZn8.gif"
+  },
+  {
+    "uuid": "2339F5BD-2E8C-4446-B1A5-6156B1192229",
+    "title": "Squat: Barbell",
+    "art": "Barbell Full Squat",
+    "image": "0043-qXTaZnJ.jpg",
+    "animation": "0043-qXTaZnJ.gif"
+  },
+  {
+    "uuid": "3B587709-4111-495D-BC4C-0658BCEE4145",
+    "title": "Squat: Barbell (Wide Stance)",
+    "art": "Barbell Wide Squat",
+    "image": "0124-s7HX1BY.jpg",
+    "animation": "0124-s7HX1BY.gif"
+  },
+  {
+    "uuid": "9D96C412-5D6C-4FDD-9781-1B89AF31EE3D",
+    "title": "Squat: Smith Machine",
+    "art": "Smith Squat",
+    "image": "0770-jFtipLl.jpg",
+    "animation": "0770-jFtipLl.gif"
+  },
+  {
+    "uuid": "6346EEFD-83B0-4E7D-83A3-7BA003637AA8",
+    "title": "Straight Arm Pulldown",
+    "art": "Cable Straight Arm Pulldown",
+    "image": "0238-x69MAlq.jpg",
+    "animation": "0238-x69MAlq.gif"
+  },
+  {
+    "uuid": "6F15D017-C423-4BC0-8E39-DD276D34D66B",
+    "title": "Straight Arm Pulldown (Incline)",
+    "art": "Cable Incline Pushdown",
+    "image": "0172-1PK5Uo3.jpg",
+    "animation": "0172-1PK5Uo3.gif"
+  },
+  {
+    "uuid": "3DBA09C5-B563-412D-B5DA-ECF33C131986",
+    "title": "Thigh Abductor",
+    "art": "Lever Seated Hip Abduction",
+    "image": "0597-CHpahtl.jpg",
+    "animation": "0597-CHpahtl.gif"
+  },
+  {
+    "uuid": "989BDD5D-1186-4634-A95E-E9BD3DE6C01A",
+    "title": "Thigh Adductor",
+    "art": "Lever Seated Hip Adduction",
+    "image": "0598-oHsrypV.jpg",
+    "animation": "0598-oHsrypV.gif"
+  },
+  {
+    "uuid": "43DA125B-379C-4471-A0CC-2C23DA882E12",
+    "title": "Triceps Extension: Cable (Low)",
+    "art": "Cable Overhead Triceps Extension (rope Attachment)",
+    "image": "0194-2IxROQ1.jpg",
+    "animation": "0194-2IxROQ1.gif"
+  },
+  {
+    "uuid": "741A75F7-F59A-46D7-9673-89C3A7BD7975",
+    "title": "Triceps Extension: Cable (Lying)",
+    "art": "Cable Lying Triceps Extension V. 2",
+    "image": "0186-uxJcFUU.jpg",
+    "animation": "0186-uxJcFUU.gif"
+  },
+  {
+    "uuid": "408857B5-7B7D-4284-9602-8C8D546849BD",
+    "title": "Triceps Extension: Cable (One Arm, Low-Pulley)",
+    "art": "Cable Standing One Arm Triceps Extension",
+    "image": "0231-sYCcnon.jpg",
+    "animation": "0231-sYCcnon.gif"
+  },
+  {
+    "uuid": "D31D04AB-ED62-4F03-9D77-16DBF09CB662",
+    "title": "Triceps Extension: Dumbbell (One Arm)",
+    "art": "Dumbbell One Arm Triceps Extension (on Bench)",
+    "image": "0362-nAuHPcD.jpg",
+    "animation": "0362-nAuHPcD.gif"
+  },
+  {
+    "uuid": "215417E8-F482-48A6-83AB-C0EB1E428217",
+    "title": "Triceps Extension: Dumbbell (Standing, One Arm)",
+    "art": "Dumbbell Standing One Arm Extension",
+    "image": "0423-BCUR88E.jpg",
+    "animation": "0423-BCUR88E.gif"
+  },
+  {
+    "uuid": "5222009B-95E5-4A40-BB40-004B24E89BAE",
+    "title": "Triceps Extension: EZ Curl Bar (Decline)",
+    "art": "EZ Barbell Decline Triceps Extension",
+    "image": "2186-CQHoDm0.jpg",
+    "animation": "2186-CQHoDm0.gif"
+  },
+  {
+    "uuid": "B0D44296-A4D5-49D9-8494-99A3F76543E4",
+    "title": "Triceps Extension: EZ Curl Bar (Incline)",
+    "art": "EZ Barbell Incline Triceps Extension",
+    "image": "0449-KyLtiLT.jpg",
+    "animation": "0449-KyLtiLT.gif"
+  },
+  {
+    "uuid": "B0958E4A-4C6E-405D-B89A-31528ED773E0",
+    "title": "Triceps Extension: EZ Curl Bar (Lying, Close Grip, Behind the Head)",
+    "art": "EZ Bar Lying Close Grip Triceps Extension Behind Head",
+    "image": "1748-6CKUx7o.jpg",
+    "animation": "1748-6CKUx7o.gif"
+  },
+  {
+    "uuid": "C199BB33-F9DC-4F85-A05F-3BAA740AC4AE",
+    "title": "Triceps Extension: EZ Curl Bar (Seated, Overhead)",
+    "art": "EZ Barbell Seated Triceps Extension",
+    "image": "0453-iaapw0g.jpg",
+    "animation": "0453-iaapw0g.gif"
+  },
+  {
+    "uuid": "40070A2D-E1D4-4B16-967F-C0739F9DF0BC",
+    "title": "Triceps Extension: EZ Curl Bar (Standing, Overhead)",
+    "art": "Barbell Standing Overhead Triceps Extension",
+    "image": "0109-dZl9Q27.jpg",
+    "animation": "0109-dZl9Q27.gif"
+  },
+  {
+    "uuid": "AA02F3FC-AE87-4C44-BAF6-E6AD2FB46015",
+    "title": "Triceps Extension: Machine",
+    "art": "Lever Triceps Extension",
+    "image": "0607-Ser9eQp.jpg",
+    "animation": "0607-Ser9eQp.gif"
+  },
+  {
+    "uuid": "8E9F7A47-5A01-4043-B055-D80F1954B1A7",
+    "title": "Triceps Kickback with Dumbbell",
+    "art": "Dumbbell Kickback",
+    "image": "0333-W6PxUkg.jpg",
+    "animation": "0333-W6PxUkg.gif"
+  },
+  {
+    "uuid": "7A74EBE7-512E-4846-BEF1-C5C4794B53F3",
+    "title": "Triceps Pushdown: Cable",
+    "art": "Cable Pushdown",
+    "image": "0201-3ZflifB.jpg",
+    "animation": "0201-3ZflifB.gif"
+  },
+  {
+    "uuid": "CDD01DA1-B5EF-44BD-BAE4-9A76EAC19078",
+    "title": "Triceps Pushdown: Cable (Reverse)",
+    "art": "Cable Reverse-grip Pushdown",
+    "image": "0207-VjYliFZ.jpg",
+    "animation": "0207-VjYliFZ.gif"
+  },
+  {
+    "uuid": "FDEC211B-2157-4232-8E25-F796F067D37D",
+    "title": "Triceps Pushdown: Cable (Rope)",
+    "art": "Cable Pushdown (with Rope Attachment)",
+    "image": "0200-dU605di.jpg",
+    "animation": "0200-dU605di.gif"
+  }
+]

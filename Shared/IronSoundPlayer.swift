@@ -1,9 +1,14 @@
+import Foundation
+#if os(watchOS)
+import WatchKit
+#else
 import AVFoundation
 import UIKit
+#endif
 
-/// Original, prewarmed UI cues. Player state belongs to the main queue;
-/// audio-session configuration runs on a dedicated queue so launch stays responsive.
-final class IronSoundPlayer: NSObject, AVAudioPlayerDelegate {
+/// Original, prewarmed UI cues. Session and playback work share a serial queue:
+/// AVAudioPlayer preparation/playback may implicitly activate AVAudioSession.
+final class IronSoundPlayer: NSObject {
     enum Sound: String, CaseIterable, Identifiable {
         case setComplete = "set_complete"
         case setRecord = "set_record"
@@ -34,6 +39,31 @@ final class IronSoundPlayer: NSObject, AVAudioPlayerDelegate {
 
     static let shared = IronSoundPlayer()
 
+    #if os(watchOS)
+    /// WatchKit supplies a paired system tap/tone, governed by Silent Mode.
+    /// AVAudioPlayer's Watch silent-mode behavior is not guaranteed here, so
+    /// the original CAF cues and their ambient session remain iPhone-only.
+    /// Unlike the iPhone path, this method includes the matching haptic: callers
+    /// must not add another haptic for the same event.
+    func play(_ sound: Sound, preview: Bool = false) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.play(sound, preview: preview) }
+            return
+        }
+        guard UserDefaults.standard.object(forKey: "workoutHaptics") as? Bool ?? true else { return }
+        let haptic: WKHapticType
+        switch sound {
+        case .setComplete, .workoutFinish: haptic = .success
+        case .setRecord: haptic = .directionUp
+        case .tick: haptic = .click
+        case .restComplete: haptic = .notification
+        }
+        WKInterfaceDevice.current().play(haptic)
+    }
+
+    // System cues need neither prewarming nor an app audio session/lifecycle.
+    func preload() { }
+    #else
     private var players: [Sound: AVAudioPlayer] = [:]
     private let sessionQueue = DispatchQueue(label: "com.joshpatra.Iron.audio-session", qos: .userInitiated)
     private var isPreloading = false
@@ -55,30 +85,28 @@ final class IronSoundPlayer: NSObject, AVAudioPlayerDelegate {
 
     /// Called at app launch, before the first interaction. Extensions never preload.
     func preload() {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.async { self.preload() }
-            return
-        }
+        sessionQueue.async { self.preloadOnSessionQueue() }
+    }
+
+    private func preloadOnSessionQueue() {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
         guard Bundle.main.bundleURL.pathExtension != "appex", players.isEmpty, !isPreloading else { return }
-        // Launch and scene activation can both request prewarming. Configure once
-        // before preparing players, without blocking either main-thread callback.
         isPreloading = true
-        sessionQueue.async {
-            do {
-                // Ambient mixes with the user's music and honors Ring/Silent.
-                try AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
-                DispatchQueue.main.async { self.preparePlayers() }
-            } catch {
-                DispatchQueue.main.async {
-                    self.isPreloading = false
-                    print("Could not configure Light sounds: \(error.localizedDescription)")
-                }
-            }
+        do {
+            // Ambient mixes with the user's music and honors Ring/Silent.
+            try AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
+            // Construct on the main run loop so AVAudioPlayer keeps delivering
+            // its delegate callbacks there. Preparation/activation stays off main.
+            DispatchQueue.main.async { self.preparePlayers() }
+        } catch {
+            isPreloading = false
+            print("Could not configure Light sounds: \(error.localizedDescription)")
         }
     }
 
     private func preparePlayers() {
-        defer { isPreloading = false }
+        dispatchPrecondition(condition: .onQueue(.main))
+        var prepared: [Sound: AVAudioPlayer] = [:]
         do {
             for sound in Sound.allCases {
                 guard let url = Bundle.main.url(forResource: sound.rawValue, withExtension: "caf") else {
@@ -88,11 +116,16 @@ final class IronSoundPlayer: NSObject, AVAudioPlayerDelegate {
                 let player = try AVAudioPlayer(contentsOf: url)
                 player.volume = sound.volume
                 player.delegate = self
-                player.prepareToPlay()
-                players[sound] = player
+                prepared[sound] = player
             }
         } catch {
             print("Could not prepare Light sounds: \(error.localizedDescription)")
+        }
+        let newPlayers = prepared
+        sessionQueue.async {
+            for player in newPlayers.values { player.prepareToPlay() }
+            self.players = newPlayers
+            self.isPreloading = false
         }
     }
 
@@ -101,44 +134,54 @@ final class IronSoundPlayer: NSObject, AVAudioPlayerDelegate {
             DispatchQueue.main.async { self.play(sound, preview: preview) }
             return
         }
-        guard isAppActive, SettingsStore.shared.workoutSounds else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        if sound == .tick {
-            guard now - lastTickTime >= 0.035 else { return }
-            lastTickTime = now
+        guard SettingsStore.shared.workoutSounds else { return }
+        sessionQueue.async {
+            guard self.isAppActive else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            if sound == .tick {
+                guard now - self.lastTickTime >= 0.035 else { return }
+                self.lastTickTime = now
+            }
+            if preview {
+                for player in self.players.values where player.isPlaying { player.stop() }
+            }
+            guard let player = self.players[sound] else { return }
+            player.currentTime = 0
+            player.play()
         }
-        if preview {
-            for player in players.values where player.isPlaying { player.stop() }
-        }
-        guard let player = players[sound] else { return }
-        player.currentTime = 0
-        player.play()
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        // Keep the next tap warm after AVAudioPlayer releases its playback buffers.
-        guard isAppActive else { return }
-        player.currentTime = 0
-        player.prepareToPlay()
+        // Delegate callbacks can arrive on another queue. Keep all player/session
+        // calls serialized, including the implicit activation in prepareToPlay.
+        sessionQueue.async {
+            guard self.isAppActive else { return }
+            player.currentTime = 0
+            player.prepareToPlay()
+        }
     }
 
     @objc private func didBecomeActive() {
-        isAppActive = true
-        preload()
-        for player in players.values { player.prepareToPlay() }
+        sessionQueue.async {
+            self.isAppActive = true
+            self.preloadOnSessionQueue()
+            for player in self.players.values { player.prepareToPlay() }
+        }
     }
 
     @objc private func stopPlayback() {
-        isAppActive = false
-        for player in players.values { player.stop() }
+        sessionQueue.async {
+            self.isAppActive = false
+            for player in self.players.values { player.stop() }
+        }
     }
 
     @objc private func audioInterrupted(_ notification: Notification) {
         guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
-        // Audio-session notifications may arrive off the main queue. Do not resume
-        // old cues after a call; the next foreground interaction owns playback.
-        DispatchQueue.main.async {
+        // Do not resume old cues after a call; the next foreground interaction
+        // owns playback. Preparation can activate the session, so it stays here.
+        sessionQueue.async {
             if type == .began {
                 for player in self.players.values { player.stop() }
             } else if self.isAppActive {
@@ -146,4 +189,9 @@ final class IronSoundPlayer: NSObject, AVAudioPlayerDelegate {
             }
         }
     }
+    #endif
 }
+
+#if !os(watchOS)
+extension IronSoundPlayer: AVAudioPlayerDelegate { }
+#endif

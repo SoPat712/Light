@@ -13,12 +13,14 @@ import WorkoutDataKit
 let NAVIGATION_BAR_SPACING: CGFloat = 16
 
 struct ContentView : View {
+    @Environment(\.managedObjectContext) private var managedObjectContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var sceneState: SceneState
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var exerciseStore: ExerciseStore
     @ObservedObject private var importController = HevyImportController.shared
+    @ObservedObject private var watchConnection = WatchConnectionManager.shared
     @FetchRequest(fetchRequest: Workout.currentWorkoutFetchRequest) private var currentWorkouts
 
     #if DEBUG
@@ -33,6 +35,10 @@ struct ContentView : View {
     @State private var restoreBackupData: IdentifiableHolder<Data>?
     @State private var hevyImportOutcome: HevyCSVImportOutcome?
     @State private var showingDiscardWorkoutConfirmation = false
+    @State private var watchOpenError: String?
+    @State private var openedWatchWorkoutID: UUID?
+    @State private var workoutActionFeedback = 0
+    @State private var workoutDeleteFeedback = 0
     @Namespace private var activeWorkoutNamespace
 
     private let activeWorkoutDurationFormatter: DateComponentsFormatter = {
@@ -53,6 +59,9 @@ struct ContentView : View {
             }
             .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: importController.phase)
             .ironScreen()
+            .sensoryFeedback(.selection, trigger: workoutActionFeedback) { _, _ in settingsStore.workoutHaptics }
+            .sensoryFeedback(.impact(weight: .medium), trigger: workoutDeleteFeedback) { _, _ in settingsStore.workoutHaptics }
+            .sensoryFeedback(.error, trigger: watchOpenError) { _, error in error != nil && settingsStore.workoutHaptics }
             .preferredColorScheme(settingsStore.appearance.colorScheme)
             .onChange(of: currentWorkouts.first?.objectID) { _, newWorkoutID in
                 guard newWorkoutID != nil else { return }
@@ -61,14 +70,14 @@ struct ContentView : View {
                 }
                 withAnimation(activeWorkoutTransition) {
                     sceneState.selectedTab = .workout
-                    sceneState.isCurrentWorkoutExpanded = true
+                    let workout = currentWorkouts.first
+                    sceneState.isCurrentWorkoutExpanded = workout?.wasStartedOnWatch != true ||
+                        workout?.uuid == openedWatchWorkoutID
                 }
             }
             .onChange(of: scenePhase) { _, newPhase in
                 guard newPhase == .active else { return }
                 TrainingHistoryStore.shared.refresh()
-                guard let workout = currentWorkouts.first else { return }
-                WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name.RestoreFromBackup)) { output in
                 guard let backupData = output.userInfo?[restoreFromBackupDataUserInfoKey] as? Data else { return }
@@ -121,6 +130,12 @@ struct ContentView : View {
             } message: {
                 Text("The active workout, its notes, and every logged set will be permanently deleted.")
             }
+            .alert("Workout Not Opened", isPresented: Binding(
+                get: { watchOpenError != nil },
+                set: { if !$0 { watchOpenError = nil } }
+            )) {
+                Button("OK", role: .cancel) { watchOpenError = nil }
+            } message: { Text(watchOpenError ?? "Please try again.") }
     }
 
     private var restoreBackupConfirmation: some View {
@@ -177,6 +192,10 @@ struct ContentView : View {
         if ProcessInfo.processInfo.arguments.contains("-ironInspectHome") {
             FeedView()
                 .productionEnvironment()
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectCustomizeHome") {
+            CustomizeHomeSheet()
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectHomeSections") {
+            NavigationStack { HomeSectionsEditor() }
         } else if ProcessInfo.processInfo.arguments.contains("-ironInspectHistory") {
             HistoryView()
                 .productionEnvironment()
@@ -477,36 +496,43 @@ struct ContentView : View {
             HStack(spacing: 5) {
                 Button(action: expandCurrentWorkout) {
                     HStack(spacing: 9) {
-                        Image(systemName: "dumbbell.fill")
+                        Image(systemName: activeWorkoutIsOnWatch(workout) ? "applewatch" : "dumbbell.fill")
                             .font(.system(size: 15, weight: .bold))
                             .foregroundColor(IronTheme.onAccent)
                             .frame(width: 36, height: 36)
                             .background(Circle().fill(IronTheme.accent))
 
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(workout.displayTitle(in: exerciseStore.exercises))
-                                .font(.subheadline.weight(.bold))
-                                .foregroundColor(IronTheme.primaryText)
-                                .lineLimit(1)
+                            HStack(spacing: 8) {
+                                Text(activeWorkoutTitle(workout))
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundColor(IronTheme.primaryText)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                ActiveWorkoutPillVitals(
+                                    store: WatchConnectionManager.shared.liveMetrics,
+                                    workoutID: preferredDeferredWatchWorkout?.workoutID ?? workout.uuid
+                                )
+                            }
 
                             HStack(spacing: 4) {
                                 Circle()
                                     .fill(IronTheme.accent)
                                     .frame(width: 5, height: 5)
                                     .accessibilityHidden(true)
-                                Text(activeWorkoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00")
+                                Text(activeWorkoutDurationFormatter.string(from: activeWorkoutDuration(workout)) ?? "0:00")
                                     .foregroundStyle(IronTheme.metricTime)
                                     .contentTransition(reduceMotion ? .opacity : .numericText())
-                                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(workout.safeDuration))
+                                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(activeWorkoutDuration(workout)))
                                 Text("•").foregroundColor(IronTheme.tertiaryText)
                                 (Text(activeWorkoutVolumeTitle(workout))
                                  + Text(" " + settingsStore.weightUnit.unit.symbol)
                                     .font(.caption2).foregroundColor(IronTheme.secondaryText))
                                     .foregroundStyle(IronTheme.metricVolume)
                                     .contentTransition(reduceMotion ? .opacity : .numericText())
-                                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: workout.totalCompletedWeight)
+                                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: workout.trackedCompletedVolume)
                                 Text("•").foregroundColor(IronTheme.tertiaryText)
-                                Text("\(workout.numberOfCompletedSets ?? 0) sets")
+                                Text("^[\(activeWorkoutCompletedSets(workout)) set](inflect: true)")
                                     .foregroundStyle(IronTheme.metricSets)
                                     .contentTransition(reduceMotion ? .opacity : .numericText())
                                     .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: workout.numberOfCompletedSets)
@@ -522,7 +548,8 @@ struct ContentView : View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Resume \(workout.displayTitle(in: exerciseStore.exercises))")
+                .accessibilityLabel(activeWorkoutOpenLabel(workout))
+                .accessibilityValue(activeWorkoutVitalsAccessibilityValue(workout))
 
                 compactWorkoutActionButton(
                     systemImage: "chevron.up",
@@ -532,13 +559,16 @@ struct ContentView : View {
                     action: expandCurrentWorkout
                 )
 
-                compactWorkoutActionButton(
-                    systemImage: "trash.fill",
-                    tint: IronTheme.danger,
-                    fill: IronTheme.danger.opacity(0.13),
-                    accessibilityLabel: "Discard active workout"
-                ) {
-                    showingDiscardWorkoutConfirmation = true
+                if preferredDeferredWatchWorkout == nil {
+                    compactWorkoutActionButton(
+                        systemImage: "trash.fill",
+                        tint: IronTheme.danger,
+                        fill: IronTheme.danger.opacity(0.13),
+                        accessibilityLabel: "Discard active workout"
+                    ) {
+                        workoutActionFeedback += 1
+                        showingDiscardWorkoutConfirmation = true
+                    }
                 }
             }
             .padding(6)
@@ -550,24 +580,31 @@ struct ContentView : View {
         TimelineView(.periodic(from: Date(), by: 1)) { _ in
             Button(action: expandCurrentWorkout) {
                 HStack(spacing: 7) {
-                    Image(systemName: "dumbbell.fill")
+                    Image(systemName: activeWorkoutIsOnWatch(workout) ? "applewatch" : "dumbbell.fill")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundColor(IronTheme.onAccent)
                         .frame(width: 32, height: 32)
                         .background(Circle().fill(IronTheme.accent))
 
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(workout.displayTitle(in: exerciseStore.exercises))
+                        Text(activeWorkoutTitle(workout))
                             .font(.caption.weight(.semibold))
                             .foregroundColor(IronTheme.primaryText)
                             .lineLimit(1)
 
-                        Text(activeWorkoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00")
-                            .font(.ironMetric(.caption2, weight: .semibold))
-                            .foregroundColor(IronTheme.metricTime)
-                            .contentTransition(reduceMotion ? .opacity : .numericText())
-                            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(workout.safeDuration))
-                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Text(activeWorkoutDurationFormatter.string(from: activeWorkoutDuration(workout)) ?? "0:00")
+                                .font(.ironMetric(.caption2, weight: .semibold))
+                                .foregroundColor(IronTheme.metricTime)
+                                .contentTransition(reduceMotion ? .opacity : .numericText())
+                                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(activeWorkoutDuration(workout)))
+                                .lineLimit(1)
+                            ActiveWorkoutPillVitals(
+                                store: WatchConnectionManager.shared.liveMetrics,
+                                workoutID: preferredDeferredWatchWorkout?.workoutID ?? workout.uuid,
+                                compact: true
+                            )
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -576,8 +613,16 @@ struct ContentView : View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 5)
-            .accessibilityLabel("Resume \(workout.displayTitle(in: exerciseStore.exercises))")
+            .accessibilityLabel(activeWorkoutOpenLabel(workout))
+            .accessibilityValue(activeWorkoutVitalsAccessibilityValue(workout))
         }
+    }
+
+    private func activeWorkoutOpenLabel(_ workout: Workout) -> String {
+        let title = activeWorkoutTitle(workout)
+        return activeWorkoutIsOnWatch(workout)
+            ? "Open \(title) on iPhone. Also on Apple Watch."
+            : "Resume \(title)"
     }
 
     private func compactWorkoutActionButton(
@@ -604,6 +649,7 @@ struct ContentView : View {
     }
 
     private func minimizeCurrentWorkout() {
+        workoutActionFeedback += 1
         withAnimation(activeWorkoutTransition) {
             sceneState.selectedTab = .workout
             sceneState.isCurrentWorkoutExpanded = false
@@ -611,15 +657,79 @@ struct ContentView : View {
     }
 
     private func expandCurrentWorkout() {
+        if preferredDeferredWatchWorkout != nil {
+            do {
+                let workout = try watchConnection.openWatchWorkout(in: managedObjectContext)
+                openedWatchWorkoutID = workout.uuid
+            } catch {
+                watchOpenError = error.localizedDescription
+                return
+            }
+        } else {
+            openedWatchWorkoutID = watchConnection.currentWatchWorkoutUuid
+        }
+        workoutActionFeedback += 1
         withAnimation(activeWorkoutTransition) {
             sceneState.selectedTab = .workout
             sceneState.isCurrentWorkoutExpanded = true
         }
     }
 
+    /// The pill's visual vitals sit inside a button with its own label, so
+    /// VoiceOver hears them as the button's value. The 1 s timeline keeps it fresh.
+    private func activeWorkoutVitalsAccessibilityValue(_ workout: Workout) -> String {
+        let now = Date()
+        guard let metrics = WatchConnectionManager.shared.liveMetrics.latest,
+              metrics.workoutID == (preferredDeferredWatchWorkout?.workoutID ?? workout.uuid) else { return "" }
+        return [
+            metrics.currentHeartRate(at: now).map { "\(Int($0.rounded())) beats per minute" },
+            metrics.currentActiveEnergy(at: now).map { "\(Int($0.rounded())) active kilocalories" }
+        ].compactMap { $0 }.joined(separator: ", ")
+    }
+
     private func activeWorkoutVolumeTitle(_ workout: Workout) -> String {
-        let value = WeightUnit.convert(weight: workout.totalCompletedWeight ?? 0, from: .metric, to: settingsStore.weightUnit)
+        let value: Double
+        if let snapshot = preferredDeferredWatchWorkout {
+            let volume = snapshot.exercises.reduce(0.0) { total, exercise in
+                let preferred = exercise.trackingType.flatMap(SetTrackingType.init(rawValue:))
+                    ?? SetTrackingPreferences.override(for: exercise.exerciseUuid)
+                    ?? SetTrackingType.defaultType(name: exercise.name, equipment: [])
+                return total + exercise.sets.filter(\.completed).reduce(0.0) { sum, set in
+                    let type = SetTrackingType.resolved(preferred, from: .init(weight: set.weight ?? 0,
+                        reps: set.reps ?? 0, duration: set.duration, distance: set.distance))
+                    return sum + type.volume(weight: set.weight ?? 0, reps: set.reps ?? 0)
+                }
+            }
+            value = WeightUnit.convert(weight: volume, from: snapshot.weightUnit == .pound ? .imperial : .metric,
+                                       to: settingsStore.weightUnit)
+        } else {
+            value = WeightUnit.convert(weight: workout.trackedCompletedVolume, from: .metric, to: settingsStore.weightUnit)
+        }
         return settingsStore.weightUnit.displayNumberFormatter.string(from: value as NSNumber) ?? "0"
+    }
+
+    private var preferredDeferredWatchWorkout: WatchWorkoutSnapshot? {
+        guard let snapshot = watchConnection.watchWorkoutAwaitingOpen,
+              snapshot.workoutID != currentWorkouts.first?.uuid,
+              watchConnection.canReplaceEmptyPhoneWorkout(currentWorkouts.first) else { return nil }
+        return snapshot
+    }
+
+    private func activeWorkoutIsOnWatch(_ workout: Workout) -> Bool {
+        preferredDeferredWatchWorkout != nil || watchConnection.wasStartedOnWatch(workout)
+    }
+
+    private func activeWorkoutTitle(_ workout: Workout) -> String {
+        preferredDeferredWatchWorkout?.title ?? workout.displayTitle(in: exerciseStore.exercises)
+    }
+
+    private func activeWorkoutDuration(_ workout: Workout) -> TimeInterval {
+        preferredDeferredWatchWorkout.map { max(0, Date().timeIntervalSince($0.startDate)) } ?? workout.safeDuration
+    }
+
+    private func activeWorkoutCompletedSets(_ workout: Workout) -> Int {
+        preferredDeferredWatchWorkout.map { $0.exercises.flatMap(\.sets).filter(\.completed).count }
+            ?? workout.numberOfCompletedSets ?? 0
     }
 
     private func discardCurrentWorkout() {
@@ -628,9 +738,7 @@ struct ContentView : View {
         workout.cancelOrCrash()
         sceneState.isCurrentWorkoutExpanded = false
 
-        let feedback = UINotificationFeedbackGenerator()
-        feedback.prepare()
-        feedback.notificationOccurred(.warning)
+        workoutDeleteFeedback += 1
     }
 
     #if DEBUG
@@ -774,6 +882,53 @@ struct ContentView : View {
             }
             .productionEnvironment()
         }
+    }
+}
+
+/// Live Watch heart rate and active energy for the workout pill. It observes the
+/// metrics store itself so sensor ticks don't re-render the whole tab surface.
+private struct ActiveWorkoutPillVitals: View {
+    @ObservedObject var store: WatchWorkoutMetricsStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let workoutID: UUID?
+    var compact = false
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 5)) { context in
+            let metrics = store.latest.flatMap { $0.workoutID == workoutID ? $0 : nil }
+            let heartRate = metrics?.currentHeartRate(at: context.date)
+            let energy = compact ? nil : metrics?.currentActiveEnergy(at: context.date)
+            if heartRate != nil || energy != nil {
+                HStack(spacing: 7) {
+                    if let heartRate {
+                        reading(heartRate, symbol: "heart.fill", unit: nil, tint: IronTheme.metricHeartRate)
+                    }
+                    if let energy {
+                        reading(energy, symbol: "flame.fill", unit: "kcal", tint: IronTheme.metricEnergy)
+                    }
+                }
+                .fixedSize()
+                .transition(.opacity)
+            }
+        }
+    }
+
+    private func reading(_ value: Double, symbol: String, unit: String?, tint: Color) -> some View {
+        let number = value.formatted(.number.precision(.fractionLength(0)))
+        return HStack(alignment: .firstTextBaseline, spacing: 2) {
+            Image(systemName: symbol)
+                .font(.caption2.weight(.bold))
+            Text(number)
+                .font(.ironMetric(compact ? .caption2 : .caption, weight: .semibold))
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: number)
+            if let unit {
+                Text(unit)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+            }
+        }
+        .foregroundStyle(tint)
     }
 }
 

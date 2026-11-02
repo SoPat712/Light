@@ -7,7 +7,75 @@
 //
 
 import SwiftUI
+import CoreData
 import WorkoutDataKit
+
+/// Preferences follow the saved-workout draft's save boundary. Cancelling or a
+/// failed Core Data save must not publish a different global type/distance target.
+final class RoutineSetTrackingDraft: ObservableObject {
+    @Published private(set) var changes = SetTrackingPreferences()
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    func override(for exerciseID: UUID?) -> SetTrackingType? {
+        guard let exerciseID else { return nil }
+        return changes.overrides[exerciseID.uuidString]?.type
+            ?? SetTrackingPreferences.override(for: exerciseID, defaults: defaults)
+    }
+    func distance(for setID: UUID?) -> Double? {
+        guard let setID else { return nil }
+        if let changed = changes.routineDistances[setID.uuidString] { return changed.meters > 0 ? changed.meters : nil }
+        return SetTrackingPreferences.routineDistance(for: setID, defaults: defaults)
+    }
+    func setOverride(_ type: SetTrackingType, for exerciseID: UUID) {
+        changes.overrides[exerciseID.uuidString] = .init(type: type, updatedAt: Date().timeIntervalSince1970)
+    }
+    func setDistance(_ meters: Double?, for setID: UUID) {
+        let value = meters.map { $0.isFinite ? max($0, 0) : 0 } ?? 0
+        changes.routineDistances[setID.uuidString] = .init(meters: value, updatedAt: Date().timeIntervalSince1970)
+    }
+    /// Capture effective types as well as explicit overrides: after copying empty
+    /// targets there may be no measurements left from which to infer the type.
+    func copyTracking(from source: WorkoutRoutine, to destination: WorkoutRoutine) {
+        let sources = source.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
+        let destinations = destination.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
+        for (source, destination) in zip(sources, destinations) {
+            if let id = destination.exerciseUuid {
+                setOverride(source.trackingType(catalogExercise: source.exerciseUuid.flatMap {
+                    ExerciseStore.shared.exercisesByUUID[$0]
+                }, defaults: defaults), for: id)
+            }
+            let sourceSets = source.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? []
+            let destinationSets = destination.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? []
+            for (sourceSet, destinationSet) in zip(sourceSets, destinationSets) {
+                if let id = destinationSet.uuid { setDistance(distance(for: sourceSet.uuid), for: id) }
+            }
+        }
+    }
+    func discard() { changes = SetTrackingPreferences() }
+
+    /// Deleted draft rows must not leave new, unreachable distance preferences.
+    func retainMetadata(for routine: WorkoutRoutine) {
+        let exercises = routine.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
+        let exerciseIDs = Set(exercises.compactMap { $0.exerciseUuid?.uuidString })
+        let setIDs = Set(exercises.flatMap {
+            ($0.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? []).compactMap { $0.uuid?.uuidString }
+        })
+        changes.overrides = changes.overrides.filter { exerciseIDs.contains($0.key) }
+        changes.routineDistances = changes.routineDistances.filter { setIDs.contains($0.key) }
+    }
+    func commit() {
+        guard !changes.isEmpty else { return }
+        let stored = SetTrackingPreferences.load(defaults: defaults)
+        let merged = stored.merging(changes)
+        merged.save(defaults: defaults)
+        changes = SetTrackingPreferences()
+        if merged != stored {
+            NotificationCenter.default.post(name: SetTrackingPreferences.didChangeNotification, object: defaults)
+        }
+    }
+}
 
 /// A focused editor for one saved workout plan.
 ///
@@ -27,21 +95,26 @@ struct WorkoutRoutineView: View {
     let onCancel: (() -> Void)?
     let onCommit: (() -> Void)?
 
+    @StateObject private var trackingDraft: RoutineSetTrackingDraft
     @State private var showExerciseSelector = false
     @State private var workoutRoutineTitleInput: String?
     @State private var workoutRoutineCommentInput: String?
     @State private var routineExerciseToDelete: WorkoutRoutineExercise?
+    @State private var selectionFeedback = 0
+    @State private var deleteFeedback = 0
 
     init(
         workoutRoutine: WorkoutRoutine,
         isNew: Bool = false,
         autosavesChanges: Bool = true,
+        trackingDraft: RoutineSetTrackingDraft = RoutineSetTrackingDraft(),
         onCancel: (() -> Void)? = nil,
         onCommit: (() -> Void)? = nil
     ) {
         self.workoutRoutine = workoutRoutine
         self.isNew = isNew
         self.autosavesChanges = autosavesChanges
+        _trackingDraft = StateObject(wrappedValue: trackingDraft)
         self.onCancel = onCancel
         self.onCommit = onCommit
     }
@@ -89,6 +162,22 @@ struct WorkoutRoutineView: View {
         managedObjectContext.processPendingChanges()
         if autosavesChanges {
             managedObjectContext.saveOrCrash()
+            trackingDraft.commit()
+        }
+    }
+
+    private func saveRoutineExerciseNote(_ text: String, for exercise: WorkoutRoutineExercise) -> Bool {
+        guard !exercise.isDeleted else { return false }
+        do {
+            try managedObjectContext.persistMutation(save: {
+                if autosavesChanges { try managedObjectContext.save() }
+            }) {
+                exercise.comment = text.isEmpty ? nil : text
+            }
+            if autosavesChanges { trackingDraft.commit() }
+            return true
+        } catch {
+            return false // The note sheet keeps its draft visible for retry.
         }
     }
 
@@ -114,12 +203,13 @@ struct WorkoutRoutineView: View {
         let previousSet = sets(for: routineExercise).last
         let routineSet = WorkoutRoutineSet.create(context: managedObjectContext)
         routineSet.workoutRoutineExercise = routineExercise
-        if let duration = previousSet?.durationValue {
-            routineSet.durationValue = duration
-        } else {
-            routineSet.minRepetitionsValue = previousSet?.minRepetitionsValue ?? 5
-            routineSet.maxRepetitionsValue = previousSet?.maxRepetitionsValue ?? 5
-            routineSet.weightValue = previousSet?.weightValue
+        let type = trackingDraft.override(for: routineExercise.exerciseUuid) ?? routineExercise.setTrackingType
+        routineSet.durationValue = type.usesDuration ? (previousSet?.durationValue ?? 60) : nil
+        routineSet.weightValue = type.usesWeight ? previousSet?.weightValue : nil
+        routineSet.minRepetitionsValue = type.usesReps ? (previousSet?.minRepetitionsValue ?? 5) : nil
+        routineSet.maxRepetitionsValue = type.usesReps ? (previousSet?.maxRepetitionsValue ?? 5) : nil
+        if type.usesDistance, let setID = routineSet.uuid {
+            trackingDraft.setDistance(trackingDraft.distance(for: previousSet?.uuid), for: setID)
         }
         recordDraftChange()
     }
@@ -128,6 +218,7 @@ struct WorkoutRoutineView: View {
         routineSet.workoutRoutineExercise?.removeFromWorkoutRoutineSets(routineSet)
         managedObjectContext.delete(routineSet)
         recordDraftChange()
+        deleteFeedback += 1
     }
 
     private func moveSet(in routineExercise: WorkoutRoutineExercise, from source: Int, to destination: Int) {
@@ -141,12 +232,14 @@ struct WorkoutRoutineView: View {
         reordered.insert(routineSet, at: destination)
         routineExercise.workoutRoutineSets = NSOrderedSet(array: reordered)
         recordDraftChange()
+        selectionFeedback += 1
     }
 
     private func deleteExercise(_ routineExercise: WorkoutRoutineExercise) {
         routineExercise.workoutRoutine?.removeFromWorkoutRoutineExercises(routineExercise)
         managedObjectContext.delete(routineExercise)
         recordDraftChange()
+        deleteFeedback += 1
     }
 
     private func moveExercise(from source: Int, to destination: Int) {
@@ -159,6 +252,7 @@ struct WorkoutRoutineView: View {
         reordered.insert(routineExercise, at: destination)
         workoutRoutine.workoutRoutineExercises = NSOrderedSet(array: reordered)
         recordDraftChange()
+        selectionFeedback += 1
     }
 
     var body: some View {
@@ -196,6 +290,7 @@ struct WorkoutRoutineView: View {
                         index: index,
                         exerciseCount: workoutRoutineExercises.count,
                         onSave: recordDraftChange,
+                        onSaveNote: { saveRoutineExerciseNote($0, for: routineExercise) },
                         onMoveUp: { moveExercise(from: index, to: index - 1) },
                         onMoveDown: { moveExercise(from: index, to: index + 1) },
                         onDelete: { routineExerciseToDelete = routineExercise },
@@ -215,6 +310,9 @@ struct WorkoutRoutineView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .environmentObject(trackingDraft)
+        .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in settingsStore.workoutHaptics }
+        .sensoryFeedback(.impact(weight: .medium), trigger: deleteFeedback) { _, _ in settingsStore.workoutHaptics }
         .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: workoutRoutineExercises.map(\.objectID))
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle(isNew ? "New Workout" : "Edit Workout")
@@ -268,8 +366,11 @@ struct WorkoutRoutineView: View {
             onCommit()
         } else {
             managedObjectContext.saveOrCrash()
+            trackingDraft.retainMetadata(for: workoutRoutine)
+            trackingDraft.commit()
             dismiss()
         }
+
     }
 
 }
@@ -279,26 +380,23 @@ private struct WorkoutRoutineExerciseSection: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var settingsStore: SettingsStore
 
+    @EnvironmentObject private var trackingDraft: RoutineSetTrackingDraft
     @ObservedObject var routineExercise: WorkoutRoutineExercise
     @State private var showingRestTimerEditor = false
+    @State private var showingNoteEditor = false
+    @State private var selectionFeedback = 0
     let exercise: Exercise?
     let sets: [WorkoutRoutineSet]
     let index: Int
     let exerciseCount: Int
     let onSave: () -> Void
+    let onSaveNote: (String) -> Bool
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onDelete: () -> Void
     let onAddSet: () -> Void
     let onDeleteSet: (WorkoutRoutineSet) -> Void
     let onMoveSet: (Int, Int) -> Void
-
-    private var notes: Binding<String> {
-        Binding(
-            get: { routineExercise.comment ?? "" },
-            set: { routineExercise.comment = $0.isEmpty ? nil : $0 }
-        )
-    }
 
     private var restTimerTitle: String {
         guard let duration = routineExercise.restTimerDurationValue,
@@ -308,9 +406,8 @@ private struct WorkoutRoutineExerciseSection: View {
         return "Rest \(formatted)"
     }
 
-    private var usesDuration: Bool {
-        sets.contains { $0.durationValue != nil }
-    }
+    @AppStorage(SetTrackingPreferences.storageKey) private var trackingPreferencesData: Data?
+    private var trackingType: SetTrackingType { trackingDraft.override(for: routineExercise.exerciseUuid) ?? routineExercise.setTrackingType }
 
     private var workoutDefaultRestTimerDuration: TimeInterval {
         switch exercise?.type {
@@ -320,22 +417,25 @@ private struct WorkoutRoutineExerciseSection: View {
         }
     }
 
-    private func setTrackingMode(usesDuration: Bool) {
+    private func setTrackingType(_ type: SetTrackingType) {
+        guard type != trackingType, let exerciseID = routineExercise.exerciseUuid else { return }
         for set in sets {
-            if usesDuration {
-                set.durationValue = set.durationValue ?? 60
-                set.weightValue = nil
+            set.durationValue = type.usesDuration ? (set.durationValue ?? 60) : nil
+            if !type.usesWeight { set.weightValue = nil }
+            if type.usesReps {
+                set.minRepetitionsValue = set.minRepetitionsValue ?? 5
+                set.maxRepetitionsValue = set.maxRepetitionsValue ?? 5
+            } else {
                 set.minRepetitionsValue = nil
                 set.maxRepetitionsValue = nil
-            } else {
-                set.durationValue = nil
-                if set.minRepetitionsValue == nil, set.maxRepetitionsValue == nil {
-                    set.minRepetitionsValue = 5
-                    set.maxRepetitionsValue = 5
-                }
+            }
+            if !type.usesDistance, let setID = set.uuid {
+                trackingDraft.setDistance(nil, for: setID)
             }
         }
+        trackingDraft.setOverride(type, for: exerciseID)
         onSave()
+        selectionFeedback += 1
     }
 
     var body: some View {
@@ -359,9 +459,22 @@ private struct WorkoutRoutineExerciseSection: View {
                 }
             }
 
-            TextField("Exercise Notes", text: notes, axis: .vertical)
-                .lineLimit(1...4)
-                .onSubmit(onSave)
+            Button { showingNoteEditor = true } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Workout Plan Note", systemImage: "list.bullet")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(IronTheme.primaryText)
+                    Text(routineExercise.comment.flatMap { $0.isEmpty ? nil : $0 }
+                         ?? "Add a cue for this workout plan…")
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shown whenever you start this saved workout")
 
             Button {
                 showingRestTimerEditor = true
@@ -375,21 +488,15 @@ private struct WorkoutRoutineExerciseSection: View {
             }
             .accessibilityHint("Opens the rest duration picker")
 
-            if !sets.isEmpty {
-                Picker("Target", selection: Binding(
-                    get: { usesDuration },
-                    set: { setTrackingMode(usesDuration: $0) }
-                )) {
-                    Text("Weight & Reps").tag(false)
-                    Text("Duration").tag(true)
-                }
+            Picker("Set Type", selection: Binding(get: { trackingType }, set: setTrackingType)) {
+                ForEach(SetTrackingType.allCases) { type in Text(type.title).tag(type) }
             }
 
             ForEach(Array(sets.enumerated()), id: \.element.id) { setIndex, routineSet in
                 WorkoutRoutineSetRow(
                     routineSet: routineSet,
                     index: setIndex,
-                    usesDuration: usesDuration,
+                    trackingType: trackingType,
                     onSave: onSave,
                     onDelete: { onDeleteSet(routineSet) }
                 )
@@ -431,7 +538,17 @@ private struct WorkoutRoutineExerciseSection: View {
             }
         }
         .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: sets.map(\.objectID))
+        .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in settingsStore.workoutHaptics }
         .onDisappear(perform: onSave)
+        .sheet(isPresented: $showingNoteEditor) {
+            ExerciseNoteEditorSheet(
+                title: "Workout Plan Note",
+                subtitle: "Shown whenever you start from this saved workout.",
+                text: routineExercise.comment ?? ""
+            ) { text in
+                onSaveNote(text)
+            }
+        }
         .sheet(isPresented: $showingRestTimerEditor) {
             RestTimerConfigurationSheet(
                 title: "Rest Timer",
@@ -456,20 +573,25 @@ private struct WorkoutRoutineSetRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var settingsStore: SettingsStore
 
+    @EnvironmentObject private var trackingDraft: RoutineSetTrackingDraft
     @ObservedObject var routineSet: WorkoutRoutineSet
+    @State private var distanceInput: String?
+    @AppStorage(SetTrackingPreferences.storageKey) private var trackingPreferencesData: Data?
     @State private var weightInput: String?
     @State private var repetitionsInput: String?
     @State private var showingDurationPicker = false
     @State private var showingPlateCalculator = false
+    @State private var selectionFeedback = 0
     @FocusState private var focusedField: EntryField?
     let index: Int
-    let usesDuration: Bool
+    let trackingType: SetTrackingType
     let onSave: () -> Void
     let onDelete: () -> Void
 
     private enum EntryField: Hashable {
         case weight
         case repetitions
+        case distance
     }
 
     private var displayedWeightTitle: String {
@@ -665,7 +787,7 @@ private struct WorkoutRoutineSetRow: View {
     }
 
     private var weightUnitLabel: some View {
-        Text(settingsStore.weightUnit.unit.symbol)
+        Text(trackingType.weightPrefix + settingsStore.weightUnit.unit.symbol)
             .font(.caption)
             .foregroundStyle(IronTheme.secondaryText)
     }
@@ -680,7 +802,7 @@ private struct WorkoutRoutineSetRow: View {
         Button {
             showingDurationPicker = true
         } label: {
-            Text(restTimerDurationFormatter.string(from: routineSet.durationValue ?? 60) ?? "1:00")
+            Text(SetTrackingType.durationText(routineSet.durationValue ?? 60))
                 .font(.ironMetric(.body, weight: .semibold))
                 .foregroundStyle(IronTheme.metricTime)
                 .contentTransition(reduceMotion ? .opacity : .numericText())
@@ -691,37 +813,61 @@ private struct WorkoutRoutineSetRow: View {
         .controlSize(.small)
         .frame(minHeight: IronTheme.controlHeight)
         .accessibilityLabel("Set duration")
+        .accessibilityValue(SetTrackingType.durationText(routineSet.durationValue ?? 60))
     }
 
-    @ViewBuilder
+    private var distanceText: Binding<String> {
+        Binding(get: {
+            if let distanceInput { return distanceInput }
+            guard let meters = trackingDraft.distance(for: routineSet.uuid) else { return "" }
+            return settingsStore.weightUnit.numberFormatter.string(from: NSNumber(value: WorkoutSet.distanceDisplayValue(meters, weightUnit: settingsStore.weightUnit))) ?? ""
+        }, set: { input in
+            let sanitized = sanitizedDecimalInput(input)
+            guard input.isEmpty || !sanitized.isEmpty else { return }
+            distanceInput = sanitized
+            let value = settingsStore.weightUnit.numberFormatter.number(from: sanitized)?.doubleValue ?? 0
+            guard let setID = routineSet.uuid else { return }
+            trackingDraft.setDistance(WorkoutSet.distanceMeters(value, weightUnit: settingsStore.weightUnit), for: setID)
+            onSave()
+        })
+    }
+    private var distanceField: some View {
+        TextField("—", text: distanceText)
+            .font(.ironMetric(.body, weight: .semibold))
+            .keyboardType(.decimalPad)
+            .focused($focusedField, equals: .distance)
+            .multilineTextAlignment(.trailing)
+            .frame(minWidth: 44, minHeight: IronTheme.controlHeight)
+            .accessibilityLabel("Distance in \(WorkoutSet.distanceUnit(settingsStore.weightUnit))")
+    }
+    private var weightTitle: String {
+        trackingType == .assistedBodyweight ? "Assistance" : (trackingType == .weightedBodyweight ? "Added Weight" : "Weight")
+    }
+    private var valueControlsLayout: AnyLayout {
+        usesAccessibilityLayout ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 6))
+    }
     private var setValueControls: some View {
-        if usesDuration {
-            durationControl
-        } else if usesAccessibilityLayout {
-            VStack(alignment: .leading, spacing: 8) {
-                LabeledContent("Weight") {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        weightField
-                        weightUnitLabel
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-                LabeledContent("Repetitions") {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        repetitionsField
-                        repetitionsUnitLabel
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+        valueControlsLayout {
+            if trackingType.usesWeight {
+                HStack(spacing: 4) {
+                    if usesAccessibilityLayout { Text(weightTitle).font(.caption) }
+                    weightField.accessibilityLabel("\(weightTitle) in \(settingsStore.weightUnit.unit.symbol)")
+                    weightUnitLabel
                 }
             }
-            .frame(maxWidth: .infinity)
-        } else {
-            HStack(spacing: 6) {
-                weightField
-                weightUnitLabel
-                repetitionsField
-                repetitionsUnitLabel
+            if trackingType.usesReps {
+                HStack(spacing: 4) {
+                    repetitionsField
+                    repetitionsUnitLabel
+                }
             }
+            if trackingType.usesDistance {
+                HStack(spacing: 4) {
+                    distanceField
+                    Text(WorkoutSet.distanceUnit(settingsStore.weightUnit)).font(.caption).foregroundStyle(IronTheme.secondaryText)
+                }
+            }
+            if trackingType.usesDuration { durationControl }
         }
     }
 
@@ -741,12 +887,26 @@ private struct WorkoutRoutineSetRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: trackingType) { _, _ in
+            focusedField = nil
+            weightInput = nil
+            repetitionsInput = nil
+            distanceInput = nil
+        }
+        .onChange(of: settingsStore.weightUnit) { _, _ in
+            focusedField = nil
+            weightInput = nil
+            distanceInput = nil
+        }
+        .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in settingsStore.workoutHaptics }
         .contextMenu {
             Picker("Set Type", selection: Binding(
                 get: { routineSet.tagValue },
                 set: { newValue in
+                    guard routineSet.tagValue != newValue else { return }
                     routineSet.tagValue = newValue
                     onSave()
+                    selectionFeedback += 1
                 }
             )) {
                 Text("Normal").tag(WorkoutSetTag?.none)
@@ -770,11 +930,14 @@ private struct WorkoutRoutineSetRow: View {
                 title: "Plate Calculator",
                 subtitle: "",
                 systemImage: "plusminus",
+                showsDone: false,
                 onClose: { showingPlateCalculator = false }
             ) {
                 PlateCalculatorView(
                     unit: settingsStore.weightUnit,
                     initialTarget: plateCalculatorTarget,
+                    exerciseKey: routineSet.workoutRoutineExercise?.exerciseUuid?.uuidString,
+                    onClose: { showingPlateCalculator = false },
                     onApply: { value in
                         routineSet.weightValue = WeightUnit.convert(
                             weight: value,
@@ -793,7 +956,7 @@ private struct WorkoutRoutineSetRow: View {
         .toolbar {
             if focusedField != nil {
                 ToolbarItemGroup(placement: .keyboard) {
-                    if focusedField == .weight {
+                    if trackingType.usesWeight, focusedField == .weight {
                         Button("Plate Calculator", systemImage: "plusminus", action: openPlateCalculator)
                             .labelStyle(.iconOnly)
                             .accessibilityHint("Calculates the plates to load for this set")

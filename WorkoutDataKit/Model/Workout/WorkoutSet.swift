@@ -99,38 +99,126 @@ public class WorkoutSet: NSManagedObject, Codable {
     }
 
     public var isPersonalRecord: Bool? {
-        guard let weight = weight else { return nil }
-        guard let repetitions = repetitions else { return nil }
-        guard repetitions.intValue > 0 else { return false }
+        let preferred = SetTrackingPreferences.override(for: workoutExercise?.exerciseUuid) ?? .weightReps
+        let data = SetTrackingType.SetData(weight: weightValue, reps: Int(repetitionsValue),
+                                          duration: durationValue, distance: distanceValue)
+        let type = SetTrackingType.resolved(preferred, from: data)
+        if type.usesWeight, weight == nil { return nil }
+        if type.usesReps, repetitions == nil { return nil }
+        let validMeasurement = Self.personalRecordValidityPredicate(for: type)
+        guard validMeasurement.evaluate(with: self) else { return false }
         guard let start = workoutExercise?.workout?.start else { return nil }
         guard let exerciseUuid = workoutExercise?.exerciseUuid else { return nil }
+        guard let context = managedObjectContext else { return nil }
 
-        let previousSetsRequest: NSFetchRequest<WorkoutSet> = WorkoutSet.fetchRequest()
-        let previousSetsPredicate = NSPredicate(format:
-            "\(#keyPath(WorkoutSet.workoutExercise.exerciseUuid)) == %@ AND \(#keyPath(WorkoutSet.isCompleted)) == %@ AND \(#keyPath(WorkoutSet.workoutExercise.workout.start)) < %@",
-            exerciseUuid as CVarArg, true as NSNumber, start as NSDate
-        )
-        previousSetsRequest.predicate = previousSetsPredicate
-        guard let numberOfPreviousSets = try? managedObjectContext?.count(for: previousSetsRequest) else { return nil }
-        if numberOfPreviousSets == 0 { return false } // if there was no set for this exercise in a prior workout, we consider no set as a PR
+        let sameDimension = Self.personalRecordTypePredicate(type, preferred: preferred)
+        let comparable = NSCompoundPredicate(andPredicateWithSubpredicates: [sameDimension, validMeasurement])
 
-        let betterOrEqualPreviousSetsRequest: NSFetchRequest<WorkoutSet> = WorkoutSet.fetchRequest()
-        betterOrEqualPreviousSetsRequest.predicate = NSCompoundPredicate(andPredicateWithSubpredicates:
-            [
-                previousSetsPredicate,
-                NSPredicate(format: "\(#keyPath(WorkoutSet.weight)) >= %@ AND \(#keyPath(WorkoutSet.repetitions)) >= %@", weight, repetitions)
-            ]
+        let previousSetsPredicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            NSPredicate(format:
+                "\(#keyPath(WorkoutSet.workoutExercise.exerciseUuid)) == %@ AND \(#keyPath(WorkoutSet.isCompleted)) == %@ AND \(#keyPath(WorkoutSet.workoutExercise.workout.start)) < %@",
+                exerciseUuid as CVarArg, true as NSNumber, start as NSDate),
+            comparable
+        ])
+
+        // A date edit dirties the Workout, not its sets. Reconcile those graphs
+        // explicitly so a store-level relationship predicate cannot use the old
+        // start date. Unchanged history still uses bounded existence queries.
+        let editedWorkouts = context.updatedObjects.compactMap { $0 as? Workout }.filter {
+            $0.changedValues()[#keyPath(Workout.start)] != nil
+        }
+        let editedWorkoutSets = editedWorkouts.flatMap { $0.workoutExercises?.array as? [WorkoutExercise] ?? [] }
+            .filter { $0.exerciseUuid == exerciseUuid }
+            .flatMap { $0.workoutSets?.array as? [WorkoutSet] ?? [] }
+        func hasPreviousSet(matching predicate: NSPredicate) throws -> Bool {
+            if editedWorkoutSets.contains(where: { !$0.isDeleted && predicate.evaluate(with: $0) }) { return true }
+            let request: NSFetchRequest<WorkoutSet> = WorkoutSet.fetchRequest()
+            var predicates = [predicate]
+            if !editedWorkouts.isEmpty {
+                predicates.append(NSPredicate(format: "NOT (%K IN %@)",
+                    #keyPath(WorkoutSet.workoutExercise.workout), editedWorkouts))
+            }
+            request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
+            request.fetchLimit = 1
+            return try context.count(for: request) > 0
+        }
+        guard let hasHistory = try? hasPreviousSet(matching: previousSetsPredicate) else { return nil }
+        if !hasHistory { return false } // The first workout in each dimension establishes a baseline.
+
+        let betterOrEqual = personalRecordDominancePredicate(for: type, data: data)
+        let betterOrEqualPreviousSetsPredicate = NSCompoundPredicate(andPredicateWithSubpredicates:
+            [previousSetsPredicate, betterOrEqual]
         )
-        guard let numberOfBetterOrEqualPreviousSets = try? managedObjectContext?.count(for: betterOrEqualPreviousSetsRequest) else { return nil }
-        if numberOfBetterOrEqualPreviousSets > 0 { return false } // there are better sets
-        
-        guard let index = workoutExercise?.workoutSets?.index(of: self), index != NSNotFound else { return nil }
-        guard let numberOfBetterOrEqualPreviousSetsInCurrentWorkout = (workoutExercise?.workoutSets?.array[0..<index]
-            .compactMap { $0 as? WorkoutSet }
-            .filter { $0.weightValue >= weightValue && $0.repetitionsValue >= repetitionsValue }
-            .count)
-            else { return nil }
-        return numberOfBetterOrEqualPreviousSetsInCurrentWorkout == 0
+        guard let hasBetterOrEqualHistory = try? hasPreviousSet(matching: betterOrEqualPreviousSetsPredicate) else { return nil }
+        if hasBetterOrEqualHistory { return false } // there are better sets
+
+        guard let sets = workoutExercise?.workoutSets else { return nil }
+        let index = sets.index(of: self)
+        guard index != NSNotFound else { return nil }
+        // Preserve ordered-set suppression (including unfinished earlier rows),
+        // without copying/filtering the prefix or fetching historical objects.
+        for earlierIndex in 0..<index {
+            guard let earlier = sets.object(at: earlierIndex) as? WorkoutSet else { continue }
+            if comparable.evaluate(with: earlier), betterOrEqual.evaluate(with: earlier) { return false }
+        }
+        return true
+    }
+
+    private static func personalRecordValidityPredicate(for type: SetTrackingType) -> NSPredicate {
+        let maximum = Double.greatestFiniteMagnitude as NSNumber
+        return NSCompoundPredicate(andPredicateWithSubpredicates: type.personalRecordMetrics.map { metric in
+            let key = personalRecordKeyPath(for: metric.column)
+            if metric.column == .reps { return NSPredicate(format: "%K > 0", key) }
+            let comparison = metric.column == .weight ? ">=" : ">"
+            return NSPredicate(format: "%K \(comparison) 0 AND %K <= %@", key, key, maximum)
+        })
+    }
+
+    private func personalRecordDominancePredicate(for type: SetTrackingType, data: SetTrackingType.SetData) -> NSPredicate {
+        NSCompoundPredicate(andPredicateWithSubpredicates: type.personalRecordMetrics.map { metric in
+            let comparison = metric.lowerIsBetter ? "<=" : ">="
+            return NSPredicate(format: "%K \(comparison) %@", Self.personalRecordKeyPath(for: metric.column),
+                               metric.value(in: data) as NSNumber)
+        })
+    }
+
+    private static func personalRecordKeyPath(for column: SetTrackingType.Column) -> String {
+        switch column {
+        case .weight: return #keyPath(WorkoutSet.weight)
+        case .reps: return #keyPath(WorkoutSet.repetitions)
+        case .duration: return #keyPath(WorkoutSet.duration)
+        case .distance: return #keyPath(WorkoutSet.distance)
+        }
+    }
+
+    private static func personalRecordTypePredicate(_ type: SetTrackingType, preferred: SetTrackingType) -> NSPredicate {
+        // Mirror inference with store-translatable predicates. Resolve only six
+        // representative measurements, rather than loading/scanning history for
+        // every list row. Missing optional values must also match in SQLite.
+        func present(_ key: String) -> NSPredicate {
+            NSPredicate(format: "%K > 0 AND %K <= %@", key, key, Double.greatestFiniteMagnitude as NSNumber)
+        }
+        func absent(_ key: String) -> NSPredicate {
+            NSPredicate(format: "%K == nil OR %K <= 0 OR %K > %@", key, key, key, Double.greatestFiniteMagnitude as NSNumber)
+        }
+        let load = present(#keyPath(WorkoutSet.weight))
+        let noLoad = absent(#keyPath(WorkoutSet.weight))
+        let time = present(#keyPath(WorkoutSet.duration))
+        let noTime = absent(#keyPath(WorkoutSet.duration))
+        let distance = present(#keyPath(WorkoutSet.distance))
+        let noDistance = absent(#keyPath(WorkoutSet.distance))
+        let possibilities: [(SetTrackingType.SetData, [NSPredicate])] = [
+            (.init(weight: 1, reps: 1), [noDistance, noTime, load]),
+            (.init(reps: 1), [noDistance, noTime, noLoad, NSPredicate(format: "%K > 0", #keyPath(WorkoutSet.repetitions))]),
+            (.init(duration: 1), [noDistance, time, noLoad]),
+            (.init(weight: 1, duration: 1), [noDistance, time, load]),
+            (.init(distance: 1), [distance, NSCompoundPredicate(orPredicateWithSubpredicates: [noLoad, time])]),
+            (.init(weight: 1, distance: 1), [distance, load, noTime])
+        ]
+        return NSCompoundPredicate(orPredicateWithSubpredicates: possibilities.compactMap { data, predicates in
+            guard SetTrackingType.resolved(preferred, from: data) == type else { return nil }
+            return NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
+        })
     }
     
     // MARK: - Codable

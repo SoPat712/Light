@@ -263,6 +263,8 @@ struct ExerciseDetailView : View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var exercise: Exercise
     
+    @ObservedObject private var exerciseNotesCache = ExerciseNotes.cache
+    @State private var showingNoteEditor = false
     @State private var showingEditExercise = false
     @State private var showingMedia = false
     @State private var loadedRemoteMediaURL: URL?
@@ -367,7 +369,7 @@ struct ExerciseDetailView : View {
                 IronTheme.diagramCanvas
 
                 if currentRemoteMediaURL == nil || loadedRemoteMediaURL != currentRemoteMediaURL {
-                    if !currentExercise.pdfPaths.isEmpty {
+                    if currentRemoteMediaURL == nil, !currentExercise.pdfPaths.isEmpty {
                         AnimatedImageView(
                             uiImages: exerciseImages(width: geometry.size.width, height: geometry.size.height),
                             duration: 2,
@@ -452,12 +454,35 @@ struct ExerciseDetailView : View {
                 ExerciseTargetMuscleMap(
                     primary: primaryMapMuscles,
                     secondary: secondaryMapMuscles,
-                    equipment: currentExercise.equipment.map { $0.capitalized }
+                    equipment: currentExercise.equipment.map(\.equipmentTitle)
                 )
                 .id(currentExercise.uuid)
                 .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
+            }
+
+            Section {
+                Button { showingNoteEditor = true } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Exercise Note", systemImage: "pin")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(IronTheme.primaryText)
+                        Text(ExerciseNotes.note(for: currentExercise.uuid) ?? "Add a cue, setup, or reminder…")
+                            .font(.subheadline)
+                            .foregroundStyle(IronTheme.secondaryText)
+                            .lineLimit(4)
+                        Text(ExerciseNotes.note(for: currentExercise.uuid) == nil ? "Add Note" : "Edit Note")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(IronTheme.accent)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shown every time you use this exercise")
+            } footer: {
+                Text("Shown in every workout that includes this exercise.")
             }
 
             if let description = currentExercise.description, !description.isEmpty {
@@ -524,6 +549,16 @@ struct ExerciseDetailView : View {
                 WorkoutDetailView(workout: workout)
             }
         }
+        .sheet(isPresented: $showingNoteEditor) {
+            ExerciseNoteEditorSheet(
+                title: "Exercise Note",
+                subtitle: "Shown in every workout that includes \(currentExercise.title).",
+                text: ExerciseNotes.note(for: currentExercise.uuid) ?? ""
+            ) { text in
+                ExerciseNotes.setNote(text, for: currentExercise.uuid)
+                return true
+            }
+        }
         .sheet(isPresented: $showingEditExercise) {
             EditCustomExerciseSheet(exercise: currentExercise)
                 .environmentObject(exerciseStore)
@@ -552,6 +587,7 @@ struct ExerciseDetailView : View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button("Edit Exercise Note", systemImage: "pin") { showingNoteEditor = true }
                     if currentExercise.isCustom {
                         Button("Edit Exercise", systemImage: "pencil") {
                             showingEditExercise = true
@@ -568,7 +604,9 @@ struct ExerciseDetailView : View {
                     }
                 } label: {
                     Label("Exercise Actions", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
                 }
+                .accessibilityLabel("Exercise Actions")
             }
         }
     }
@@ -622,7 +660,7 @@ struct ExerciseDetailView : View {
     }
 
     private var headerSubtitle: String {
-        [currentExercise.equipment.map { $0.capitalized }.joined(separator: ", "),
+        [currentExercise.equipment.map(\.equipmentTitle).joined(separator: ", "),
          currentExercise.primaryMuscle.map { $0.capitalized }.joined(separator: ", ")]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
@@ -1049,3 +1087,90 @@ struct ExerciseDetailView_Previews : PreviewProvider {
     }
 }
 #endif
+
+/// Native, staged note editing shared by the exercise catalog, plan, and logger.
+struct ExerciseNoteEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    let subtitle: String
+    let onSave: (String) -> Bool
+    @State private var text: String
+    @State private var saveFailed = false
+
+    init(title: String, subtitle: String, text: String, onSave: @escaping (String) -> Bool) {
+        self.title = title
+        self.subtitle = subtitle
+        self.onSave = onSave
+        _text = State(initialValue: text)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 160)
+                        .foregroundStyle(IronTheme.primaryText)
+                        .accessibilityLabel(title)
+                } footer: {
+                    Text(subtitle)
+                }
+                if saveFailed {
+                    Section {
+                        Text("Your note could not be saved. Try again.")
+                            .foregroundStyle(IronTheme.danger)
+                    }
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if onSave(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                            dismiss()
+                        } else {
+                            saveFailed = true
+                        }
+                    }
+                }
+            }
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+struct PinnedExerciseNote: View {
+    let title: String
+    let systemImage: String
+    let text: String
+    let onEdit: () -> Void
+
+    var body: some View {
+        Button(action: onEdit) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .accessibilityHidden(true)
+                (Text("\(title): ").fontWeight(.semibold) + Text(text))
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("More")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(IronTheme.accent)
+            }
+            .font(.footnote)
+            .frame(minHeight: IronTheme.controlHeight, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title) note")
+        .accessibilityValue(text)
+        .accessibilityHint("Opens the full note for editing")
+    }
+}

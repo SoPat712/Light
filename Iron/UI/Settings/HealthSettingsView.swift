@@ -13,6 +13,9 @@ import WorkoutDataKit
 struct HealthSettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var exerciseStore: ExerciseStore
+    #if DEBUG
+    @EnvironmentObject var settingsStore: SettingsStore
+    #endif
     @Environment(\.managedObjectContext) var managedObjectContext
 
     @State private var updating = false
@@ -85,6 +88,24 @@ struct HealthSettingsView: View {
 
     var body: some View {
         List {
+            #if DEBUG
+            Section {
+                Toggle(isOn: $settingsStore.healthTestMode) {
+                    SettingsSubpageLabel("Don't record to Apple Health", systemImage: "heart.slash.fill",
+                                         tint: IronTheme.metricHeartRate)
+                }
+                .toggleStyle(.switch)
+                .tint(IronTheme.accent)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Don't record to Apple Health")
+                .accessibilityValue(settingsStore.healthTestMode ? "On" : "Off")
+            } header: {
+                Text("Testing")
+            } footer: {
+                Text("Test workouts don't record heart rate or calories and aren't saved to Apple Health, so your rings don't move. Debug builds only.")
+            }
+            #endif
+
             Section("Connection") {
                 accessStatusRow
 
@@ -94,22 +115,22 @@ struct HealthSettingsView: View {
 
                 if accessState == .notDetermined {
                     Button(action: requestAccess) {
-                        HStack(spacing: 9) {
-                            if authorizing {
-                                ProgressView()
-                            } else {
-                                Image(systemName: "heart.text.square.fill")
-                            }
-                            Text(authorizing ? "Requesting access…" : accessState.actionTitle)
+                        HStack(spacing: 12) {
+                            SettingsSubpageLabel(authorizing ? "Requesting access…" : accessState.actionTitle,
+                                                 systemImage: "heart.text.square.fill", tint: IronTheme.diagramCanvas,
+                                                 glyph: IronTheme.metricEffort)
+                            if authorizing { ProgressView() }
                         }
                     }
+                    .buttonStyle(.plain)
                     .disabled(authorizing)
                 }
 
                 if accessState == .needsReview || accessState == .ready {
                     Button(action: openHealthApp) {
-                        Label("Review access in Health", systemImage: "arrow.up.forward.app")
+                        SettingsSubpageLabel("Review access in Health", systemImage: "arrow.up.forward.app")
                     }
+                    .buttonStyle(.plain)
                 }
             }
 
@@ -117,15 +138,13 @@ struct HealthSettingsView: View {
                 workoutSyncSummaryRow
 
                 Button(action: updateWorkouts) {
-                    HStack(spacing: 9) {
-                        if updating {
-                            ProgressView()
-                        } else {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                        }
-                        Text(updating ? "Syncing workout history…" : "Sync workout history")
+                    HStack(spacing: 12) {
+                        SettingsSubpageLabel(updating ? "Syncing workout history…" : "Sync workout history",
+                                             systemImage: "arrow.triangle.2.circlepath")
+                        if updating { ProgressView() }
                     }
                 }
+                .buttonStyle(.plain)
                 .disabled(updating || accessState != .ready)
             }
 
@@ -133,17 +152,20 @@ struct HealthSettingsView: View {
                 healthDataRow(
                     icon: "figure.strengthtraining.traditional",
                     title: "Strength workouts",
-                    detail: "Start time, duration, and workout title are written to Apple Health."
+                    detail: "Completed Light workouts write their start time, duration, and title to Apple Health. Imported workouts are never exported.",
+                    tint: IronTheme.accent
                 )
                 healthDataRow(
                     icon: "scalemass.fill",
                     title: "Body measurements",
-                    detail: "Light can read and write weight, height, body fat, and waist circumference."
+                    detail: "Read and write weight, height, body fat, and waist circumference.",
+                    tint: IronTheme.metricBody
                 )
                 healthDataRow(
                     icon: "applewatch.radiowaves.left.and.right",
                     title: "Watch workout metrics",
-                    detail: "Heart rate and active energy stay in Apple Health when a Watch workout is active."
+                    detail: "Heart rate and active energy stay in Apple Health during a Watch workout.",
+                    tint: IronTheme.metricHeartRate
                 )
             }
 
@@ -182,88 +204,61 @@ struct HealthSettingsView: View {
     }
 
     private var accessStatusRow: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
-                    Text(accessState.title)
-                        .font(.headline)
-                        .foregroundColor(IronTheme.primaryText)
-                    Text(accessState.badge)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(accessState.tint)
+        HStack(spacing: 12) {
+            SettingsSubpageIconTile(systemImage: accessState.systemImage, tint: IronTheme.diagramCanvas, glyph: accessState.tint)
+            VStack(alignment: .leading, spacing: 4) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        accessTitle.fixedSize()
+                        accessBadge.fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        accessTitle
+                        accessBadge
+                    }
                 }
                 Text(accessState.detail)
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundColor(IronTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
-        } icon: {
-            Image(systemName: accessState.systemImage)
-                .font(.title3.weight(.semibold))
-                .foregroundColor(accessState.tint)
-                .frame(width: 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var accessTitle: some View {
+        Text(accessState.title)
+            .font(.headline)
+            .foregroundColor(IronTheme.primaryText)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var accessBadge: some View {
+        Text(accessState.badge)
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(accessState.tint)
     }
 
     private var workoutSyncSummaryRow: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Repair or backfill workout history")
-                    .font(.body)
-                    .foregroundColor(IronTheme.primaryText)
-                Text("Reconcile completed Light sessions with Apple Health. Existing matches are updated instead of duplicated.")
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } icon: {
-            Image(systemName: "arrow.triangle.2.circlepath.icloud")
-                .font(.body.weight(.semibold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 28)
-        }
-        .padding(.vertical, 2)
+        SettingsSubpageLabel(
+            "Repair or backfill workout history",
+            detail: "Sync completed Light sessions with Apple Health. Existing matches are updated without duplicates; imported workouts are never exported.",
+            systemImage: "arrow.triangle.2.circlepath.icloud"
+        )
     }
 
-    private func healthDataRow(icon: String, title: String, detail: String) -> some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.body)
-                    .foregroundColor(IronTheme.primaryText)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } icon: {
-            Image(systemName: icon)
-                .font(.body.weight(.semibold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 28)
-        }
-        .padding(.vertical, 2)
+    private func healthDataRow(icon: String, title: String, detail: String, tint: Color) -> some View {
+        SettingsSubpageLabel(title, detail: detail, systemImage: icon, tint: tint)
     }
 
     private var privacyRow: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("You stay in control")
-                    .font(.body)
-                    .foregroundColor(IronTheme.primaryText)
-                Text("Apple Health permissions can be changed at any time. Light never shares your health data socially or with other Light users.")
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } icon: {
-            Image(systemName: "hand.raised.fill")
-                .font(.body.weight(.semibold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 28)
-        }
-        .padding(.vertical, 2)
+        SettingsSubpageLabel(
+            "You stay in control",
+            detail: "Change permissions anytime in Apple Health. Light never shares health data socially or with other Light users.",
+            systemImage: "hand.raised.fill"
+        )
     }
 
     private func openHealthApp() {
@@ -332,7 +327,7 @@ private extension HealthManager.AccessState {
         case .needsReview:
             return "One or more write categories are unavailable. Review access to keep workouts and supported measurements aligned."
         case .ready:
-            return "Workout and supported body-measurement write access is ready. Setup also requested read access; Apple keeps read decisions private, and every category remains under your control in Health."
+            return "Workout and supported body-measurement write access is ready; setup also requested read access, whose decisions Apple keeps private. Control each category in Health."
         }
     }
 

@@ -27,14 +27,18 @@ struct WorkoutPlanEditorRoute: Identifiable {
 /// shared files self-describing without coupling the import contract to the
 /// Core Data container used by the app.
 struct SavedWorkoutDocument: Codable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     let version: Int
     let workout: WorkoutRoutine
+    let trackingPreferences: SetTrackingPreferences?
 
-    init(workout: WorkoutRoutine) {
+    init(workout: WorkoutRoutine, defaults: UserDefaults = .standard) {
         version = Self.currentVersion
         self.workout = workout
+        let draft = RoutineSetTrackingDraft(defaults: defaults)
+        draft.copyTracking(from: workout, to: workout)
+        trackingPreferences = draft.changes
     }
 }
 
@@ -62,13 +66,17 @@ final class WorkoutPlanEditorSession: ObservableObject {
     let context: NSManagedObjectContext
     let routine: WorkoutRoutine
     let isNew: Bool
+    let trackingDraft: RoutineSetTrackingDraft
 
     private let parentContext: NSManagedObjectContext
     private let route: WorkoutPlanEditorRoute
 
-    init(parentContext: NSManagedObjectContext, route: WorkoutPlanEditorRoute) throws {
+    init(parentContext: NSManagedObjectContext, route: WorkoutPlanEditorRoute,
+         trackingDefaults: UserDefaults = .standard) throws {
         self.parentContext = parentContext
         self.route = route
+        let trackingDraft = RoutineSetTrackingDraft(defaults: trackingDefaults)
+        self.trackingDraft = trackingDraft
 
         let context = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
         context.parent = parentContext
@@ -115,7 +123,8 @@ final class WorkoutPlanEditorSession: ObservableObject {
             routine.title = source.title ?? "Saved Workout"
             routine.comment = source.comment
             routine.workoutRoutineExercises = NSOrderedSet(
-                array: Self.routineExercises(from: source, in: context)
+                array: Self.routineExercises(from: source, in: context, trackingDraft: trackingDraft,
+                    defaults: trackingDefaults)
             )
             self.routine = routine
             self.isNew = true
@@ -126,7 +135,9 @@ final class WorkoutPlanEditorSession: ObservableObject {
 
         case .duplicate(let planID):
             let source = try load(planID, as: WorkoutRoutine.self)
-            self.routine = source.duplicate(context: context)
+            let routine = source.duplicate(context: context)
+            self.routine = routine
+            trackingDraft.copyTracking(from: source, to: routine)
             self.isNew = true
         }
     }
@@ -136,7 +147,9 @@ final class WorkoutPlanEditorSession: ObservableObject {
     /// intentionally have no representation in a saved workout.
     private static func routineExercises(
         from workout: Workout,
-        in context: NSManagedObjectContext
+        in context: NSManagedObjectContext,
+        trackingDraft: RoutineSetTrackingDraft,
+        defaults: UserDefaults
     ) -> [WorkoutRoutineExercise] {
         let sourceExercises = workout.workoutExercises?.array
             .compactMap { $0 as? WorkoutExercise } ?? []
@@ -145,8 +158,13 @@ final class WorkoutPlanEditorSession: ObservableObject {
         return sourceExercises.map { source in
             let copy = WorkoutRoutineExercise.create(context: context)
             copy.exerciseUuid = source.exerciseUuid
-            copy.comment = source.comment
+            // Keep plan cues; the logged comment belongs only to the source session.
+            copy.comment = source.routineNoteSource(defaults: defaults)?.comment
             copy.restTimerDurationValue = source.restTimerDurationValue
+            if let id = source.exerciseUuid {
+                trackingDraft.setOverride(source.trackingType(catalogExercise: ExerciseStore.shared.exercisesByUUID[id],
+                    defaults: defaults), for: id)
+            }
             if let sourceSupersetID = source.supersetUuid {
                 let copiedSupersetID = copiedSupersetIDs[sourceSupersetID] ?? UUID()
                 copiedSupersetIDs[sourceSupersetID] = copiedSupersetID
@@ -164,6 +182,7 @@ final class WorkoutPlanEditorSession: ObservableObject {
                     set.maxRepetitionsValue = maxRepetitions
                     set.weightValue = sourceSet.weightValue
                     set.durationValue = sourceSet.durationValue
+                    if let id = set.uuid { trackingDraft.setDistance(sourceSet.distanceValue, for: id) }
                     set.tagValue = sourceSet.tagValue
                     set.comment = sourceSet.comment
                     return set
@@ -215,10 +234,13 @@ final class WorkoutPlanEditorSession: ObservableObject {
             }
             draft.apply(to: target, in: parentContext)
         }
+        trackingDraft.retainMetadata(for: routine)
+        trackingDraft.commit()
     }
 
     func cancel() {
         context.rollback()
+        trackingDraft.discard()
     }
 }
 
@@ -295,6 +317,7 @@ enum SavedWorkoutImporter {
     static func importData(
         _ data: Data,
         into parentContext: NSManagedObjectContext,
+        trackingDefaults: UserDefaults = .standard,
         save: (() throws -> Void)? = nil
     ) throws -> String {
         let importContext = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
@@ -307,11 +330,46 @@ enum SavedWorkoutImporter {
             decoder.userInfo[contextKey] = importContext
         }
         let document = try decoder.decode(SavedWorkoutDocument.self, from: data)
-        guard document.version == SavedWorkoutDocument.currentVersion else {
+        guard (1...SavedWorkoutDocument.currentVersion).contains(document.version) else {
             throw SavedWorkoutImportError.unsupportedVersion(document.version)
         }
 
         let importedTitle = document.workout.displayTitle
+        let trackingDraft = RoutineSetTrackingDraft(defaults: trackingDefaults)
+        let exercises = document.workout.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
+        let sets = exercises.flatMap { $0.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? [] }
+        if let metadata = document.trackingPreferences {
+            let exerciseIDs = Set(exercises.compactMap { $0.exerciseUuid?.uuidString })
+            let setIDs = Set(sets.compactMap { $0.uuid?.uuidString })
+            guard SetTrackingPreferences(payload: metadata.dictionaryRepresentation) != nil,
+                  metadata.overrides.keys.allSatisfy({ exerciseIDs.contains($0) }),
+                  metadata.routineDistances.keys.allSatisfy({ setIDs.contains($0) }) else {
+                throw SavedWorkoutImportError.invalidTrackingPreferences
+            }
+            for exercise in exercises {
+                if let id = exercise.exerciseUuid, let type = metadata.overrides[id.uuidString]?.type {
+                    trackingDraft.setOverride(type, for: id)
+                }
+            }
+        }
+        // Imports are new saved workouts, even when the same file is imported
+        // twice. Remap set metadata before replacing the archived identities.
+        document.workout.uuid = UUID()
+        var supersetIDs: [UUID: UUID] = [:]
+        for exercise in exercises {
+            exercise.uuid = UUID()
+            if let group = exercise.supersetUuid {
+                let id = supersetIDs[group] ?? UUID()
+                supersetIDs[group] = id
+                exercise.supersetUuid = id
+            }
+            for set in exercise.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? [] {
+                let distance = set.uuid.flatMap { document.trackingPreferences?.routineDistances[$0.uuidString]?.meters }
+                let id = UUID()
+                set.uuid = id
+                if let distance { trackingDraft.setDistance(distance, for: id) }
+            }
+        }
         let draft = SavedWorkoutDraft(document.workout)
         try parentContext.persistMutation(
             save: {
@@ -326,6 +384,7 @@ enum SavedWorkoutImporter {
                 draft.apply(to: routine, in: parentContext)
             }
         )
+        trackingDraft.commit()
         return importedTitle
     }
 }
@@ -380,6 +439,7 @@ private struct WorkoutPlanEditorHost: View {
             workoutRoutine: session.routine,
             isNew: session.isNew,
             autosavesChanges: false,
+            trackingDraft: session.trackingDraft,
             onCancel: {
                 session.cancel()
                 onDismiss()
@@ -411,6 +471,7 @@ struct StartWorkoutView: View {
     @Environment(\.managedObjectContext) private var managedObjectContext
     @EnvironmentObject private var exerciseStore: ExerciseStore
     @EnvironmentObject private var sceneState: SceneState
+    @ObservedObject private var watchConnection = WatchConnectionManager.shared
 
     @FetchRequest(fetchRequest: StartWorkoutView.fetchRequest) private var workoutPlans
     @FetchRequest(fetchRequest: Workout.currentWorkoutFetchRequest) private var currentWorkouts
@@ -599,13 +660,75 @@ struct StartWorkoutView: View {
 
     /// The empty-workout path deserves more than a list row: it is the entry
     /// point for anyone not training a saved routine today.
+    @ViewBuilder
     private var quickStartCard: some View {
+        if let snapshot = watchConnection.watchWorkoutAwaitingOpen,
+           snapshot.workoutID != currentWorkouts.first?.uuid {
+            VStack(alignment: .leading, spacing: 14) {
+                Label("Workout running on Apple Watch", systemImage: "applewatch")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+                Text(snapshot.title ?? "Workout")
+                    .font(.headline)
+                    .foregroundStyle(IronTheme.primaryText)
+                HStack(spacing: 4) {
+                    Text("Elapsed")
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                    Text(snapshot.startDate, style: .timer)
+                        .font(.ironMetric(.subheadline, weight: .semibold))
+                        .foregroundStyle(IronTheme.metricTime)
+                }
+                .accessibilityElement(children: .combine)
+                if snapshot.exercises.isEmpty {
+                    Text("Waiting for Apple Watch…")
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+                Button {
+                    do {
+                        try watchConnection.openWatchWorkout(in: managedObjectContext)
+                        onOpenCurrentWorkout()
+                    } catch { persistenceError = error.localizedDescription }
+                } label: {
+                    Label("Open on iPhone", systemImage: "iphone")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .controlSize(.large)
+                .disabled(!watchConnection.canReplaceEmptyPhoneWorkout(currentWorkouts.first))
+                if let current = currentWorkouts.first {
+                    Text(watchConnection.canReplaceEmptyPhoneWorkout(current)
+                         ? "Replaces the empty workout on this iPhone."
+                         : "Finish the workout on this iPhone before opening your Watch workout.")
+                        .font(.footnote)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+            localQuickStartCard
+        }
+    }
+
+    private var localQuickStartCard: some View {
+        let activeWorkout = currentWorkouts.first
+        let isWatchWorkout = activeWorkout.map { watchConnection.wasStartedOnWatch($0) } ?? false
+        let isWaitingForWatch = isWatchWorkout && (activeWorkout?.workoutExercises?.count ?? 0) == 0
         let layout = dynamicTypeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
             : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
         return VStack(alignment: .leading, spacing: 14) {
+            if isWatchWorkout {
+                Label(isWaitingForWatch ? "Workout running on Apple Watch" : "Also on Apple Watch", systemImage: "applewatch")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             layout {
-                Image(systemName: "dumbbell.fill")
+                Image(systemName: isWatchWorkout ? "applewatch" : "dumbbell.fill")
                     .font(.headline)
                     .foregroundStyle(IronTheme.accent)
                     .frame(width: 44, height: 44)
@@ -619,6 +742,12 @@ struct StartWorkoutView: View {
                     if let workout = currentWorkouts.first {
                         TimelineView(.periodic(from: .now, by: 1)) { timeline in
                             WorkoutPreviewMetricLine(workout: workout, now: timeline.date)
+                        }
+                        if isWaitingForWatch {
+                            Text("Waiting for Apple Watch…")
+                                .font(.subheadline)
+                                .foregroundStyle(IronTheme.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
                         Text("Add exercises as you go")
@@ -634,7 +763,8 @@ struct StartWorkoutView: View {
                 if currentWorkouts.isEmpty { startEmptyWorkout() }
                 else { onOpenCurrentWorkout() }
             } label: {
-                Label(currentWorkouts.isEmpty ? "Start Workout" : "Resume Workout", systemImage: "play.fill")
+                Label(isWatchWorkout ? "Open on iPhone" : (currentWorkouts.isEmpty ? "Start Workout" : "Resume Workout"),
+                      systemImage: isWatchWorkout ? "iphone" : "play.fill")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
@@ -642,6 +772,7 @@ struct StartWorkoutView: View {
             .buttonBorderShape(.capsule)
             .buttonStyle(.borderedProminent)
             .frame(minHeight: 50)
+            .accessibilityHint(isWatchWorkout ? "Opens the same workout. Edits sync with Apple Watch." : "")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -801,9 +932,12 @@ struct StartWorkoutView: View {
 
 enum SavedWorkoutImportError: LocalizedError {
     case unsupportedVersion(Int)
+    case invalidTrackingPreferences
 
     var errorDescription: String? {
         switch self {
+        case .invalidTrackingPreferences:
+            return "This workout file contains invalid set tracking preferences."
         case .unsupportedVersion(let version):
             return "This Light workout file uses version \(version), which this build cannot import yet."
         }
@@ -917,66 +1051,48 @@ private struct WorkoutPlanTrendChart: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let shown = selectedPoint ?? points.last {
+                IronChartHeader(
+                    caption: selectedPoint == nil ? "Latest" : "Session",
+                    value: valueText(shown.value),
+                    detail: "\(dateLabel(shown.date)) · \(shown.completedSets) sets · \(durationLabel(shown.duration))"
+                )
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: shown.id)
+            }
+            chart
+        }
+    }
+
+    private var chart: some View {
         Chart(points) { point in
+            let emphasis = IronChartEmphasis.opacity(isSelected: point.id == selectedPointID, hasSelection: selectedPointID != nil)
             LineMark(
                 x: .value("Date", point.date),
                 y: .value(metricTitle, hasAppeared || reduceMotion ? point.value : 0)
             )
-            .interpolationMethod(.monotone)
-            .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
-
-            AreaMark(
-                x: .value("Date", point.date),
-                y: .value(metricTitle, hasAppeared || reduceMotion ? point.value : 0)
-            )
-            .interpolationMethod(.monotone)
-            .foregroundStyle(
-                LinearGradient(
-                    colors: [metricColor.opacity(0.25), metricColor.opacity(0.02)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
+            .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            .foregroundStyle(metricColor.opacity(selectedPointID == nil ? 1 : IronChartEmphasis.dimmed))
 
             PointMark(
                 x: .value("Date", point.date),
                 y: .value(metricTitle, hasAppeared || reduceMotion ? point.value : 0)
             )
-            .symbolSize(point.id == selectedPointID ? 90 : 34)
+            .symbolSize(point.id == selectedPointID ? 64 : 24)
+            .foregroundStyle(metricColor.opacity(emphasis))
 
             if let selectedPoint, selectedPoint.id == point.id {
-                RuleMark(x: .value("Date", selectedPoint.date))
-                    .foregroundStyle(Color.secondary.opacity(0.4))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                    .annotation(position: .top, spacing: 6, overflowResolution: .init(x: .fit, y: .disabled)) {
-                        selectionCallout(for: selectedPoint)
-                    }
+                IronChartSelectionRule(date: selectedPoint.date)
             }
         }
-        .foregroundStyle(metricColor)
         .chartYScale(domain: 0...max((points.map(\.value).max() ?? 0) * 1.1, 1))
         .opacity(!reduceMotion || hasAppeared ? 1 : 0)
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
         .onAppear { hasAppeared = true }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: metricTitle)
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 3 : 5)) { value in
-                AxisGridLine()
-                AxisValueLabel {
-                    if let raw = value.as(Double.self) {
-                        Text(valueFormatter(raw))
-                    }
-                }
-            }
-        }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 3)) { value in
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-                if let date = value.as(Date.self), date == points.last?.date {
-                    AxisGridLine()
-                }
-            }
-        }
+        .ironValueAxis(.automatic(desiredCount: 3), label: valueFormatter)
+        .ironDateAxis(.automatic(desiredCount: 3), format: .dateTime.month(.abbreviated).day())
         .chartXSelection(value: Binding(
             get: { selectedPoint?.date },
             set: { newDate in
@@ -997,25 +1113,6 @@ private struct WorkoutPlanTrendChart: View {
         .accessibilityAdjustableAction(adjustSelection)
     }
 
-    private func selectionCallout(for point: WorkoutPlanTrendPoint) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(dateLabel(point.date))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            valueText(point.value)
-                .font(.ironMetric(.subheadline, weight: .semibold))
-                .foregroundStyle(metricColor)
-                .contentTransition(reduceMotion ? .opacity : .numericText())
-                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: point.id)
-            (Text("\(point.completedSets) sets · \(point.repetitions) reps").foregroundColor(IronTheme.metricSets)
-             + Text(" · ").foregroundColor(IronTheme.secondaryText)
-             + Text(durationLabel(point.duration)).foregroundColor(IronTheme.metricTime))
-                .font(.ironMetric(.caption2, weight: .semibold))
-        }
-        .padding(8)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .accessibilityHidden(true)
-    }
 }
 
 private struct WorkoutPlanDetailView: View {
@@ -1054,7 +1151,7 @@ private struct WorkoutPlanDetailView: View {
                 date: workout.start ?? .distantPast,
                 value: metricValue(for: workout),
                 duration: workout.duration,
-                totalVolume: workout.totalCompletedWeight ?? 0,
+                totalVolume: workout.trackedCompletedVolume,
                 completedSets: workout.numberOfCompletedSets ?? 0,
                 repetitions: totalRepetitions(for: workout)
             )
@@ -1062,7 +1159,7 @@ private struct WorkoutPlanDetailView: View {
     }
 
     private var totalVolume: Double {
-        completedWorkouts.reduce(0) { $0 + ($1.totalCompletedWeight ?? 0) }
+        completedWorkouts.reduce(0) { $0 + ($1.trackedCompletedVolume) }
     }
 
     private var latestWorkout: Workout? { completedWorkouts.first }
@@ -1110,9 +1207,9 @@ private struct WorkoutPlanDetailView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(Workout.dateFormatter.string(from: workout.start, fallback: "Unknown date"))
-                                (Text("\(workout.numberOfCompletedSets ?? 0) sets").foregroundColor(IronTheme.metricSets)
+                                (Text("^[\(workout.numberOfCompletedSets ?? 0) set](inflect: true)").foregroundColor(IronTheme.metricSets)
                                  + Text(" · ").foregroundColor(IronTheme.secondaryText)
-                                 + volumeText(workout.totalCompletedWeight ?? 0)
+                                 + volumeText(workout.trackedCompletedVolume)
                                  + Text(" · ").foregroundColor(IronTheme.secondaryText)
                                  + Text(workout.duration.flatMap { Workout.durationFormatter.string(from: $0) } ?? "—").foregroundColor(IronTheme.metricTime))
                                     .font(.ironMetric(.caption, weight: .semibold))
@@ -1151,12 +1248,7 @@ private struct WorkoutPlanDetailView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-
-                    metricValueText(latestWorkout.map(metricValue(for:)) ?? 0)
-                        .font(.ironMetric(.title2))
-                        .foregroundStyle(selectedMetric.color)
-                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedMetric)
-                        .contentTransition(reduceMotion ? .opacity : .numericText())
+                    .sensoryFeedback(.selection, trigger: selectedMetric) { _, _ in SettingsStore.shared.workoutHaptics }
 
                     WorkoutPlanTrendChart(
                         points: trendPoints,
@@ -1263,7 +1355,7 @@ private struct WorkoutPlanDetailView: View {
         switch selectedMetric {
         case .volume:
             return WeightUnit.convert(
-                weight: workout.totalCompletedWeight ?? 0,
+                weight: workout.trackedCompletedVolume,
                 from: .metric,
                 to: settingsStore.weightUnit
             )
@@ -1293,13 +1385,15 @@ private struct WorkoutPlanDetailView: View {
     }
 
     private func metricValueText(_ value: Double) -> Text {
-        if selectedMetric == .volume {
-            return Text(settingsStore.weightUnit.displayNumberFormatter.string(from: value as NSNumber) ?? "—")
-                .foregroundColor(IronTheme.metricVolume)
-                + Text(" " + settingsStore.weightUnit.unit.symbol)
-                    .font(.caption).foregroundColor(IronTheme.secondaryText)
+        switch selectedMetric {
+        case .volume:
+            return IronChartText.value(settingsStore.weightUnit.displayNumberFormatter.string(from: value as NSNumber) ?? "—",
+                                       unit: settingsStore.weightUnit.unit.symbol, tint: IronTheme.metricVolume)
+        case .repetitions:
+            return IronChartText.value(String(format: "%.0f", value), unit: "reps", tint: selectedMetric.color)
+        case .duration:
+            return IronChartText.value(chartValueLabel(value), tint: selectedMetric.color)
         }
-        return Text(chartValueLabel(value)).foregroundColor(selectedMetric.color)
     }
 
     private var latestWorkoutDate: String {
@@ -1550,31 +1644,27 @@ private struct RecentWorkoutRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+            : AnyLayout(HStackLayout(spacing: 12))
+        layout {
             Button(action: onViewDetails) {
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(title)
-                            .font(.headline)
-                            .foregroundStyle(IronTheme.primaryText)
-                        Text(metadata)
-                            .font(.subheadline)
-                            .foregroundStyle(IronTheme.secondaryText)
-                        WorkoutPreviewMetricLine(workout: workout)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(IronTheme.primaryText)
+                    Text(metadata)
+                        .font(.subheadline)
                         .foregroundStyle(IronTheme.secondaryText)
-                        .accessibilityHidden(true)
+                    WorkoutPreviewMetricLine(workout: workout)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("View details for \(title)")
 
-            HStack(spacing: 12) {
             Button { onRepeat(false) } label: {
                 Text("Repeat")
                     .font(.subheadline.weight(.bold))
@@ -1585,29 +1675,8 @@ private struct RecentWorkoutRow: View {
             .controlSize(.small)
             .frame(minHeight: IronTheme.controlHeight)
             .contentShape(Rectangle())
+            .fixedSize()
             .accessibilityLabel("Repeat \(title)")
-
-            Spacer(minLength: 0)
-            Menu {
-                Button("Save as Workout…", systemImage: "plus") {
-                    onSaveAsWorkout()
-                }
-                Button("Repeat", systemImage: "arrow.clockwise") {
-                    onRepeat(false)
-                }
-                Button("Repeat with Blank Sets", systemImage: "doc") {
-                    onRepeat(true)
-                }
-                Button("View Details", systemImage: "info.circle", action: onViewDetails)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(IronTheme.secondaryText)
-                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("More actions for \(title)")
-            }
         }
         .contextMenu {
             Button("Save as Workout…", systemImage: "plus", action: onSaveAsWorkout)
@@ -1635,7 +1704,7 @@ private struct WorkoutPreviewMetricLine: View {
     }
 
     var body: some View {
-        let value = WeightUnit.convert(weight: workout.totalCompletedWeight ?? 0, from: .metric, to: settingsStore.weightUnit)
+        let value = WeightUnit.convert(weight: workout.trackedCompletedVolume, from: .metric, to: settingsStore.weightUnit)
         let volume = WorkoutPreviewFormatting.volume(value)
         IronWorkoutMetricLine(
             duration: duration, sets: workout.numberOfCompletedSets ?? 0,

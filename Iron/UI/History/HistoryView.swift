@@ -30,6 +30,7 @@ struct HistoryView: View {
     @State private var trendMetric: HistoryTrendMetric = .duration
     @State private var selectedTimeFrame = WorkoutExerciseChartData.TimeFrame.month
     @State private var browseMode: HistoryBrowseMode = .workouts
+    @Namespace private var workoutDetailNamespace
 
     var body: some View {
         NavigationStack {
@@ -43,6 +44,7 @@ struct HistoryView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .sensoryFeedback(.selection, trigger: browseMode) { _, _ in settingsStore.workoutHaptics }
                     .textCase(nil)
                     .padding(.bottom, 4)
                 }
@@ -161,12 +163,11 @@ struct HistoryView: View {
                     ForEach(HistoryTrendMetric.allCases) { metric in Text(metric.title).tag(metric) }
                 }
                 .pickerStyle(.segmented)
-                trendMetric.headlineText(value: currentTrendValue, weightUnit: settingsStore.weightUnit)
-                    .font(.ironMetric(.title)).foregroundStyle(trendMetric.color)
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
                 HistoryTrendChart(points: trendPoints, metricTitle: trendMetric.title,
                     metricColor: trendMetric.color, weightUnit: settingsStore.weightUnit,
-                    valueLabel: { trendMetric.axisLabel(value: $0, weightUnit: settingsStore.weightUnit) })
+                    valueLabel: { trendMetric.axisLabel(value: $0, weightUnit: settingsStore.weightUnit) },
+                    headerValue: { trendMetric.headerText(value: $0, weightUnit: settingsStore.weightUnit) },
+                    axisTicks: trendMetric.axisTicks(maximum: trendPoints.map(\.value).max() ?? 0))
                 HStack {
                     Text("Period").font(.subheadline).foregroundStyle(IronTheme.secondaryText)
                     Spacer()
@@ -257,10 +258,21 @@ struct HistoryView: View {
     private func workoutHistoryLink(_ session: TrainingSessionSnapshot, recordSetIDs: Set<NSManagedObjectID>) -> some View {
         let workout = managedObjectContext.object(with: session.id) as! Workout
         return NavigationLink {
-            WorkoutDetailView(workout: workout)
-                .environmentObject(settingsStore)
+            if #available(iOS 18.0, *), !reduceMotion {
+                WorkoutDetailView(workout: workout)
+                    .environmentObject(settingsStore)
+                    .navigationTransition(.zoom(sourceID: workout.objectID, in: workoutDetailNamespace))
+            } else {
+                WorkoutDetailView(workout: workout)
+                    .environmentObject(settingsStore)
+            }
         } label: {
-            WorkoutHistoryRow(workout: workout, recordSetIDs: recordSetIDs)
+            if #available(iOS 18.0, *), !reduceMotion {
+                WorkoutHistoryRow(workout: workout, recordSetIDs: recordSetIDs)
+                    .matchedTransitionSource(id: workout.objectID, in: workoutDetailNamespace)
+            } else {
+                WorkoutHistoryRow(workout: workout, recordSetIDs: recordSetIDs)
+            }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button("Delete", systemImage: "trash", role: .destructive) {
@@ -584,10 +596,6 @@ struct HistoryView: View {
         )
     }
 
-    private var currentTrendValue: Double {
-        trendPoints.last?.value ?? 0
-    }
-
     private func share(_ workout: Workout) {
         guard let log = workout.logText(
             in: exerciseStore.exercises,
@@ -708,19 +716,28 @@ private enum HistoryTrendMetric: String, CaseIterable, Identifiable {
         }
     }
 
-    func headlineText(value: Double, weightUnit: WeightUnit) -> Text {
-        if self == .volume {
-            return Text(compact(value)).foregroundColor(IronTheme.metricVolume)
-                + Text(" " + weightUnit.unit.symbol).font(.caption).foregroundColor(IronTheme.secondaryText)
+    func headerText(value: Double, weightUnit: WeightUnit) -> Text {
+        switch self {
+        case .duration: return IronChartText.value(headline(value: value, weightUnit: weightUnit), tint: color)
+        case .volume: return IronChartText.value(compact(value), unit: weightUnit.unit.symbol, tint: color)
+        case .repetitions: return IronChartText.value("\(Int(value.rounded()))", unit: "reps", tint: color)
         }
-        return Text(headline(value: value, weightUnit: weightUnit))
+    }
+
+    /// Duration ticks land on whole hours (or round minutes for short spans).
+    func axisTicks(maximum: Double) -> [Double]? {
+        guard self == .duration, maximum > 0 else { return nil }
+        let steps: [Double] = [5, 10, 15, 30, 60, 120, 180, 300, 600].map { $0 * 60 }
+        let step = steps.first { maximum * 1.1 / $0 <= 4 } ?? 600 * 60
+        return Array(stride(from: 0, through: maximum * 1.1, by: step))
     }
 
     func axisLabel(value: Double, weightUnit: WeightUnit) -> String {
         switch self {
         case .duration:
-            let minutes = max(Int(value / 60), 0)
-            return minutes >= 60 ? String(format: "%.1fh", Double(minutes) / 60) : "\(minutes)m"
+            let minutes = max(Int((value / 60).rounded()), 0)
+            if minutes < 60 { return "\(minutes)m" }
+            return minutes % 60 == 0 ? "\(minutes / 60)h" : String(format: "%.1fh", Double(minutes) / 60)
         case .volume:
             return "\(compact(value)) \(weightUnit.unit.symbol)"
         case .repetitions:
@@ -729,8 +746,12 @@ private enum HistoryTrendMetric: String, CaseIterable, Identifiable {
     }
 
     private func compact(_ value: Double) -> String {
-        if value >= 1_000_000 { return String(format: "%.1fM", value / 1_000_000) }
-        if value >= 1_000 { return String(format: "%.1fk", value / 1_000) }
+        // "30k", not "30.0k".
+        func short(_ scaled: Double, _ suffix: String) -> String {
+            String(format: "%.1f", scaled).replacingOccurrences(of: ".0", with: "") + suffix
+        }
+        if value >= 1_000_000 { return short(value / 1_000_000, "M") }
+        if value >= 1_000 { return short(value / 1_000, "k") }
         return String(format: "%.0f", value)
     }
 }
@@ -757,6 +778,9 @@ private struct HistoryTrendChart: View {
     let metricColor: Color
     let weightUnit: WeightUnit
     let valueLabel: (Double) -> String
+    let headerValue: (Double) -> Text
+    /// Explicit tick values when automatic ones read badly (durations).
+    var axisTicks: [Double]? = nil
 
     @State private var hasAppeared = false
     @State private var selectedPointID: Date?
@@ -767,38 +791,37 @@ private struct HistoryTrendChart: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let shown = selectedPoint ?? points.last {
+                IronChartHeader(
+                    caption: "Total",
+                    value: headerValue(shown.value),
+                    detail: "\(periodLabel(for: shown)) · \(shown.workoutCount) workout\(shown.workoutCount == 1 ? "" : "s")"
+                )
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: shown.id)
+            }
+            chart
+        }
+    }
+
+    private var chart: some View {
         Chart(points) { point in
             BarMark(
                 x: .value("Period", point.id, unit: barUnit),
                 y: .value(metricTitle, hasAppeared || reduceMotion ? point.value : 0)
             )
-            .cornerRadius(4)
-            .foregroundStyle(barStyle(for: point))
-            .opacity(selectedPointID == nil || selectedPointID == point.id ? 1 : 0.4)
+            .cornerRadius(3)
+            .foregroundStyle(metricColor)
+            .opacity(IronChartEmphasis.opacity(isSelected: selectedPointID == point.id, hasSelection: selectedPointID != nil))
         }
         .chartYScale(domain: 0...max((points.map(\.value).max() ?? 0) * 1.1, 1))
         .opacity(!reduceMotion || hasAppeared ? 1 : 0)
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
         .onAppear { hasAppeared = true }
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 3 : 5)) { value in
-                AxisGridLine()
-                AxisValueLabel {
-                    if let raw = value.as(Double.self) {
-                        Text(valueLabel(raw))
-                            .font(.ironMetric(.footnote, weight: .semibold))
-                            .foregroundStyle(IronTheme.secondaryText)
-                    }
-                }
-            }
-        }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 4)) {
-                AxisValueLabel()
-                    .font(.footnote)
-                    .foregroundStyle(IronTheme.secondaryText)
-            }
-        }
+        .ironValueAxis(axisTicks.map { AxisMarkValues.stride(by: $0.count > 1 ? $0[1] - $0[0] : 1) } ?? .automatic(desiredCount: 3), label: valueLabel)
+        .ironDateAxis(.automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 4),
+                      format: barUnit == .month ? .dateTime.month(.abbreviated) : .dateTime.month(.abbreviated).day())
         .chartXSelection(value: Binding(
             get: { selectedPoint?.id },
             set: { newDate in
@@ -812,13 +835,7 @@ private struct HistoryTrendChart: View {
             }
         ))
         .ironHorizontalChartScrubbing { selectedPointID = nil }
-        .frame(height: dynamicTypeSize.isAccessibilitySize ? 260 : 150)
-        .overlay(alignment: .topTrailing) {
-            if let selectedPoint {
-                selectionCallout(for: selectedPoint)
-                    .transition(.opacity)
-            }
-        }
+        .frame(height: dynamicTypeSize.isAccessibilitySize ? 260 : 160)
         .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: selectedPointID)
         .sensoryFeedback(.selection, trigger: selectedPointID)
         .accessibilityElement(children: .ignore)
@@ -833,29 +850,6 @@ private struct HistoryTrendChart: View {
         if spacing > 60 * 60 * 24 * 20 { return .month }
         if spacing > 60 * 60 * 24 * 3 { return .weekOfYear }
         return .day
-    }
-
-    private func barStyle(for point: HistoryTrendPoint) -> Color {
-        point.isCurrent ? metricColor : metricColor.opacity(0.55)
-    }
-
-    private func selectionCallout(for point: HistoryTrendPoint) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(periodLabel(for: point))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(valueLabel(point.value))
-                .font(.ironMetric(.subheadline, weight: .semibold))
-                .foregroundStyle(metricColor)
-                .contentTransition(reduceMotion ? .opacity : .numericText())
-            Text("\(point.workoutCount) workout\(point.workoutCount == 1 ? "" : "s") · \(point.sets) sets · \(point.repetitions) reps")
-                .font(.ironMetric(.caption2, weight: .semibold))
-                .foregroundStyle(.secondary)
-        }
-        .padding(8)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 
     private func adjustSelection(_ direction: AccessibilityAdjustmentDirection) {
@@ -1007,7 +1001,7 @@ private struct WorkoutHistoryRow: View {
     }
 
     private var volumeNumber: String {
-        guard let volume = workout.totalCompletedWeight else { return "—" }
+        let volume = workout.trackedCompletedVolume
         let value = WeightUnit.convert(weight: volume, from: .metric, to: settingsStore.weightUnit)
         return value.formatted(.number.precision(.fractionLength(0)))
     }
@@ -1028,7 +1022,7 @@ private struct WorkoutHistoryRow: View {
             var recordCount = 0
             for set in exercise.workoutSets?.array as? [WorkoutSet] ?? [] where set.isCompleted {
                 setCount += 1
-                let setVolume = set.weightValue * Double(set.repetitionsValue)
+                let setVolume = set.trackedVolume
                 if setVolume.isFinite, setVolume > 0 { volume += setVolume }
                 if recordSetIDs.contains(set.objectID) { recordCount += 1 }
             }
@@ -1087,12 +1081,16 @@ private struct WorkoutHistoryRow: View {
     private func badges(records: Int) -> some View {
         HStack(spacing: 6) {
             if records > 0 {
-                Label("\(records) PR\(records == 1 ? "" : "s")", systemImage: "trophy.fill")
-                    .foregroundStyle(IronTheme.metricRecord)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(IronTheme.metricRecordContainer, in: Capsule())
-                    .accessibilityLabel("\(records) personal record\(records == 1 ? "" : "s")")
+                HStack(spacing: 4) {
+                    Image(systemName: "trophy.fill")
+                    Text("\(records) PR\(records == 1 ? "" : "s")")
+                }
+                .foregroundStyle(IronTheme.metricRecord)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(IronTheme.metricRecordContainer, in: Capsule())
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(records) personal record\(records == 1 ? "" : "s")")
             }
             if let effort = workout.sessionEffortValue, effort > 0 {
                 Text("RPE \(Int(effort))")
@@ -1104,7 +1102,9 @@ private struct WorkoutHistoryRow: View {
             }
         }
         .font(.ironMetric(.caption, weight: .semibold))
-        .fixedSize(horizontal: false, vertical: true)
+        .lineLimit(1)
+        // Badges never compress: the title wraps first, then they drop below it.
+        .fixedSize()
     }
 }
 

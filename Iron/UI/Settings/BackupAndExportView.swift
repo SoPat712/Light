@@ -45,12 +45,9 @@ struct BackupAndExportView: View {
         if settingsStore.autoBackup {
             strings.append("Light attempts an automatic backup when iOS closes the app.")
         }
-        strings.append("Backups are stored in Light's app folder in your iCloud Drive. Only the last backup of each day is kept, and the files are also available from the Files app.")
-        if let creationDate = backupStore.lastBackup?.creationDate {
-            strings.append("Last backup: " + BackupFileStore.BackupFile.dateFormatter.string(from: creationDate))
-        }
+        strings.append("Backups are in Light’s iCloud Drive folder and the Files app; only the last backup each day is kept.")
 
-        return strings.joined(separator: "\n")
+        return strings.joined(separator: " ")
     }
 
     var body: some View {
@@ -66,42 +63,16 @@ struct BackupAndExportView: View {
                     isReplacingImport = false
                     isShowingCSVImporter = true
                 }) {
-                    Label("Choose CSV from Files", systemImage: "folder")
+                    SettingsSubpageLabel("Choose CSV from Files", systemImage: "folder.fill", tint: IronTheme.metricVolume)
                 }
+                .buttonStyle(.plain)
             } header: {
                 Text("Import")
             } footer: {
                 Text("Choose workout_data.csv, measurement_data.csv, or both. Light detects each file automatically.")
             }
 
-            Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Hevy").font(.body)
-                    Text("\(importedWorkouts.count.formatted()) workouts")
-                        .font(.ironMetric(.subheadline, weight: .semibold))
-                    Text(importedDateRange)
-                        .font(.caption)
-                        .foregroundStyle(IronTheme.secondaryText)
-                }
-                .accessibilityElement(children: .combine)
-
-                Button("Replace with New Export…", systemImage: "arrow.triangle.2.circlepath") {
-                    isReplacingImport = true
-                    isShowingCSVImporter = true
-                }
-                Button("Remove Imported Workouts", systemImage: "trash", role: .destructive) {
-                    showingRemoveConfirmation = true
-                }
-                .tint(IronTheme.danger)
-                // ironScreen supplies the legacy accent environment used by
-                // native List label icons; override it for this destructive row.
-                .accentColor(IronTheme.danger)
-                .disabled(importedWorkouts.isEmpty)
-            } header: {
-                Text("Imported Data")
-            } footer: {
-                Text("Workouts you logged in Light and body measurements are kept. Imported workouts are never exported to Apple Health.")
-            }
+            importedDataSection
 
             Section {
                 nativeSummaryRow(
@@ -111,32 +82,40 @@ struct BackupAndExportView: View {
                 )
 
                 Button(action: exportHevyWorkoutCSV) {
-                    Label("Workouts (Hevy CSV)", systemImage: "tablecells")
+                    SettingsSubpageLabel("Workouts (Hevy CSV)", systemImage: "tablecells", tint: IronTheme.accent)
                 }
+                .buttonStyle(.plain)
                 Button(action: exportHevyMeasurementCSV) {
-                    Label("Measurements (Hevy CSV)", systemImage: "ruler")
+                    SettingsSubpageLabel("Measurements (Hevy CSV)", systemImage: "ruler", tint: IronTheme.metricBody)
                 }
+                .buttonStyle(.plain)
 
-                Menu {
-                    Button(action: exportWorkoutDataJSON) {
-                        Label("JSON", systemImage: "curlybraces")
-                    }
-                    Button(action: exportWorkoutDataText) {
-                        Label("Plain Text", systemImage: "doc.plaintext")
-                    }
-                } label: {
-                    Label("Other export formats", systemImage: "ellipsis.circle")
+                Button(action: exportWorkoutDataJSON) {
+                    SettingsSubpageLabel("JSON", systemImage: "curlybraces", tint: IronTheme.metricVolume)
                 }
+                .buttonStyle(.plain)
+                Button(action: exportWorkoutDataText) {
+                    SettingsSubpageLabel("Plain Text", systemImage: "doc.plaintext", tint: IronTheme.metricVolume)
+                }
+                .buttonStyle(.plain)
 
                 Button(action: createAndShareBackup) {
-                    Label("Share Full Backup", systemImage: "archivebox")
+                    SettingsSubpageLabel("Share Full Backup", systemImage: "archivebox.fill", tint: IronTheme.metricVolume)
                 }
+                .buttonStyle(.plain)
             } header: {
                 Text("Export")
             }
 
             Section {
                 nativeCloudBackupContent
+                if let creationDate = backupStore.lastBackup?.creationDate {
+                    LabeledContent("Last Backup") {
+                        Text(BackupFileStore.BackupFile.dateFormatter.string(from: creationDate))
+                            .font(.ironMetric(.body, weight: .semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             } header: {
                 Text("iCloud Backup")
             } footer: {
@@ -200,6 +179,59 @@ struct BackupAndExportView: View {
         }
     }
 
+    private var importedDataSection: some View {
+        Section {
+            importedSummary
+
+            Button {
+                isReplacingImport = true
+                isShowingCSVImporter = true
+            } label: {
+                SettingsSubpageLabel("Replace with New Export…", systemImage: "arrow.triangle.2.circlepath", tint: IronTheme.metricVolume)
+            }
+            .buttonStyle(.plain)
+            Button(role: .destructive) {
+                showingRemoveConfirmation = true
+            } label: {
+                HStack(spacing: 12) {
+                    SettingsSubpageIconTile(systemImage: "trash.fill", tint: IronTheme.danger)
+                    Text("Remove Imported Workouts")
+                        .font(.body)
+                        .foregroundStyle(IronTheme.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .tint(IronTheme.danger)
+            // ironScreen supplies the legacy accent environment used by
+            // native List label icons; override it for this destructive row.
+            .accentColor(IronTheme.danger)
+            .disabled(importedWorkouts.isEmpty)
+        } header: {
+            Text("Imported Data")
+        } footer: {
+            Text("Workouts you logged in Light and body measurements are kept. Imported workouts are never exported to Apple Health.")
+        }
+    }
+
+    private var importedSummary: some View {
+        let count = importedWorkouts.count.formatted()
+        let unit = importedWorkouts.count == 1 ? "workout" : "workouts"
+        return (
+            Text("Hevy · ").foregroundColor(IronTheme.primaryText)
+                + Text(count).font(.ironMetric(.body, weight: .semibold))
+                    .foregroundColor(IronTheme.primaryText)
+                + Text(" \(unit) · \(importedDateRange)").foregroundColor(IronTheme.secondaryText)
+        )
+        .font(.body)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityLabel("Hevy, \(count) \(unit), \(importedDateRange)")
+    }
+
     private var importedDateRange: String {
         guard let first = importedWorkouts.first?.start, let last = importedWorkouts.last?.start else {
             return "No imported workouts"
@@ -225,113 +257,53 @@ struct BackupAndExportView: View {
         detail: String,
         systemImage: String
     ) -> some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.body)
-                    .foregroundColor(IronTheme.primaryText)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } icon: {
-            Image(systemName: systemImage)
-                .font(.body.weight(.semibold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 28)
-        }
-        .padding(.vertical, 2)
+        SettingsSubpageLabel(title, detail: detail, systemImage: systemImage, tint: IronTheme.metricVolume)
     }
 
     @ViewBuilder
     private var nativeCloudBackupContent: some View {
         switch backupStore.loadState {
         case .idle, .loading:
-            Label {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Checking iCloud Drive")
-                    Text("Looking for Light backups saved by your devices…")
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-            } icon: {
+            HStack(spacing: 12) {
+                SettingsSubpageLabel("Checking iCloud Drive", detail: "Looking for Light backups saved by your devices…",
+                                     systemImage: "icloud.fill")
                 ProgressView()
             }
 
         case .unavailable(let message):
-            Label {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("iCloud Drive unavailable")
-                    Text(message)
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } icon: {
-                Image(systemName: "icloud.slash")
-                    .foregroundColor(IronTheme.warning)
-            }
+            SettingsSubpageLabel("iCloud Drive unavailable", detail: message,
+                                 systemImage: "icloud.slash", tint: IronTheme.warning)
 
             Button(action: backupStore.fetchBackups) {
-                Label("Try iCloud Again", systemImage: "arrow.clockwise")
+                SettingsSubpageLabel("Try iCloud Again", systemImage: "arrow.clockwise")
             }
+            .buttonStyle(.plain)
 
         case .loaded:
             if backupStore.lastBackup != nil {
                 NavigationLink(destination: RestoreBackupView(backupStore: backupStore)) {
-                    Label {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Restore from iCloud")
-                            Text(restoreAvailabilityText)
-                                .font(.caption)
-                                .foregroundColor(IronTheme.secondaryText)
-                        }
-                    } icon: {
-                        Image(systemName: "arrow.counterclockwise.icloud")
-                            .foregroundColor(IronTheme.accent)
-                    }
+                    SettingsSubpageLabel("Restore from iCloud", detail: restoreAvailabilityText,
+                                         systemImage: "arrow.counterclockwise.icloud")
                 }
             } else {
-                Label {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Restore from iCloud")
-                        Text("No saved backups yet")
-                            .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
-                    }
-                } icon: {
-                    Image(systemName: "icloud.slash")
-                        .foregroundColor(IronTheme.tertiaryText)
-                }
-                .foregroundColor(IronTheme.secondaryText)
+                SettingsSubpageLabel("Restore from iCloud", detail: "No saved backups yet",
+                                     systemImage: "icloud.slash", tint: IronTheme.secondaryText)
             }
 
             Toggle(isOn: $settingsStore.autoBackup) {
-                Label {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Automatic backups")
-                        Text("Attempt a backup when Light closes")
-                            .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
-                    }
-                } icon: {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .foregroundColor(settingsStore.autoBackup ? IronTheme.accent : IronTheme.secondaryText)
-                }
+                SettingsSubpageLabel("Automatic backups", detail: "Attempt a backup when Light closes",
+                                     systemImage: "clock.arrow.circlepath")
             }
             .tint(IronTheme.accent)
 
             Button(action: createCloudBackup) {
-                HStack(spacing: 8) {
-                    if isCreatingCloudBackup {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "icloud.and.arrow.up")
-                    }
-                    Text(isCreatingCloudBackup ? "Creating Backup…" : "Back Up Now")
+                HStack(spacing: 12) {
+                    SettingsSubpageLabel(isCreatingCloudBackup ? "Creating Backup…" : "Back Up Now",
+                                         systemImage: "icloud.and.arrow.up")
+                    if isCreatingCloudBackup { ProgressView() }
                 }
             }
+            .buttonStyle(.plain)
             .disabled(isCreatingCloudBackup)
         }
     }

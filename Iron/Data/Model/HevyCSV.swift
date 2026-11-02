@@ -169,7 +169,8 @@ enum HevyImportedWorkouts {
     static func delete(_ workouts: [Workout], in context: NSManagedObjectContext) {
         for workout in workouts {
             precondition(workout.importSource == "hevy")
-            assert(workout.healthExportEligibility == .imported)
+            assert(workout.healthExportEligibility == .imported,
+                   "Imported-data removal must never delete an Apple Health workout.")
             context.delete(workout)
         }
     }
@@ -218,7 +219,8 @@ enum HevyCSV {
         return formatter
     }()
 
-    private struct WorkoutKey: Hashable {
+    /// Shared by CSV grouping and the legacy title-based duplicate check.
+    struct WorkoutKey: Hashable {
         let startSecond: TimeInterval
         let normalizedTitle: String
     }
@@ -1004,7 +1006,7 @@ enum HevyCSV {
         return runs
     }
 
-    private static func workoutKey(start: Date, title: String) -> WorkoutKey {
+    static func workoutKey(start: Date, title: String) -> WorkoutKey {
         WorkoutKey(
             startSecond: start.timeIntervalSince1970.rounded(),
             normalizedTitle: normalizedName(title.isEmpty ? "Workout" : title)
@@ -1204,7 +1206,8 @@ struct HevyCSVImportResultSheet: View {
 }
 
 /// Runs Hevy imports with visible progress. Parsing happens on a background
-/// task; the Core Data save stays on the main context it always used.
+/// task; removal and replacement save on a sibling private context, then merge
+/// into the UI context before reporting success.
 @MainActor
 final class HevyImportController: ObservableObject {
     enum Phase: Equatable {
@@ -1348,7 +1351,7 @@ struct HevyImportProgressOverlay: View {
                     .foregroundStyle(IronTheme.secondaryText)
             }
             .multilineTextAlignment(.center)
-            .padding(28)
+            .padding(24)
             .frame(maxWidth: 300)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
         }

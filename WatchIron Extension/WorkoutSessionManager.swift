@@ -71,7 +71,7 @@ class WorkoutSessionManager: NSObject, ObservableObject {
     }
     var startDate: Date? {
         get {
-            _startDate ?? workoutBuilder.startDate
+            _startDate ?? workoutBuilder?.startDate
         }
         set {
             assert(newValue != nil)
@@ -93,7 +93,7 @@ class WorkoutSessionManager: NSObject, ObservableObject {
     }
     var endDate: Date? {
         get {
-            _endDate ?? workoutBuilder.endDate
+            _endDate ?? workoutBuilder?.endDate
         }
         set {
             if newValue != endDate {
@@ -105,28 +105,94 @@ class WorkoutSessionManager: NSObject, ObservableObject {
         }
     }
     
-    private let workoutSession: HKWorkoutSession
-    private let workoutBuilder: HKLiveWorkoutBuilder
+    private var workoutSession: HKWorkoutSession?
+    private var workoutBuilder: HKLiveWorkoutBuilder?
     private var recoveredWorkoutID: UUID?
-    private var pendingEnd: (date: Date, completion: (Result<HKWorkout, Error>) -> Void)?
+    private var pendingEnd: (date: Date, completion: (Result<HKWorkout?, Error>) -> Void)?
     private var isFinalizingCollection = false
     private var isSavingWorkout = false
+
+    /// Checked only by the session queue when recovery callbacks race with an
+    /// already installed manager. No UI or HealthKit mutation is performed.
+    func manages(_ session: HKWorkoutSession) -> Bool {
+        dispatchPrecondition(condition: .onQueue(Self.accessQueue))
+        return workoutSession === session
+    }
+    private(set) var healthTestMode = false
+    // Retained to recognize sessions created by the earlier debug implementation.
+    static let healthTestMetadataKey = "Iron.healthTestMode"
+    #if DEBUG
+    private var localState: HKWorkoutSessionState = .notStarted
+    private var localWorkoutID: UUID?
+    #endif
 
     var isFinalizingWorkout: Bool { pendingEnd != nil || isFinalizingCollection || isSavingWorkout }
     
     init(session: HKWorkoutSession) {
+        let builder = session.associatedWorkoutBuilder()
         workoutSession = session
-        workoutBuilder = session.associatedWorkoutBuilder()
+        workoutBuilder = builder
         
         super.init()
         
-        workoutSession.delegate = self
-        workoutBuilder.delegate = self
+        session.delegate = self
+        builder.delegate = self
         
         // needs to be set again after active workout session recovery
-        workoutBuilder.dataSource = HKLiveWorkoutDataSource(healthStore: Self.healthStore, workoutConfiguration: workoutSession.workoutConfiguration)
-        os_log("Types to collect: %@", type: .debug, workoutBuilder.dataSource?.typesToCollect ?? "nil")
+        builder.dataSource = HKLiveWorkoutDataSource(healthStore: Self.healthStore,
+            workoutConfiguration: session.workoutConfiguration)
+        os_log("Types to collect: %@", type: .debug, builder.dataSource?.typesToCollect ?? "nil")
     }
+
+    #if DEBUG
+    /// No HealthKit session, builder, data source, or authorization request.
+    init(localWorkoutID: UUID? = nil, start: Date? = nil,
+         state: HKWorkoutSessionState = .prepared) {
+        healthTestMode = true
+        self.localWorkoutID = localWorkoutID
+        localState = state
+        _startDate = start
+        super.init()
+    }
+
+    /// Enabling the preference during recording ends/discards HealthKit at once.
+    /// A test workout can never resume sensor recording after the flag is off.
+    func setHealthTestMode(_ enabled: Bool) {
+        dispatchPrecondition(condition: .onQueue(Self.accessQueue))
+        guard enabled, !healthTestMode else { return }
+        localWorkoutID = uuid
+        localState = state
+        _startDate = startDate
+        _endDate = endDate
+        healthTestMode = true
+        let session = workoutSession
+        let builder = workoutBuilder
+        workoutSession = nil
+        workoutBuilder = nil
+        session?.delegate = nil
+        builder?.delegate = nil
+        session?.end()
+        builder?.discardWorkout()
+        _burnedCalories = nil
+        _mostRecentHeartRate = nil
+        _mostRecentHeartRateDate = nil
+        if let pendingEnd {
+            self.pendingEnd = nil
+            isFinalizingCollection = false
+            isSavingWorkout = false
+            _endDate = pendingEnd.date
+            localState = .ended
+            pendingEnd.completion(.success(nil))
+        }
+        publishLocalState()
+    }
+
+    private func publishLocalState() {
+        DispatchQueue.main.async { self.objectWillChange.send() }
+        publishLiveMetrics()
+        WorkoutSessionManagerStore.shared.notifySyncStateChanged()
+    }
+    #endif
     
     // make sure everything that modifies the session or the builder runs on this serial queue
     static let accessQueue = DispatchQueue(label: "com.kabouzeid.workoutsessionmanagerqueue", qos: .userInitiated, target: .global(qos: .userInitiated))
@@ -144,21 +210,35 @@ class WorkoutSessionManager: NSObject, ObservableObject {
     }
     
     var state: HKWorkoutSessionState {
-        workoutSession.state
+        #if DEBUG
+        if healthTestMode { return localState }
+        #endif
+        return workoutSession?.state ?? .ended
     }
     
     var workoutConfiguration: HKWorkoutConfiguration {
-        workoutSession.workoutConfiguration
+        workoutSession?.workoutConfiguration ?? HKWorkoutConfiguration()
     }
 
     func togglePause() {
         dispatchPrecondition(condition: .onQueue(Self.accessQueue))
-        if state == .running { workoutSession.pause() }
-        else if state == .paused { workoutSession.resume() }
+        #if DEBUG
+        if healthTestMode {
+            if localState == .running { localState = .paused }
+            else if localState == .paused { localState = .running }
+            publishLocalState()
+            return
+        }
+        #endif
+        if state == .running { workoutSession?.pause() }
+        else if state == .paused { workoutSession?.resume() }
     }
     
     var uuid: UUID? {
-        if let uuidString = workoutBuilder.metadata[HKMetadataKeyExternalUUID] as? String,
+        #if DEBUG
+        if healthTestMode { return localWorkoutID }
+        #endif
+        if let uuidString = workoutBuilder?.metadata[HKMetadataKeyExternalUUID] as? String,
            let uuid = UUID(uuidString: uuidString) { return uuid }
         return recoveredWorkoutID
     }
@@ -181,11 +261,19 @@ class WorkoutSessionManager: NSObject, ObservableObject {
                 self.objectWillChange.send()
             }
         }
+        #if DEBUG
+        if healthTestMode {
+            localWorkoutID = uuid
+            return
+        }
+        #endif
+        guard let workoutBuilder else { throw GenericError(description: "No workout builder is available.") }
         
         try Self.requestWorkoutPermissions().get() // request permissions -- apparently needed for addMetadata
         let uuidSemaphore = DispatchSemaphore(value: 0)
         var uuidError: Error?
-        workoutBuilder.addMetadata([HKMetadataKeyExternalUUID : uuid.uuidString], completion: { (success, error) in
+        let metadata: [String: Any] = [HKMetadataKeyExternalUUID: uuid.uuidString]
+        workoutBuilder.addMetadata(metadata, completion: { (success, error) in
             defer { uuidSemaphore.signal() }
             if !success {
                 uuidError = error ?? NSError()
@@ -200,6 +288,10 @@ class WorkoutSessionManager: NSObject, ObservableObject {
     func setTitle(_ title: String) throws { // there doesn't seem to be a way to undo this
         print(#function)
         dispatchPrecondition(condition: DispatchPredicate.onQueue(Self.accessQueue))
+        #if DEBUG
+        if healthTestMode { return }
+        #endif
+        guard let workoutBuilder else { throw GenericError(description: "No workout builder is available.") }
         
         try Self.requestWorkoutPermissions().get() // request permissions -- apparently needed for addMetadata
         let semaphore = DispatchSemaphore(value: 0)
@@ -237,7 +329,14 @@ class WorkoutSessionManager: NSObject, ObservableObject {
         dispatchPrecondition(condition: DispatchPredicate.onQueue(Self.accessQueue))
         
         // prepare the workout
-        workoutSession.prepare()
+        #if DEBUG
+        if healthTestMode {
+            localState = .prepared
+            publishLocalState()
+            return
+        }
+        #endif
+        workoutSession?.prepare()
     }
     
     /**
@@ -246,6 +345,19 @@ class WorkoutSessionManager: NSObject, ObservableObject {
     func start(start: Date, completion: @escaping (Result<Void, Error>) -> Void) {
         print(#function)
         dispatchPrecondition(condition: DispatchPredicate.onQueue(Self.accessQueue))
+        #if DEBUG
+        if healthTestMode {
+            _startDate = start
+            localState = .running
+            publishLocalState()
+            completion(.success(()))
+            return
+        }
+        #endif
+        guard let workoutSession, let workoutBuilder else {
+            completion(.failure(GenericError(description: "No workout session is available.")))
+            return
+        }
         
         // request permissions
         do {
@@ -286,13 +398,29 @@ class WorkoutSessionManager: NSObject, ObservableObject {
         pendingEnd = nil
         isFinalizingCollection = false
         isSavingWorkout = false
-        workoutSession.end()
-        workoutBuilder.discardWorkout()
+        #if DEBUG
+        if healthTestMode {
+            localState = .ended
+            publishLocalState()
+        }
+        #endif
+        workoutSession?.end()
+        workoutBuilder?.discardWorkout()
         endCompletion?(.failure(GenericError(description: "The workout was discarded while saving.")))
     }
     
-    func end(end: Date, completion: @escaping (Result<HKWorkout, Error>) -> Void) {
+    /// A successful test finish deliberately has no saved HKWorkout.
+    func end(end: Date, completion: @escaping (Result<HKWorkout?, Error>) -> Void) {
         dispatchPrecondition(condition: DispatchPredicate.onQueue(Self.accessQueue))
+        #if DEBUG
+        if healthTestMode {
+            _endDate = end
+            localState = .ended
+            publishLocalState()
+            completion(.success(nil))
+            return
+        }
+        #endif
         guard pendingEnd == nil else {
             completion(.failure(GenericError(description: "The workout is already being saved.")))
             return
@@ -307,28 +435,29 @@ class WorkoutSessionManager: NSObject, ObservableObject {
         } else {
             // Keep the session alive until the builder has saved its final
             // sensor samples. The delegate continues only after `.stopped`.
-            workoutSession.stopActivity(with: end)
+            workoutSession?.stopActivity(with: end)
         }
     }
 
     private func finalizeStoppedWorkout() {
         dispatchPrecondition(condition: .onQueue(Self.accessQueue))
-        guard let pendingEnd, !isFinalizingCollection else { return }
+        guard let pendingEnd, let workoutBuilder, !isFinalizingCollection else { return }
         isFinalizingCollection = true
         workoutBuilder.endCollection(withEnd: pendingEnd.date) { success, error in
             Self.perform {
-                guard self.pendingEnd != nil, !self.isSavingWorkout else { return }
+                guard self.pendingEnd != nil, self.workoutBuilder === workoutBuilder,
+                      !self.isSavingWorkout else { return }
                 guard success else {
                     self.completeEnd(.failure(error ?? GenericError(description: "Could not finish collecting workout samples.")))
                     return
                 }
                 // Read final statistics rather than assuming a last delegate
                 // callback refreshed the UI's cached energy/heart rate.
-                self.burnedCalories = self.getBurnedCalories(workoutBuilder: self.workoutBuilder)
-                self.mostRecentHeartRate = self.getMostRecentHeartRate(workoutBuilder: self.workoutBuilder)
-                self.mostRecentHeartRateDate = self.getMostRecentHeartRateDate(workoutBuilder: self.workoutBuilder)
+                self.burnedCalories = self.getBurnedCalories(workoutBuilder: workoutBuilder)
+                self.mostRecentHeartRate = self.getMostRecentHeartRate(workoutBuilder: workoutBuilder)
+                self.mostRecentHeartRateDate = self.getMostRecentHeartRateDate(workoutBuilder: workoutBuilder)
                 self.isSavingWorkout = true
-                self.workoutBuilder.finishWorkout { workout, error in
+                workoutBuilder.finishWorkout { workout, error in
                     Self.perform {
                         guard self.pendingEnd != nil else { return }
                         if let workout {
@@ -345,13 +474,13 @@ class WorkoutSessionManager: NSObject, ObservableObject {
         }
     }
 
-    private func completeEnd(_ result: Result<HKWorkout, Error>) {
+    private func completeEnd(_ result: Result<HKWorkout?, Error>) {
         dispatchPrecondition(condition: .onQueue(Self.accessQueue))
         guard let completion = pendingEnd?.completion else { return }
         pendingEnd = nil
         isFinalizingCollection = false
         isSavingWorkout = false
-        workoutSession.end()
+        workoutSession?.end()
         DispatchQueue.main.async { self.objectWillChange.send() }
         completion(result)
     }
@@ -364,6 +493,7 @@ extension WorkoutSessionManager: HKLiveWorkoutBuilderDelegate {
     
     func workoutBuilder(_ workoutBuilder: HKLiveWorkoutBuilder, didCollectDataOf collectedTypes: Set<HKSampleType>) {
         Self.perform {
+            guard self.workoutBuilder === workoutBuilder else { return }
             if let heartRate = HKQuantityType.quantityType(forIdentifier: .heartRate),
                collectedTypes.contains(heartRate) {
                 self.mostRecentHeartRate = self.getMostRecentHeartRate(workoutBuilder: workoutBuilder)
@@ -408,10 +538,11 @@ extension WorkoutSessionManager {
     
     var burnedCalories: Double? {
         get {
+            if healthTestMode { return nil }
             if let burnedCalories = _burnedCalories {
                 return burnedCalories
             }
-            guard let burnedCalories = getBurnedCalories(workoutBuilder: workoutBuilder) else { return nil }
+            guard let workoutBuilder, let burnedCalories = getBurnedCalories(workoutBuilder: workoutBuilder) else { return nil }
             _burnedCalories = burnedCalories
             return burnedCalories
         }
@@ -422,10 +553,11 @@ extension WorkoutSessionManager {
     
     var mostRecentHeartRate: Double? {
         get {
+            if healthTestMode { return nil }
             if let mostRecentHeartRate = _mostRecentHeartRate {
                 return mostRecentHeartRate
             }
-            guard let mostRecentHeartRate = getMostRecentHeartRate(workoutBuilder: workoutBuilder) else { return nil }
+            guard let workoutBuilder, let mostRecentHeartRate = getMostRecentHeartRate(workoutBuilder: workoutBuilder) else { return nil }
             _mostRecentHeartRate = mostRecentHeartRate
             return mostRecentHeartRate
         }
@@ -436,10 +568,11 @@ extension WorkoutSessionManager {
     
     var mostRecentHeartRateDate: Date? {
         get {
+            if healthTestMode { return nil }
             if let mostRecentHeartRateDate = _mostRecentHeartRateDate {
                 return mostRecentHeartRateDate
             }
-            guard let mostRecentHeartRateDate = getMostRecentHeartRateDate(workoutBuilder: workoutBuilder) else { return nil }
+            guard let workoutBuilder, let mostRecentHeartRateDate = getMostRecentHeartRateDate(workoutBuilder: workoutBuilder) else { return nil }
             _mostRecentHeartRateDate = mostRecentHeartRateDate
             return mostRecentHeartRateDate
         }
@@ -453,13 +586,12 @@ extension WorkoutSessionManager: HKWorkoutSessionDelegate {
     func workoutSession(_ workoutSession: HKWorkoutSession, didChangeTo toState: HKWorkoutSessionState, from fromState: HKWorkoutSessionState, date: Date) {
         os_log("Workout session state changed to %@ from %@", toState.name, fromState.name)
         
-        DispatchQueue.main.async {
-            self.objectWillChange.send()
-        }
-        Self.perform { self.publishLiveMetrics() }
-        WorkoutSessionManagerStore.shared.notifySyncStateChanged()
-        if toState == .stopped {
-            Self.perform { self.finalizeStoppedWorkout() }
+        Self.perform {
+            guard self.workoutSession === workoutSession else { return }
+            DispatchQueue.main.async { self.objectWillChange.send() }
+            self.publishLiveMetrics()
+            WorkoutSessionManagerStore.shared.notifySyncStateChanged()
+            if toState == .stopped { self.finalizeStoppedWorkout() }
         }
     }
     
@@ -470,6 +602,7 @@ extension WorkoutSessionManager: HKWorkoutSessionDelegate {
         // HealthKit's failed session. The local projection remains available
         // for the user to retry or discard explicitly.
         WorkoutSessionManager.perform {
+            guard self.workoutSession === workoutSession else { return }
             if self.pendingEnd != nil {
                 self.completeEnd(.failure(error))
             } else {

@@ -31,8 +31,9 @@ struct IronApp: App {
                     if ProcessInfo.processInfo.arguments.contains("--watch-aod-demo") { reasons.insert(.privacy) }
                 }
                 #endif
+                // Native toolbars choose their own neutral glass treatment.
+                // In-content primary actions opt into Iron blue individually.
                 .preferredColorScheme(.dark)
-                .tint(IronTheme.accent)
         }
     }
 }
@@ -125,27 +126,126 @@ class AppDelegate: NSObject, WKApplicationDelegate {
 
 #if DEBUG && targetEnvironment(simulator)
 /// Disposable simulator fixtures. Never present in a device or Release build.
-private enum WatchFocusDemo {
+enum WatchFocusDemo {
+    /// Flow fixtures must run at the root: a restored Rest destination can
+    /// cover the workout page before that page ever receives onAppear.
+    static func openFlowIfRequested(snapshot: WatchWorkoutSnapshot, navigation: WatchNavigation) {
+        let args = ProcessInfo.processInfo.arguments
+        guard let flag = args.firstIndex(of: "--light-watch-demo"), args.indices.contains(flag + 1),
+              ["after-log", "rpe-auto", "after-rest"].contains(args[flag + 1]),
+              let logged = snapshot.completedSets.first else { return }
+        navigation.showFlowDemo(in: snapshot, after: logged.id, asksRPE: args[flag + 1] != "after-rest")
+        if args.contains("--demo-flow-back") {
+            Task { @MainActor [weak navigation] in
+                guard let navigation else { return }
+                for await path in navigation.$path.values {
+                    guard path.count == 3, path.first == .workout, path.last == .rest,
+                          case .rpe = path[1] else { continue }
+                    do { try await Task.sleep(nanoseconds: 2_000_000_000) }
+                    catch { return }
+                    guard navigation.path == path, navigation.restHasRPEBack else { return }
+                    navigation.path.removeLast()
+                    return
+                }
+            }
+        }
+    }
+
+    /// Debug destinations stay local; no production navigation case is needed.
+    enum LocalRoute: Hashable {
+        case notes(UUID), plates(UUID), trackingType(UUID)
+    }
+
+    static func openRootRouteIfRequested(library: WatchWorkoutLibrary, navigation: WatchNavigation) {
+        let args = ProcessInfo.processInfo.arguments
+        guard let flag = args.firstIndex(of: "--light-watch-demo"), args.indices.contains(flag + 1) else { return }
+        switch args[flag + 1] {
+        case "home": navigation.path = []
+        case "saved": navigation.path = [.saved]
+        case "saved-detail":
+            if let workout = library.savedWorkouts.first { navigation.path = [.saved, .savedDetail(workout.id)] }
+        case "saved-editor":
+            if let workout = library.savedWorkouts.first { navigation.path = [.saved, .editSaved(workout.id)] }
+        case "history": navigation.path = [.history]
+        case "history-detail":
+            if let workout = library.history.first { navigation.path = [.history, .historyDetail(workout.workoutID)] }
+        case "settings": navigation.path = [.settings]
+        case "summary":
+            navigation.savedWorkout = library.history.first
+            navigation.path = [.done]
+        default: break
+        }
+    }
+
+    static func openRouteIfRequested(snapshot: WatchWorkoutSnapshot, navigation: WatchNavigation) -> LocalRoute? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let flag = args.firstIndex(of: "--light-watch-demo"), args.indices.contains(flag + 1),
+              navigation.path == [.workout] || navigation.path == [.workout, .rest] else { return nil }
+        let mode = args[flag + 1]
+        if ["after-log", "rpe-auto", "after-rest"].contains(mode) { return nil }
+        guard navigation.path == [.workout],
+              let exercise = snapshot.nextSet?.exercise ?? snapshot.exercises.first,
+              let set = snapshot.nextSet?.set ?? exercise.sets.first else { return nil }
+        switch mode {
+        case "active", "now": navigation.workoutPage = .now
+        case "notes": return .notes(snapshot.exercises.first?.id ?? exercise.id)
+        case "plates": return .plates(exercise.id)
+        case "tracking-type": return .trackingType(exercise.id)
+        case "rpe", "rpe-manual": navigation.path.append(.rpe(exercise.id, set.id))
+        case "rest-picker": navigation.path.append(.restTimer(exercise.id))
+        case "warmup": navigation.path.append(.warmup(exercise.id))
+        case "effort": navigation.path.append(.effort)
+        case "controls": navigation.workoutPage = .controls
+        case "exercises": navigation.workoutPage = .exercises
+        case "exercise": navigation.path.append(.exercise(exercise.id))
+        case "options": navigation.path.append(.exerciseSettings(exercise.id))
+        case "set": navigation.path.append(.set(exercise.id, set.id))
+        case "set-type": navigation.path.append(.setType(exercise.id, set.id))
+        case "superset": navigation.path.append(.superset(exercise.id))
+        case "catalog": navigation.path.append(.catalog(nil))
+        case "finish": navigation.path.append(.finish)
+        case "discard": navigation.path.append(.discard)
+        default: break // Now is the default; active Rest is restored normally.
+        }
+        return nil
+    }
+
     static func seedIfRequested() {
         let args = ProcessInfo.processInfo.arguments
         guard let flag = args.firstIndex(of: "--light-watch-demo"), args.indices.contains(flag + 1) else { return }
         let mode = args[flag + 1]
+        let demoWeight = args.firstIndex(of: "--demo-weight").flatMap { args.indices.contains($0 + 1) ? Double(args[$0 + 1]) : nil } ?? 135
         let catalog = WatchBundledLibrary.load().exercises
         let group = UUID()
         func exercise(_ name: String, index: Int) -> WatchWorkoutExercise {
             let pick = catalog.first { $0.name.localizedCaseInsensitiveContains(name) }
-            return WatchWorkoutExercise(order: index, name: pick?.name ?? name,
-                sets: (1...3).map { WatchWorkoutSet(order: $0, weight: 135, reps: 8,
+            let id = UUID()
+            return WatchWorkoutExercise(id: id, order: index, name: pick?.name ?? name,
+                sets: (1...3).map { WatchWorkoutSet(order: $0, weight: demoWeight, reps: 8,
                     previousWeight: 130, previousReps: 8, completed: index == 1 && $0 == 1) },
-                restTimerDuration: 90, muscleGroup: pick?.muscle, exerciseUuid: pick?.id, imageURL: pick?.imageURL,
-                supersetID: group, comment: "Controlled tempo")
+                restTimerDuration: mode == "rest-picker" ? 165 : 90,
+                muscleGroup: pick?.muscle, exerciseUuid: pick?.id, imageURL: pick?.imageURL,
+                supersetID: group, comment: index == 1 ? "Controlled tempo today" : nil,
+                exerciseNote: index == 1 ? "Perform lateral flexion; keep elbows soft" : nil,
+                routineNote: index == 1 ? "Superset with lateral raises" : nil,
+                routineExerciseID: index == 1 ? id : nil)
         }
         let exercises = [exercise("Barbell Bench Press", index: 1), exercise("Dumbbell Row", index: 2)]
+        if let first = exercises.first, let id = first.exerciseUuid {
+            ExerciseNotes.setNote(first.exerciseNote, for: id, notify: false)
+        }
         var snapshot = WatchWorkoutSnapshot(workoutID: UUID(), title: "Upper Body", startDate: Date().addingTimeInterval(-240),
-            exercises: exercises, restTimerEnd: mode == "rest" ? Date().addingTimeInterval(90) : nil, weightUnit: .pound)
+            exercises: exercises, restTimerEnd: ["rest", "after-log", "rpe-auto"].contains(mode) ? Date().addingTimeInterval(90) : nil, weightUnit: .pound)
         snapshot.selectedSetID = WatchWorkoutEditing.nextSet(in: snapshot)
+        snapshot.activeEnergyKilocalories = args.firstIndex(of: "--demo-energy").flatMap { args.indices.contains($0 + 1) ? Double(args[$0 + 1]) : nil } ?? 1_240
+        if ["rpe", "rpe-manual"].contains(mode), let next = snapshot.nextSet,
+           let exercise = snapshot.exercises.firstIndex(where: { $0.id == next.exercise.id }),
+           let set = snapshot.exercises[exercise].sets.firstIndex(where: { $0.id == next.set.id }) {
+            snapshot.exercises[exercise].sets[set].rpe = 5
+        }
+        if mode == "effort" { snapshot.sessionEffort = 5 }
         if mode == "empty" { snapshot.exercises = [] }
-        if mode == "complete" {
+        if mode == "complete" || mode == "after-final-rest" {
             for e in snapshot.exercises.indices { for s in snapshot.exercises[e].sets.indices { snapshot.exercises[e].sets[s].completed = true } }
         }
         var history = snapshot
@@ -157,7 +257,8 @@ private enum WatchFocusDemo {
             try WatchWorkoutStore.shared.clear()
             try WatchWorkoutStore.shared.replaceLibrary(WatchWorkoutLibrary(generatedAt: Date(), exercises: catalog,
                 savedWorkouts: [saved], history: [history], weightUnit: .pound))
-            if mode != "home" { try WatchWorkoutStore.shared.replaceSnapshot(snapshot) }
+            let libraryOnly = ["home", "saved", "saved-detail", "saved-editor", "history", "history-detail", "settings", "summary"]
+            if !libraryOnly.contains(mode) { try WatchWorkoutStore.shared.replaceSnapshot(snapshot) }
         } catch { assertionFailure("Could not prepare Watch fixture: \(error)") }
     }
 }

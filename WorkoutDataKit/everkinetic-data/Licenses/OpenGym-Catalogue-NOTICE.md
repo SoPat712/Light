@@ -2,7 +2,7 @@
 
 Adapted from OpenGym, Copyright (C) 2026 Duarte Santos and contributors.
 Source: https://github.com/DuarteSantos8/openGym
-Pinned revision: 042c9ee42282756ab0e6e86a1cd5c710efaecee6
+Pinned revision: b6cfe2bbd3f099523ffbf2677438864e9a09a06f
 
 OpenGym-authored exercise descriptions, new exercise text and corrections are licensed
 under GNU AGPL version 3. The full license is in OpenGym-AGPL-3.0.txt. The converted

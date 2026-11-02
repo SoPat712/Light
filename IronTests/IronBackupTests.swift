@@ -334,6 +334,171 @@ class IronBackupTests: XCTestCase {
         XCTAssertFalse(persistenContainer.viewContext.hasChanges)
     }
 
+    func testTrackingPreferencesRoundTripAndLegacyArchiveCompatibility() throws {
+        let exerciseID = UUID(), setID = UUID()
+        SetTrackingPreferences.setOverride(.distanceDuration, for: exerciseID, defaults: userDefaults)
+        SetTrackingPreferences.setRoutineDistance(1_000, for: setID, defaults: userDefaults)
+        let data = try IronBackup.createBackupData(managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults, trackingDefaults: userDefaults)
+        SetTrackingPreferences.setOverride(.weightReps, for: exerciseID, defaults: userDefaults)
+        SetTrackingPreferences.setRoutineDistance(2_000, for: setID, defaults: userDefaults)
+        try IronBackup.restoreBackupData(data: data, managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults, trackingDefaults: userDefaults)
+        XCTAssertEqual(SetTrackingPreferences.override(for: exerciseID, defaults: userDefaults), .distanceDuration)
+        XCTAssertEqual(SetTrackingPreferences.routineDistance(for: setID, defaults: userDefaults), 1_000)
+
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        legacy["version"] = 4
+        legacy.removeValue(forKey: "trackingPreferences")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacy)
+        let previous = SetTrackingPreferences.load(defaults: userDefaults)
+        try IronBackup.restoreBackupData(data: legacyData, managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults, trackingDefaults: userDefaults)
+        XCTAssertEqual(SetTrackingPreferences.load(defaults: userDefaults), previous)
+    }
+
+    func testFailedBackupSaveDoesNotPublishTrackingPreferences() throws {
+        let exerciseID = UUID()
+        SetTrackingPreferences.setOverride(.distanceDuration, for: exerciseID, defaults: userDefaults)
+        let data = try IronBackup.createBackupData(managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults, trackingDefaults: userDefaults)
+        SetTrackingPreferences.setOverride(.weightReps, for: exerciseID, defaults: userDefaults)
+        let previous = SetTrackingPreferences.load(defaults: userDefaults)
+        enum SaveFailure: Error { case expected }
+        XCTAssertThrowsError(try IronBackup.restoreBackupData(data: data,
+            managedObjectContext: persistenContainer.viewContext, exerciseStore: exerciseStore,
+            userDefaults: userDefaults, trackingDefaults: userDefaults,
+            saveParent: { _ in throw SaveFailure.expected }))
+        XCTAssertEqual(SetTrackingPreferences.load(defaults: userDefaults), previous)
+    }
+
+    func testRestoreRetainsActiveWorkoutTrackingOverride() throws {
+        let exerciseID = UUID()
+        SetTrackingPreferences.setOverride(.distanceDuration, for: exerciseID, defaults: userDefaults)
+        let data = try IronBackup.createBackupData(managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults, trackingDefaults: userDefaults)
+        let context = persistenContainer.viewContext
+        let active = Workout.create(context: context)
+        active.isCurrentWorkout = true
+        active.start = Date()
+        let exercise = WorkoutExercise.create(context: context)
+        exercise.exerciseUuid = exerciseID
+        active.workoutExercises = NSOrderedSet(array: [exercise])
+        try context.save()
+        SetTrackingPreferences.setOverride(.weightReps, for: exerciseID, defaults: userDefaults)
+        try IronBackup.restoreBackupData(data: data, managedObjectContext: context,
+            exerciseStore: exerciseStore, userDefaults: userDefaults, trackingDefaults: userDefaults)
+        XCTAssertEqual(SetTrackingPreferences.override(for: exerciseID, defaults: userDefaults), .weightReps)
+        XCTAssertTrue(active.isCurrentWorkout)
+        XCTAssertFalse(active.isDeleted)
+    }
+
+    func testExerciseNotesAndRoutineLinksRoundTripWithoutRevivingDeletedNotes() throws {
+        let exerciseID = UUID(), deletedExerciseID = UUID(), unrelatedExerciseID = UUID()
+        let loggedExerciseID = UUID(), routineExerciseID = UUID(), otherLoggedID = UUID(), otherRoutineID = UUID()
+        ExerciseNotes.setNote("Archived cue", for: exerciseID,
+            updatedAt: Date(timeIntervalSince1970: 100), defaults: userDefaults)
+        ExerciseNotes.setNote("Delete this cue", for: deletedExerciseID,
+            updatedAt: Date(timeIntervalSince1970: 100), defaults: userDefaults)
+        ExerciseNotes.setNote(nil, for: deletedExerciseID,
+            updatedAt: Date(timeIntervalSince1970: 200), defaults: userDefaults)
+        WorkoutRoutineNoteLinks.setRoutineExerciseID(routineExerciseID, for: loggedExerciseID, defaults: userDefaults)
+        let archivedNotes = ExerciseNotes.load(defaults: userDefaults)
+        let data = try IronBackup.createBackupData(managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults,
+            trackingDefaults: userDefaults, notesDefaults: userDefaults)
+        let archive = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(archive["version"] as? Int, 6)
+        XCTAssertNotNil(archive["exerciseNotes"])
+        XCTAssertNotNil(archive["routineNoteLinks"])
+
+        ExerciseNotes.setNote("Newer local cue", for: exerciseID,
+            updatedAt: Date(timeIntervalSince1970: 300), defaults: userDefaults)
+        ExerciseNotes.setNote("Newer local cue", for: deletedExerciseID,
+            updatedAt: Date(timeIntervalSince1970: 300), defaults: userDefaults)
+        ExerciseNotes.setNote("Keep this unrelated cue", for: unrelatedExerciseID,
+            updatedAt: Date(timeIntervalSince1970: 300), defaults: userDefaults)
+        let beforeRestore = ExerciseNotes.load(defaults: userDefaults)
+        WorkoutRoutineNoteLinks.setRoutineExerciseID(otherRoutineID, for: loggedExerciseID, defaults: userDefaults)
+        WorkoutRoutineNoteLinks.setRoutineExerciseID(otherRoutineID, for: otherLoggedID, defaults: userDefaults)
+
+        try IronBackup.restoreBackupData(data: data, managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults,
+            trackingDefaults: userDefaults, notesDefaults: userDefaults)
+        let restored = ExerciseNotes.load(defaults: userDefaults)
+        XCTAssertEqual(ExerciseNotes.note(for: exerciseID, defaults: userDefaults), "Archived cue")
+        XCTAssertNil(ExerciseNotes.note(for: deletedExerciseID, defaults: userDefaults))
+        XCTAssertEqual(ExerciseNotes.note(for: unrelatedExerciseID, defaults: userDefaults), "Keep this unrelated cue")
+        XCTAssertNotNil(restored.entries[deletedExerciseID.uuidString])
+        XCTAssertGreaterThan(try XCTUnwrap(restored.entries[exerciseID.uuidString]?.updatedAt), 300)
+        XCTAssertEqual(restored.merging(beforeRestore).merging(archivedNotes), restored)
+        XCTAssertEqual(WorkoutRoutineNoteLinks.routineExerciseID(for: loggedExerciseID, defaults: userDefaults), routineExerciseID)
+        XCTAssertEqual(WorkoutRoutineNoteLinks.routineExerciseID(for: otherLoggedID, defaults: userDefaults), otherRoutineID)
+    }
+
+    func testLegacyBackupWithoutExerciseNotesPreservesCurrentMetadata() throws {
+        let exerciseID = UUID(), loggedExerciseID = UUID(), routineExerciseID = UUID()
+        ExerciseNotes.setNote("Current cue", for: exerciseID, defaults: userDefaults)
+        WorkoutRoutineNoteLinks.setRoutineExerciseID(routineExerciseID, for: loggedExerciseID, defaults: userDefaults)
+        let notes = ExerciseNotes.load(defaults: userDefaults)
+        let links = WorkoutRoutineNoteLinks.load(defaults: userDefaults)
+        let currentData = try IronBackup.createBackupData(managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults,
+            trackingDefaults: userDefaults, notesDefaults: userDefaults)
+        var archive = try XCTUnwrap(JSONSerialization.jsonObject(with: currentData) as? [String: Any])
+        archive["version"] = 5
+        archive.removeValue(forKey: "exerciseNotes")
+        archive.removeValue(forKey: "routineNoteLinks")
+        let data = try JSONSerialization.data(withJSONObject: archive)
+
+        try IronBackup.restoreBackupData(data: data, managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults,
+            trackingDefaults: userDefaults, notesDefaults: userDefaults)
+        XCTAssertEqual(ExerciseNotes.load(defaults: userDefaults), notes)
+        XCTAssertEqual(WorkoutRoutineNoteLinks.load(defaults: userDefaults), links)
+    }
+
+    func testFailedBackupSaveDoesNotPublishExerciseNoteMetadata() throws {
+        let exerciseID = UUID(), loggedExerciseID = UUID(), routineExerciseID = UUID()
+        ExerciseNotes.setNote("Archived cue", for: exerciseID, defaults: userDefaults)
+        WorkoutRoutineNoteLinks.setRoutineExerciseID(routineExerciseID, for: loggedExerciseID, defaults: userDefaults)
+        let data = try IronBackup.createBackupData(managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults,
+            trackingDefaults: userDefaults, notesDefaults: userDefaults)
+        ExerciseNotes.setNote("Current cue", for: exerciseID,
+            updatedAt: Date().addingTimeInterval(1), defaults: userDefaults)
+        WorkoutRoutineNoteLinks.setRoutineExerciseID(nil, for: loggedExerciseID, defaults: userDefaults)
+        let notes = ExerciseNotes.load(defaults: userDefaults)
+        let links = WorkoutRoutineNoteLinks.load(defaults: userDefaults)
+        enum SaveFailure: Error { case expected }
+
+        XCTAssertThrowsError(try IronBackup.restoreBackupData(data: data,
+            managedObjectContext: persistenContainer.viewContext, exerciseStore: exerciseStore,
+            userDefaults: userDefaults, trackingDefaults: userDefaults, notesDefaults: userDefaults,
+            saveParent: { _ in throw SaveFailure.expected }))
+        XCTAssertEqual(ExerciseNotes.load(defaults: userDefaults), notes)
+        XCTAssertEqual(WorkoutRoutineNoteLinks.load(defaults: userDefaults), links)
+    }
+
+    func testInvalidExerciseNoteMetadataIsRejectedBeforeChangingStores() throws {
+        let exerciseID = UUID()
+        ExerciseNotes.setNote("Current cue", for: exerciseID, defaults: userDefaults)
+        let notes = ExerciseNotes.load(defaults: userDefaults)
+        let invalidMetadata: [(String, [String: Any])] = [
+            ("exerciseNotes", ["entries": ["invalid": ["text": "Cue", "updatedAt": 100]]]),
+            ("exerciseNotes", ["entries": [exerciseID.uuidString: ["text": "Cue", "updatedAt": -1]]]),
+            ("routineNoteLinks", ["links": [UUID().uuidString: "invalid"]])
+        ]
+        for (key, value) in invalidMetadata {
+            let data = try modifiedBackupData { $0[key] = value }
+            XCTAssertThrowsError(try IronBackup.restoreBackupData(data: data,
+                managedObjectContext: persistenContainer.viewContext, exerciseStore: exerciseStore,
+                userDefaults: userDefaults, trackingDefaults: userDefaults, notesDefaults: userDefaults))
+            XCTAssertEqual(ExerciseNotes.load(defaults: userDefaults), notes)
+            XCTAssertFalse(persistenContainer.viewContext.hasChanges)
+        }
+    }
+
     func testVersionFourWithoutMeasurementsClearsCurrentMeasurements() throws {
         let data = try IronBackup.createBackupData(
             managedObjectContext: persistenContainer.viewContext,

@@ -62,6 +62,13 @@ enum PayloadKey {
     static let workoutLibrary = "workoutLibrary"
     static let requestWorkoutLibrary = "requestWorkoutLibrary"
     static let requestWorkoutSnapshot = "requestWorkoutSnapshot"
+
+    // phone --> watch: debug preference, also included in start/end arguments.
+    static let healthTestMode = "healthTestMode"
+
+    // phone <--> watch: timestamped inventory and exercise-UUID-keyed setups.
+    static let plateInventory = "plateInventory"
+    static let plateLoadouts = "plateLoadouts"
     
     enum Arg {
         static let start = "start" // Date
@@ -71,6 +78,7 @@ enum PayloadKey {
         static let title = "title" // String
         static let uuid = "uuid" // UUID
         static let data = "data" // Data
+        static let isHealthTestWorkout = "isHealthTestWorkout" // Bool, sticky start provenance
     }
 }
 
@@ -152,6 +160,10 @@ struct WatchWorkoutPersistedState: Codable, Equatable {
     var snapshot: WatchWorkoutSnapshot?
     var outbox: [WatchWorkoutEvent]
     var nextSequence: Int64
+    /// Optional for stores written before acknowledgement watermarks existed.
+    var acknowledgedSequences: [String: Int64]? = nil
+    /// Bounded terminal identities survive projection/outbox cleanup and relaunch.
+    var terminalWorkoutIDs: [UUID]? = nil
 
     init(
         snapshot: WatchWorkoutSnapshot? = nil,
@@ -187,6 +199,24 @@ enum WatchWorkoutPersistenceError: LocalizedError, Equatable {
 enum WatchWorkoutSnapshotChange {
     case keep
     case replace(WatchWorkoutSnapshot?)
+}
+
+/// Session-independent decisions shared by recovery and terminal receipts.
+enum WatchWorkoutFinalization {
+    enum RecoveryAction: Equatable { case none, waitForSave, resume, verifySavedWorkout }
+
+    static func isDuplicateFinish(workoutID: UUID, recordingWorkoutID: UUID?, isFinalizing: Bool) -> Bool {
+        recordingWorkoutID == workoutID && isFinalizing
+    }
+
+    static func recoveryAction(snapshot: WatchWorkoutSnapshot?, recordingWorkoutID: UUID?,
+                               isFinalizing: Bool, canResume: Bool) -> RecoveryAction {
+        // A legacy display end date is not evidence of a Finish action.
+        guard let snapshot, snapshot.isFinished == true else { return .none }
+        if isDuplicateFinish(workoutID: snapshot.workoutID, recordingWorkoutID: recordingWorkoutID,
+                             isFinalizing: isFinalizing) { return .waitForSave }
+        return recordingWorkoutID == snapshot.workoutID && canResume ? .resume : .verifySavedWorkout
+    }
 }
 
 /// Prepares a complete replacement value before callers publish it in memory
@@ -231,6 +261,9 @@ enum WatchWorkoutPersistence {
             }
             let event = makeEvent(candidate.nextSequence, candidate.snapshot)
             candidate.outbox.append(event)
+            if event.kind == .workoutFinished || event.kind == .workoutDiscarded {
+                markTerminal(event.workoutID, in: &candidate)
+            }
             return event
         }
     }
@@ -240,6 +273,29 @@ enum WatchWorkoutPersistence {
             throw WatchWorkoutPersistenceError.revisionOverflow
         }
         snapshot.revision += 1
+    }
+
+    static func acknowledge(eventIDs: [UUID], in state: inout WatchWorkoutPersistedState) {
+        let ids = Set(eventIDs)
+        for event in state.outbox where ids.contains(event.id) {
+            // Queued terminal events may have been written by an older build.
+            if event.kind == .workoutFinished || event.kind == .workoutDiscarded {
+                markTerminal(event.workoutID, in: &state)
+            }
+            let key = event.workoutID.uuidString
+            var sequences = state.acknowledgedSequences ?? [:]
+            sequences[key] = max(sequences[key] ?? 0, event.sequence)
+            state.acknowledgedSequences = sequences
+        }
+        state.outbox.removeAll { ids.contains($0.id) }
+    }
+
+    static func retainingTerminalID(_ id: UUID, in ids: [UUID]) -> [UUID] {
+        Array((ids.filter { $0 != id } + [id]).suffix(50))
+    }
+
+    static func markTerminal(_ id: UUID, in state: inout WatchWorkoutPersistedState) {
+        state.terminalWorkoutIDs = retainingTerminalID(id, in: state.terminalWorkoutIDs ?? [])
     }
 }
 
@@ -365,6 +421,8 @@ struct WatchExercisePick: Codable, Identifiable, Equatable {
     var name: String
     var muscle: String?
     var imageURL: String?
+    /// False leaves it out of the plain list; search still finds it. Older payloads omit it.
+    var listed: Bool? = nil
 }
 
 struct WatchWorkoutExercise: Codable, Identifiable, Equatable {
@@ -382,7 +440,16 @@ struct WatchWorkoutExercise: Codable, Identifiable, Equatable {
     /// JPEG still of the bundled diagram when there is no Gym Visual GIF.
     var imageData: Data?
     var supersetID: UUID? = nil
+    /// Transient note for this logged workout only.
     var comment: String? = nil
+    /// Pinned catalog cue; edits travel through timestamped ExerciseNotes preferences.
+    var exerciseNote: String? = nil
+    /// Display-only cue from this exercise's saved workout plan.
+    var routineNote: String? = nil
+    /// Stable source for the plan cue when new logged exercise IDs are created.
+    var routineExerciseID: UUID? = nil
+    /// Raw value of SetTrackingType; missing/unknown values use the receiver's inference.
+    var trackingType: String? = nil
 
     init(
         id: UUID = UUID(),
@@ -395,7 +462,11 @@ struct WatchWorkoutExercise: Codable, Identifiable, Equatable {
         imageURL: String? = nil,
         imageData: Data? = nil,
         supersetID: UUID? = nil,
-        comment: String? = nil
+        comment: String? = nil,
+        trackingType: String? = nil,
+        exerciseNote: String? = nil,
+        routineNote: String? = nil,
+        routineExerciseID: UUID? = nil
     ) {
         self.id = id
         self.order = order
@@ -408,6 +479,10 @@ struct WatchWorkoutExercise: Codable, Identifiable, Equatable {
         self.imageData = imageData
         self.supersetID = supersetID
         self.comment = comment
+        self.exerciseNote = exerciseNote
+        self.routineNote = routineNote
+        self.routineExerciseID = routineExerciseID
+        self.trackingType = trackingType
     }
 }
 
@@ -437,6 +512,17 @@ struct WatchWorkoutSnapshot: Codable, Equatable {
     var activeEnergyKilocalories: Double? = nil
     /// Fixed display end times can exist on a still-active phone workout.
     var isFinished: Bool? = nil
+    /// Durable provenance, including in queued finishes. Older peers omit this
+    /// field (false); release builds retain it only to exclude past test exports.
+    var healthTestMode: Bool? = nil
+    /// Watch-local pause state survives suspension/relaunch without a session.
+    var healthTestWorkoutPaused: Bool? = nil
+    /// Independent of Health export/test state; older peers omit provenance.
+    var startedOnWatch: Bool? = nil
+    /// Highest durable Watch event included in this phone projection.
+    var acknowledgedWatchSequence: Int64? = nil
+
+    var isHealthTestWorkout: Bool { healthTestMode == true }
 
     init(workoutID: UUID, title: String? = nil, startDate: Date = Date(),
          endDate: Date? = nil, exercises: [WatchWorkoutExercise] = [],
@@ -482,11 +568,24 @@ struct WatchWorkoutSnapshot: Codable, Equatable {
 
     var isFinishedRecord: Bool { isFinished ?? (endDate != nil) }
 
+    func canReplace(_ current: WatchWorkoutSnapshot?, acknowledgedSequence: Int64 = 0) -> Bool {
+        // A pre-edit snapshot can arrive after the ACK removes the last pending
+        // event. Revision alone does not prove that it contains that edit.
+        if let acknowledgedWatchSequence, acknowledgedWatchSequence < acknowledgedSequence { return false }
+        guard let current, current.workoutID == workoutID else { return true }
+        return revision > current.revision || (revision == current.revision && updatedAt >= current.updatedAt)
+    }
+
+    static func nextRevision(after revision: Int64, at date: Date) -> Int64 {
+        max(revision < .max ? revision + 1 : revision,
+            Int64(date.timeIntervalSince1970 * 1_000))
+    }
+
     static func placeholder(workoutID: UUID, startDate: Date) -> WatchWorkoutSnapshot {
         let set = WatchWorkoutSet(order: 1)
         let exercise = WatchWorkoutExercise(order: 1, name: "Workout", sets: [set])
         return WatchWorkoutSnapshot(workoutID: workoutID, startDate: startDate,
-                                    exercises: [exercise], selectedSetID: set.id)
+                                    exercises: [exercise], selectedSetID: set.id, isFinished: false)
     }
 }
 
@@ -711,6 +810,45 @@ struct WatchWorkoutLibrary: Codable, Equatable {
     var history: [WatchWorkoutSnapshot]
     var weightUnit: WatchWorkoutWeightUnit
     var revision: Int64? = nil
+
+    /// History needs set results and catalog identifiers, not repeated JPEGs or
+    /// an entire embedded exercise picker. Keep the v1 wire keys compatible;
+    /// older libraries still decode and are compacted when cached on Watch.
+    func removingHistoryMedia() -> Self {
+        var result = self
+        for workout in result.history.indices {
+            result.history[workout].library = nil
+            for exercise in result.history[workout].exercises.indices {
+                let source = result.history[workout].exercises[exercise]
+                if source.imageData != nil {
+                    result.history[workout].exercises[exercise].imageURL = Self.historyMediaURL(for: source).absoluteString
+                }
+                result.history[workout].exercises[exercise].imageData = nil
+            }
+        }
+        return result
+    }
+
+    /// Use the existing ExerciseMedia cache's URL keys, including a stable
+    /// local key for bundled JPEGs which never had a downloadable image URL.
+    var historyMediaForCaching: [(url: URL, data: Data)] {
+        history.flatMap(\.exercises).compactMap { exercise in
+            exercise.imageData.map { (Self.historyMediaURL(for: exercise), $0) }
+        }
+    }
+
+    static func historyMediaURL(for exercise: WatchWorkoutExercise) -> URL {
+        exercise.imageURL.flatMap(URL.init(string:))
+            ?? URL(fileURLWithPath: "/LightExerciseMedia/" + (exercise.exerciseUuid ?? exercise.id).uuidString)
+    }
+
+    /// Transport clocks alone must not rewrite the large library file or
+    /// invalidate every library view. The receiver retains the clocks separately.
+    func hasSameContent(as other: Self) -> Bool {
+        schemaVersion == other.schemaVersion && exercises == other.exercises &&
+            savedWorkouts == other.savedWorkouts && history == other.history &&
+            weightUnit == other.weightUnit
+    }
 }
 
 enum WatchWorkoutEditing {
@@ -764,7 +902,7 @@ enum WatchWorkoutEditing {
                 restTimerDuration: source.restTimerDuration,
                 muscleGroup: source.muscleGroup, exerciseUuid: source.exerciseUuid,
                 imageURL: source.imageURL, imageData: source.imageData,
-                comment: source.comment)
+                comment: source.comment, trackingType: source.trackingType)
             if let oldGroup = source.supersetID {
                 let group = groups[oldGroup] ?? UUID()
                 groups[oldGroup] = group

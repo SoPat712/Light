@@ -52,6 +52,7 @@ enum IronAppearance: String, CaseIterable, Identifiable {
 
 final class SettingsStore: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
+    static let healthTestModeEnabledNotification = Notification.Name("Iron.healthTestModeEnabled")
     
     private var userDefaults: UserDefaults
     
@@ -146,6 +147,19 @@ final class SettingsStore: ObservableObject {
         set {
             self.objectWillChange.send()
             userDefaults.watchCompanion = newValue
+        }
+    }
+
+    var healthTestMode: Bool {
+        get { userDefaults.healthTestMode }
+        set {
+            #if DEBUG
+            objectWillChange.send()
+            userDefaults.healthTestMode = newValue
+            if newValue {
+                NotificationCenter.default.post(name: Self.healthTestModeEnabledNotification, object: self)
+            }
+            #endif
         }
     }
 

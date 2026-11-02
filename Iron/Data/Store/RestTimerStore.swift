@@ -37,6 +37,7 @@ final class RestTimerStore: ObservableObject {
     private let watchUpdater: (_ end: Date?) -> Void
     private let expiryScheduler: ExpiryScheduler
     private let expiryAnnouncement: (() -> Void)?
+    private let adjustmentTick: () -> Void
     private let isAppActive: () -> Bool
     private var cancelScheduledExpiry: ExpiryCancellation?
     private var expiryGeneration: UInt = 0
@@ -69,6 +70,7 @@ final class RestTimerStore: ObservableObject {
             return { workItem.cancel() }
         },
         expiryAnnouncement: (() -> Void)? = nil,
+        adjustmentTick: @escaping () -> Void = { IronSoundPlayer.shared.play(.tick) },
         isAppActive: @escaping () -> Bool = { UIApplication.shared.applicationState == .active }
     ) {
         self.userDefaults = userDefaults
@@ -78,6 +80,7 @@ final class RestTimerStore: ObservableObject {
         self.watchUpdater = watchUpdater
         self.expiryScheduler = expiryScheduler
         self.expiryAnnouncement = expiryAnnouncement
+        self.adjustmentTick = adjustmentTick
         self.isAppActive = isAppActive
         restorePersistedExpiry()
     }
@@ -168,28 +171,57 @@ final class RestTimerStore: ObservableObject {
     }
 
     private func restorePersistedExpiry() {
-        guard userDefaults.restTimerPausedRemaining == nil else { return }
-        scheduleExpiryAnnouncement(deadline: restTimerEnd)
+        guard userDefaults.restTimerPausedRemaining == nil,
+              let deadline = restTimerEnd, deadline.timeIntervalSince(now()) > 0.05 else { return }
+        // Reapply alert ownership after relaunch and retain this deadline so
+        // the phone can rearm it if the Watch handoff is cleared during rest.
+        notificationUpdater(deadline, restTimerDuration)
+        scheduleExpiryAnnouncement(deadline: deadline)
     }
 
     private func announceExpiry() {
-        if let expiryAnnouncement {
-            expiryAnnouncement()
-        } else if isAppActive() {
-            if SettingsStore.shared.workoutHaptics {
-                let feedback = UINotificationFeedbackGenerator()
-                feedback.prepare()
-                feedback.notificationOccurred(.warning)
-            }
-            if SettingsStore.shared.workoutSounds {
+        // The Watch handoff owns audible expiry even with the phone open.
+        // The logger owns the light impact. Background expiry uses the already
+        // scheduled notification; extensions never emit app feedback.
+        if canPlayAppFeedback && !NotificationManager.watchOwnsRestAlerts {
+            if let expiryAnnouncement {
+                expiryAnnouncement()
+            } else if SettingsStore.shared.workoutSounds {
                 IronSoundPlayer.shared.play(.restComplete)
             }
         }
         objectWillChange.send()
     }
+
+    private var canPlayAppFeedback: Bool {
+        #if IRON_WIDGET_EXTENSION
+        return false
+        #else
+        return Bundle.main.bundleURL.pathExtension != "appex" && isAppActive()
+        #endif
+    }
 }
 
 extension RestTimerStore {
+    /// Presentation dates retain the total and elapsed portion while paused.
+    /// They are not a running deadline: notifications and Watch sync still use
+    /// `restTimerEnd`, which remains nil until the timer resumes.
+    var restTimerInterval: ClosedRange<Date>? {
+        guard let duration = Self.validDuration(restTimerDuration) else { return nil }
+        let start: Date
+        if let remaining = Self.validDuration(userDefaults.restTimerPausedRemaining) {
+            start = now().addingTimeInterval(-max(0, duration - remaining))
+        } else if let runningStart = restTimerStart {
+            start = runningStart
+        } else {
+            return nil
+        }
+        let end = start.addingTimeInterval(duration)
+        guard start.timeIntervalSinceReferenceDate.isFinite,
+              end.timeIntervalSinceReferenceDate.isFinite, end > start else { return nil }
+        return start...end
+    }
+
     var restTimerEnd: Date? {
         guard let duration = restTimerDuration else { return nil }
         return restTimerStart?.addingTimeInterval(duration)
@@ -237,15 +269,17 @@ extension RestTimerStore {
         transition(start: resumedAt, duration: total, pausedRemaining: nil)
     }
 
-    func adjust(by interval: TimeInterval) {
+    /// Shared updates are silent. Only local app controls may opt into the tick;
+    /// those controls own their selection haptic.
+    func adjust(by interval: TimeInterval, feedback: Bool = false) {
         guard interval.isFinite else { return }
-        IronSoundPlayer.shared.play(.tick)
+        guard isPaused || restTimerEnd != nil else { return }
+        if feedback, canPlayAppFeedback { adjustmentTick() }
 
         if let paused = userDefaults.restTimerPausedRemaining {
             let adjusted = paused + interval
             guard adjusted.isFinite, adjusted > 0 else {
                 cancel()
-                announceExpiry()
                 return
             }
             let total = max((restTimerDuration ?? paused) + interval, adjusted)
@@ -259,7 +293,6 @@ extension RestTimerStore {
         if end <= currentTime {
             guard interval > 0 else {
                 cancel()
-                announceExpiry()
                 return
             }
             transition(start: currentTime, duration: interval, pausedRemaining: nil)
@@ -270,15 +303,24 @@ extension RestTimerStore {
               let adjustedDuration = Self.validDuration(duration + interval),
               end.addingTimeInterval(interval) > currentTime else {
             cancel()
-            announceExpiry()
             return
         }
         transition(start: restTimerStart, duration: adjustedDuration, pausedRemaining: nil)
     }
 
-    func applyWatchUpdate(end: Date?, pausedRemaining: TimeInterval? = nil) {
+    /// End-only updates adjust the current rest. A new rest (for example, after
+    /// completing another set) can supply its start to replace that interval.
+    func applyWatchUpdate(end: Date?, pausedRemaining: TimeInterval? = nil, startedAt: Date? = nil) {
         if let pausedRemaining, let remaining = Self.validDuration(pausedRemaining) {
-            transition(start: nil, duration: max(restTimerDuration ?? remaining, remaining),
+            // An adjustment to an already-paused timer changes the total by the
+            // same delta as the remaining time, preserving its elapsed portion.
+            let total: TimeInterval
+            if let previousRemaining = userDefaults.restTimerPausedRemaining {
+                total = max(0, (restTimerDuration ?? previousRemaining) - previousRemaining) + remaining
+            } else {
+                total = max(restTimerDuration ?? remaining, remaining)
+            }
+            transition(start: nil, duration: total,
                        pausedRemaining: remaining, updateWatch: false)
             return
         }
@@ -286,14 +328,29 @@ extension RestTimerStore {
             transition(start: nil, duration: nil, pausedRemaining: nil, updateWatch: false)
             return
         }
-        let duration = end.timeIntervalSince(now())
-        guard let duration = Self.validDuration(duration) else {
+        let currentTime = now()
+        guard Self.validDuration(end.timeIntervalSince(currentTime)) != nil else {
             transition(start: nil, duration: nil, pausedRemaining: nil, updateWatch: false)
             return
         }
+        let start: Date
+        if let startedAt, startedAt.timeIntervalSinceReferenceDate.isFinite,
+           startedAt <= currentTime {
+            start = startedAt
+        } else if let remaining = userDefaults.restTimerPausedRemaining {
+            // The Watch deadline includes time spent delivering this update.
+            // Keep the captured total so transit time counts as running time.
+            start = end.addingTimeInterval(-max(restTimerDuration ?? remaining, remaining))
+        } else if let previousStart = restTimerStart, let previousEnd = restTimerEnd,
+                  previousEnd > currentTime {
+            start = previousStart
+        } else {
+            // With no active interval (including expired rest), match phone ±15.
+            start = currentTime
+        }
         transition(
-            start: end.addingTimeInterval(-duration),
-            duration: duration,
+            start: start,
+            duration: end.timeIntervalSince(start),
             pausedRemaining: nil,
             updateWatch: false
         )

@@ -25,6 +25,7 @@ extension UserDefaults {
         case maxRepetitionsOneRepMax
         case autoBackup
         case watchCompanion
+        case healthTestMode
         case autoStartRestTimer
         case keepScreenAwakeDuringWorkout
         case showPlateCalculator
@@ -127,6 +128,23 @@ extension UserDefaults {
         }
         get {
             self.value(forKey: SettingsKeys.watchCompanion.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    /// Debug builds protect the owner's real Health data by default.
+    /// Release builds ignore even a preference left by an installed debug build.
+    var healthTestMode: Bool {
+        get {
+            #if DEBUG
+            object(forKey: SettingsKeys.healthTestMode.rawValue) as? Bool ?? true
+            #else
+            false
+            #endif
+        }
+        set {
+            #if DEBUG
+            set(newValue, forKey: SettingsKeys.healthTestMode.rawValue)
+            #endif
         }
     }
 

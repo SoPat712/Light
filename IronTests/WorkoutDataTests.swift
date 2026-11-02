@@ -1178,18 +1178,29 @@ final class WorkoutPausedLiveActivityTests: XCTestCase {
         exercise.workout = workout
         let set = WorkoutSet.create(context: container.viewContext)
         set.workoutExercise = exercise
+        let now = Date()
+        // Even old dates must remain in a paused payload; only the total and
+        // captured remaining time determine its frozen progress.
+        let start = now.addingTimeInterval(-300)
+        let end = start.addingTimeInterval(120)
         let reconcile = {
             WorkoutLiveActivityManager.shared.reconciledState(
-                for: workout, priorState: nil, now: Date(), restTimerStart: nil,
-                restTimerEnd: nil, pausedRestRemaining: 45
+                for: workout, priorState: nil, now: now, restTimerStart: start,
+                restTimerEnd: end, pausedRestRemaining: 45
             )
         }
         let paused = reconcile()
         XCTAssertEqual(paused.phase, .resting)
         XCTAssertEqual(paused.pausedRestRemaining, 45)
+        XCTAssertEqual(paused.restTimerStart, start)
+        XCTAssertEqual(paused.restTimerEnd, end)
+        XCTAssertEqual(paused.restDuration, 120)
+        XCTAssertEqual(paused.restProgress(at: now), 0.625)
+        XCTAssertEqual(paused.restProgress(at: now.addingTimeInterval(300)), 0.625)
         set.isCompleted = true
         XCTAssertEqual(reconcile().phase, .finished)
         XCTAssertNil(reconcile().pausedRestRemaining)
+        XCTAssertNil(reconcile().restTimerInterval)
     }
 }
 
@@ -1568,7 +1579,7 @@ final class SavedWorkoutEditorPersistenceTests: XCTestCase {
         XCTAssertEqual(session.routine.title, source.title)
         XCTAssertEqual(session.routine.comment, source.comment)
         XCTAssertEqual(draftExercise.exerciseUuid, exercise.exerciseUuid)
-        XCTAssertEqual(draftExercise.comment, exercise.comment)
+        XCTAssertNil(draftExercise.comment)
         XCTAssertEqual(draftExercise.restTimerDurationValue, 90)
         XCTAssertNotEqual(draftExercise.supersetUuid, sourceSupersetID)
         XCTAssertEqual(draftSet.minRepetitionsValue, 5)
@@ -1597,6 +1608,8 @@ final class SavedWorkoutEditorPersistenceTests: XCTestCase {
         )
         XCTAssertEqual(saved.title, "Completed Push")
         XCTAssertEqual(saved.comment, "Keep this note")
+        XCTAssertNil(savedExercise.comment)
+        XCTAssertEqual(exercise.comment, "Bench setup")
         XCTAssertEqual(savedExercise.restTimerDurationValue, 90)
         XCTAssertEqual(savedSet.minRepetitionsValue, 5)
         XCTAssertEqual(savedSet.maxRepetitionsValue, 8)
@@ -1985,7 +1998,9 @@ final class SavedWorkoutImportPersistenceTests: XCTestCase {
             return XCTFail("Expected both imported exercises")
         }
         XCTAssertEqual(exercises.map(\.exerciseUuid), [firstExerciseID, secondExerciseID])
-        XCTAssertEqual(exercises.map(\.supersetUuid), [supersetID, supersetID])
+        XCTAssertNotNil(exercises[0].supersetUuid)
+        XCTAssertNotEqual(exercises[0].supersetUuid, supersetID)
+        XCTAssertEqual(exercises[0].supersetUuid, exercises[1].supersetUuid)
         XCTAssertEqual(exercises.map(\.restTimerDurationValue), [90, 120])
         XCTAssertEqual((exercises[0].workoutRoutineSets?.firstObject as? WorkoutRoutineSet)?.weightValue, 100)
         XCTAssertEqual((exercises[1].workoutRoutineSets?.firstObject as? WorkoutRoutineSet)?.durationValue, 45)
@@ -2120,14 +2135,18 @@ final class DurableWorkoutHealthExportTests: XCTestCase {
     private enum Failure: Error { case write, save }
     private var container: NSPersistentContainer!
     private var previousWatchID: UUID?
+    private var previousHealthTestMode: Any?
 
     override func setUp() {
         container = setUpInMemoryNSPersistentContainer()
+        previousHealthTestMode = UserDefaults.appGroup.object(forKey: UserDefaults.SettingsKeys.healthTestMode.rawValue)
+        SettingsStore.shared.healthTestMode = false
         previousWatchID = WatchConnectionManager.shared.currentWatchWorkoutUuid
         WatchConnectionManager.shared.currentWatchWorkoutUuid = nil
     }
 
     override func tearDown() {
+        UserDefaults.appGroup.set(previousHealthTestMode, forKey: UserDefaults.SettingsKeys.healthTestMode.rawValue)
         WatchConnectionManager.shared.currentWatchWorkoutUuid = previousWatchID
         container.viewContext.reset()
         container = nil
@@ -2346,13 +2365,14 @@ final class DurableWorkoutHealthExportTests: XCTestCase {
         let imports = ["hevy", "sample", "json"].map { workout(source: $0) }
         let invalid = workout(current: true)
         let watch = workout(state: "watch")
+        let test = workout(state: "test")
         try container.viewContext.save()
         var requested: [UUID] = []
         let manager = HealthManager(workoutWriter: { request, completion in
             requested.append(request.uuid)
             completion(.success(.saved))
         })
-        for excluded in imports + [invalid, watch] {
+        for excluded in imports + [invalid, watch, test] {
             let checked = expectation(description: "Manual guard")
             manager.syncWorkoutIfNeeded(workout: excluded, exerciseStore: .shared) { _ in checked.fulfill() }
             wait(for: [checked], timeout: 2)
@@ -2366,6 +2386,112 @@ final class DurableWorkoutHealthExportTests: XCTestCase {
         }
         wait(for: [bulk], timeout: 2)
         XCTAssertEqual(requested, [native.uuid!])
+    }
+
+    #if DEBUG
+    func testBothPhoneStartTransactionsPersistTestProvenanceBeforeSideEffects() throws {
+        SettingsStore.shared.healthTestMode = true
+        let context = container.viewContext
+        // Inspect the save boundary and then fail it to avoid launching any
+        // companion, notification, or Live Activity from this unit test.
+        XCTAssertThrowsError(try Workout.startNew(in: context, save: {
+            let active = try XCTUnwrap(context.fetch(Workout.currentWorkoutFetchRequest).first)
+            XCTAssertEqual(active.healthExportState, "test")
+            throw Failure.save
+        }))
+        XCTAssertEqual(try context.count(for: Workout.fetchRequest()), 0)
+
+        let existing = workout()
+        try context.save()
+        XCTAssertThrowsError(try existing.start(save: {
+            XCTAssertEqual(existing.healthExportState, "test")
+            throw Failure.save
+        }))
+        XCTAssertNil(existing.healthExportState, "A failed start must roll back provenance too")
+        XCTAssertNil(try storedState(existing))
+    }
+
+    func testEnablingTestModePersistsActiveProvenanceBeforeSwitchingOffAndFinishing() throws {
+        let active = workout(current: true)
+        let imported = workout(source: "hevy")
+        let history = workout()
+        try container.viewContext.save()
+        SettingsStore.shared.healthTestMode = true
+        try Workout.markCurrentWorkoutAsHealthTestWorkout(in: container.viewContext)
+        SettingsStore.shared.healthTestMode = false
+
+        XCTAssertEqual(try storedState(active), "test")
+        XCTAssertNil(try storedState(imported))
+        XCTAssertNil(try storedState(history))
+        var writes = 0
+        let manager = HealthManager(workoutWriter: { _, _ in writes += 1 })
+        try active.finish(syncToHealth: true, healthManager: manager) {
+            active.end = Date(timeIntervalSince1970: 2_000)
+        }
+        XCTAssertEqual(try storedState(active), "test")
+        XCTAssertEqual(writes, 0)
+
+        imported.isCurrentWorkout = true
+        imported.end = nil
+        try container.viewContext.save()
+        SettingsStore.shared.healthTestMode = true
+        try Workout.markCurrentWorkoutAsHealthTestWorkout(in: container.viewContext)
+        XCTAssertNil(try storedState(imported), "Imported records never acquire native test provenance")
+    }
+
+    func testTestModeFinishRemainsExcludedAfterTurningOffAndBackfilling() throws {
+        let workout = workout(current: true)
+        try container.viewContext.save()
+        var writes = 0
+        let manager = HealthManager(workoutWriter: { _, completion in
+            writes += 1
+            completion(.success(.saved))
+        })
+        SettingsStore.shared.healthTestMode = true
+        try workout.finish(syncToHealth: true, healthManager: manager) {
+            workout.end = Date(timeIntervalSince1970: 2_000)
+        }
+        XCTAssertEqual(try storedState(workout), "test")
+        XCTAssertEqual(writes, 0)
+        SettingsStore.shared.healthTestMode = false
+        let manual = expectation(description: "Test workout manual sync skipped")
+        manager.syncWorkoutIfNeeded(workout: workout, exerciseStore: .shared) { _ in manual.fulfill() }
+        let bulk = expectation(description: "Test workout backfill skipped")
+        manager.updateHealthWorkouts(managedObjectContext: container.viewContext, exerciseStore: .shared) { _ in bulk.fulfill() }
+        let retry = expectation(description: "Test workout retry skipped")
+        manager.retryPendingWorkouts(in: container.viewContext) { _ in retry.fulfill() }
+        wait(for: [manual, bulk, retry], timeout: 2)
+        XCTAssertEqual(writes, 0)
+        XCTAssertEqual(try storedState(workout), "test")
+    }
+    #endif
+
+    func testOfflineWatchTestFinishAndFailureNeverBecomePending() throws {
+        let workout = workout(current: true)
+        try container.viewContext.save()
+        var writes = 0
+        let manager = HealthManager(workoutWriter: { _, completion in
+            writes += 1
+            completion(.success(.saved))
+        })
+        var snapshot = WatchWorkoutSnapshot(workoutID: workout.uuid!, startDate: workout.start!,
+            endDate: Date(timeIntervalSince1970: 2_000), isFinished: true)
+        snapshot.healthTestMode = true
+        for (index, kind) in [WatchWorkoutEventKind.workoutFinished, .workoutFailed].enumerated() {
+            let event = WatchWorkoutEvent(workoutID: workout.uuid!, sequence: Int64(index + 1),
+                kind: kind, endDate: snapshot.endDate, snapshot: snapshot,
+                fieldChanges: WatchWorkoutFieldChanges())
+            try WatchConnectionManager.commitWatchEventMutation(in: container.viewContext,
+                save: { try self.container.viewContext.save() }, mutation: {
+                    try WatchConnectionManager.shared.applyWatchEventModelMutation(event, to: workout,
+                        in: self.container.viewContext, healthManager: manager)
+                }, didPersist: {})
+            XCTAssertEqual(try storedState(workout), "test")
+        }
+        let bulk = expectation(description: "Offline test workout backfill skipped")
+        manager.updateHealthWorkouts(managedObjectContext: container.viewContext, exerciseStore: .shared) { _ in bulk.fulfill() }
+        wait(for: [bulk], timeout: 2)
+        XCTAssertEqual(writes, 0)
     }
 
     func testWatchFinishSavesWatchStateAndNeverSchedulesPhoneWriter() throws {
@@ -2486,6 +2612,57 @@ final class ExerciseRecencyTests: XCTestCase {
         XCTAssertEqual(dates[exercises[9].uuid], newer, "Qualification is at the workout level")
         XCTAssertNil(dates[exercises[10].uuid])
         XCTAssertNil(dates[exercises[11].uuid])
+    }
+
+    func testWorkoutReferencesIncludeUnloggedAndSavedWorkoutExercises() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let logged = exercise("Logged")
+        let unlogged = exercise("Unlogged")
+        let saved = exercise("Saved")
+        let unused = exercise("Unused")
+        workout(in: context, exercises: [logged], at: Date(timeIntervalSince1970: 1000))
+        workout(in: context, exercises: [unlogged], at: Date(timeIntervalSince1970: 2000), current: true, completed: false)
+        let routine = WorkoutRoutine.create(context: context)
+        routine.workoutPlan = WorkoutPlan.create(context: context)
+        let entry = WorkoutRoutineExercise.create(context: context)
+        entry.exerciseUuid = saved.uuid
+        entry.workoutRoutine = routine
+        try context.save()
+
+        let referenced = try ExerciseRecency.workoutReferencedIDs(in: context)
+        XCTAssertEqual(referenced, [logged.uuid, unlogged.uuid, saved.uuid])
+        XCTAssertFalse(referenced.contains(unused.uuid))
+    }
+
+    @MainActor
+    func testCleanedUpExerciseStaysListedOnceAnyWorkoutUsesIt() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let store = ExerciseStore(customExercisesURL: nil)
+        let hidden = try XCTUnwrap(store.builtInExercises.first { $0.title == "Front Raises: Barbell" })
+        let noPicture = try XCTUnwrap(store.builtInExercises.first { $0.title == "1 2 Stick Drill" })
+        XCTAssertFalse(store.isBrowsable(hidden))
+        XCTAssertFalse(store.isBrowsable(noPicture))
+
+        workout(in: context, exercises: [hidden], at: Date(timeIntervalSince1970: 1000))
+        let routine = WorkoutRoutine.create(context: context)
+        routine.workoutPlan = WorkoutPlan.create(context: context)
+        let entry = WorkoutRoutineExercise.create(context: context)
+        entry.exerciseUuid = noPicture.uuid
+        entry.workoutRoutine = routine
+        try context.save()
+
+        let updated = expectation(description: "Referenced exercises refreshed")
+        let subscription = store.$workoutReferencedExerciseIDs
+            .first { $0.contains(hidden.uuid) && $0.contains(noPicture.uuid) }
+            .sink { _ in updated.fulfill() }
+        store.observeWorkoutHistory(in: context)
+        wait(for: [updated], timeout: 3)
+        withExtendedLifetime(subscription) {}
+
+        XCTAssertTrue(store.isBrowsable(hidden))
+        XCTAssertTrue(store.isBrowsable(noPicture))
     }
 
     func testSearchAndBrowseShareRecencyWithTitleTiesAndStableUnseenOrder() {
@@ -2730,6 +2907,73 @@ final class WorkoutLiveActivityTimingRegressionTests: XCTestCase {
         XCTAssertEqual(state.phase, .resting)
         XCTAssertNil(state.confirmationUntil)
         XCTAssertEqual(state.pausedRestRemaining, 30)
+    }
+
+    func testPhoneAndWatchRestUpdatesPublishMatchingIntervalsThroughSkip() throws {
+        var currentTime = now
+        let suite = "WorkoutLiveActivityRestTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = RestTimerStore(
+            userDefaults: defaults,
+            now: { currentTime },
+            keepRunning: { false },
+            notificationUpdater: { _, _ in },
+            watchUpdater: { _ in },
+            expiryScheduler: { _, _ in {} }
+        )
+        func reconcile() -> WorkoutActivityAttributes.ContentState {
+            let interval = store.restTimerInterval
+            return WorkoutLiveActivityManager.shared.reconciledState(
+                for: workout,
+                priorState: priorState(),
+                now: currentTime,
+                restTimerStart: interval?.lowerBound,
+                restTimerEnd: interval?.upperBound,
+                pausedRestRemaining: store.isPaused ? store.restTimerRemainingTime : nil
+            )
+        }
+
+        store.start(duration: 120)
+        currentTime.addTimeInterval(45)
+        // The phone App Intent calls this same adjust method before refreshing.
+        store.adjust(by: 15)
+        let phone = reconcile()
+        XCTAssertEqual(phone.restTimerStart, now)
+        XCTAssertEqual(phone.restDuration, 135)
+        XCTAssertEqual(try XCTUnwrap(phone.restProgress(at: currentTime)), 45.0 / 135.0, accuracy: 0.001)
+
+        store.applyWatchUpdate(end: try XCTUnwrap(store.restTimerEnd).addingTimeInterval(-15))
+        let watch = reconcile()
+        XCTAssertEqual(watch.restTimerStart, now)
+        XCTAssertEqual(watch.restDuration, 120)
+        XCTAssertEqual(watch.restProgress(at: currentTime), 0.375)
+
+        store.applyWatchUpdate(end: nil, pausedRemaining: 75)
+        currentTime.addTimeInterval(300)
+        store.adjust(by: 15)
+        let paused = reconcile()
+        XCTAssertEqual(paused.phase, .resting)
+        XCTAssertEqual(paused.pausedRestRemaining, 90)
+        XCTAssertEqual(paused.restDuration, 135)
+        XCTAssertEqual(try XCTUnwrap(paused.restProgress(at: currentTime)), 45.0 / 135.0, accuracy: 0.001)
+        XCTAssertEqual(paused.restProgress(at: currentTime.addingTimeInterval(300)), paused.restProgress(at: currentTime))
+
+        store.applyWatchUpdate(end: nil, pausedRemaining: 75)
+        XCTAssertEqual(reconcile().restDuration, 120)
+        XCTAssertEqual(reconcile().restProgress(at: currentTime), 0.375)
+        store.applyWatchUpdate(end: currentTime.addingTimeInterval(75))
+        let resumed = reconcile()
+        XCTAssertFalse(resumed.isRestPaused)
+        XCTAssertEqual(resumed.restDuration, 120)
+        XCTAssertEqual(resumed.restProgress(at: currentTime), 0.375)
+
+        // SkipWorkoutRestTimerIntent cancels this store before refreshing.
+        store.cancel()
+        let skipped = reconcile()
+        XCTAssertEqual(skipped.phase, .currentSet)
+        XCTAssertNil(skipped.restTimerInterval)
+        XCTAssertNil(skipped.pausedRestRemaining)
     }
 
     func testReconciliationRetainsConfirmationWhenNoRestIsActive() {
@@ -3158,5 +3402,880 @@ final class WorkoutOrganizationTests: XCTestCase {
         XCTAssertThrowsError(try WorkoutOrganization.setSuperset(in: workout, source: exercises[0], partnerIDs: [exercises[1].objectID]))
         XCTAssertEqual(order, original)
         XCTAssertTrue(groups.allSatisfy { $0 == nil })
+    }
+}
+
+
+final class SavedWorkoutTrackingTransferTests: XCTestCase {
+    // These cover app-side transfer helpers, so use the app module's copy of the shared types.
+    private typealias SetTrackingType = Iron.SetTrackingType
+    private typealias SetTrackingPreferences = Iron.SetTrackingPreferences
+    private enum SaveFailure: Error { case failed }
+    private var container: NSPersistentContainer!
+    private var defaults: UserDefaults!
+    private var suite: String!
+    private var context: NSManagedObjectContext { container.viewContext }
+
+    override func setUpWithError() throws {
+        container = setUpInMemoryNSPersistentContainer()
+        suite = "SavedWorkoutTrackingTransferTests.\(UUID().uuidString)"
+        defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suite)
+        defaults = nil
+        container = nil
+        super.tearDown()
+    }
+
+    private func routine() throws -> (WorkoutRoutine, WorkoutRoutineExercise, WorkoutRoutineSet) {
+        let plan = WorkoutPlan.create(context: context)
+        let routine = WorkoutRoutine.create(context: context)
+        routine.workoutPlan = plan
+        let exercise = WorkoutRoutineExercise.create(context: context)
+        exercise.exerciseUuid = UUID()
+        exercise.workoutRoutine = routine
+        let set = WorkoutRoutineSet.create(context: context)
+        set.workoutRoutineExercise = exercise
+        set.weightValue = 40
+        SetTrackingPreferences.setOverride(.weightDistance, for: try XCTUnwrap(exercise.exerciseUuid), defaults: defaults)
+        SetTrackingPreferences.setRoutineDistance(25, for: try XCTUnwrap(set.uuid), defaults: defaults)
+        try context.save()
+        return (routine, exercise, set)
+    }
+
+    func testDuplicateStagesFreshDistanceTargetsAndSupportsCancelFailureAndRetry() throws {
+        let (source, exercise, sourceSet) = try routine()
+        let original = SetTrackingPreferences.load(defaults: defaults)
+        let route = WorkoutPlanEditorRoute(kind: .duplicate(planID: source.objectID))
+        let cancelled = try WorkoutPlanEditorSession(parentContext: context, route: route, trackingDefaults: defaults)
+        let cancelledExercise = try XCTUnwrap(cancelled.routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)
+        let cancelledSet = try XCTUnwrap(cancelledExercise.workoutRoutineSets?.firstObject as? WorkoutRoutineSet)
+        XCTAssertNotEqual(cancelledSet.uuid, sourceSet.uuid)
+        XCTAssertEqual(cancelled.trackingDraft.distance(for: cancelledSet.uuid), 25)
+        XCTAssertEqual(cancelled.trackingDraft.override(for: exercise.exerciseUuid), .weightDistance)
+        XCTAssertEqual(SetTrackingPreferences.load(defaults: defaults), original)
+        cancelled.cancel()
+        XCTAssertEqual(SetTrackingPreferences.load(defaults: defaults), original)
+
+        let session = try WorkoutPlanEditorSession(parentContext: context, route: route, trackingDefaults: defaults)
+        let copiedExercise = try XCTUnwrap(session.routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)
+        let copiedSet = try XCTUnwrap(copiedExercise.workoutRoutineSets?.firstObject as? WorkoutRoutineSet)
+        let copiedID = try XCTUnwrap(copiedSet.uuid)
+        session.trackingDraft.setDistance(50, for: copiedID)
+        XCTAssertThrowsError(try session.commit(save: { throw SaveFailure.failed }))
+        XCTAssertEqual(SetTrackingPreferences.load(defaults: defaults), original)
+        XCTAssertEqual(session.trackingDraft.distance(for: copiedID), 50)
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 1)
+        try session.commit()
+        XCTAssertEqual(SetTrackingPreferences.routineDistance(for: copiedID, defaults: defaults), 50)
+        XCTAssertEqual(SetTrackingPreferences.routineDistance(for: sourceSet.uuid, defaults: defaults), 25)
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 2)
+    }
+
+    func testSaveAsWorkoutStagesInferredTypesAndDistanceForCurrentAndFinishedSessions() throws {
+        for current in [true, false] {
+            let source = Workout.create(context: context)
+            source.isCurrentWorkout = current
+            source.start = Date(timeIntervalSince1970: 1_000)
+            source.end = current ? nil : Date(timeIntervalSince1970: 2_000)
+            let exercise = WorkoutExercise.create(context: context)
+            exercise.exerciseUuid = UUID()
+            exercise.workout = source
+            let set = WorkoutSet.create(context: context)
+            set.workoutExercise = exercise
+            set.weightValue = 40
+            set.distanceValue = 25
+            set.isCompleted = !current
+            try context.save()
+            let original = SetTrackingPreferences.load(defaults: defaults)
+            let route = WorkoutPlanEditorRoute(kind: .createFromWorkout(workoutID: source.objectID, containerID: nil))
+            let session = try WorkoutPlanEditorSession(parentContext: context, route: route, trackingDefaults: defaults)
+            let targetExercise = try XCTUnwrap(session.routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)
+            let targetSet = try XCTUnwrap(targetExercise.workoutRoutineSets?.firstObject as? WorkoutRoutineSet)
+            XCTAssertEqual(session.trackingDraft.override(for: exercise.exerciseUuid), .weightDistance)
+            XCTAssertEqual(session.trackingDraft.distance(for: targetSet.uuid), 25)
+            XCTAssertEqual(SetTrackingPreferences.load(defaults: defaults), original)
+            XCTAssertThrowsError(try session.commit(save: { throw SaveFailure.failed }))
+            XCTAssertEqual(SetTrackingPreferences.load(defaults: defaults), original)
+            try session.commit()
+            XCTAssertEqual(SetTrackingPreferences.override(for: exercise.exerciseUuid, defaults: defaults), .weightDistance)
+            XCTAssertEqual(SetTrackingPreferences.routineDistance(for: targetSet.uuid, defaults: defaults), 25)
+            XCTAssertEqual(source.isCurrentWorkout, current)
+            XCTAssertEqual(set.isCompleted, !current)
+            XCTAssertEqual(set.distanceValue, 25)
+        }
+    }
+
+    func testEditorUsesStagedTypeChangesAndDropsDeletedDraftSetMetadata() throws {
+        let (source, exercise, _) = try routine()
+        let session = try WorkoutPlanEditorSession(parentContext: context,
+            route: .init(kind: .duplicate(planID: source.objectID)), trackingDefaults: defaults)
+        let copiedExercise = try XCTUnwrap(session.routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)
+        let copiedSet = try XCTUnwrap(copiedExercise.workoutRoutineSets?.firstObject as? WorkoutRoutineSet)
+        let removedID = try XCTUnwrap(copiedSet.uuid)
+        session.trackingDraft.setOverride(.duration, for: try XCTUnwrap(exercise.exerciseUuid))
+        session.context.delete(copiedSet)
+        session.context.processPendingChanges()
+        try session.commit()
+        XCTAssertEqual(SetTrackingPreferences.override(for: exercise.exerciseUuid, defaults: defaults), .duration)
+        XCTAssertNil(SetTrackingPreferences.load(defaults: defaults).routineDistances[removedID.uuidString])
+    }
+
+    func testSingleWorkoutExportScopesMetadataAndImportRemapsItAfterDurableSave() throws {
+        let (source, exercise, sourceSet) = try routine()
+        let unrelatedID = UUID()
+        SetTrackingPreferences.setOverride(.duration, for: unrelatedID, defaults: defaults)
+        SetTrackingPreferences.setRoutineDistance(999, for: UUID(), defaults: defaults)
+        let document = SavedWorkoutDocument(workout: source, defaults: defaults)
+        XCTAssertEqual(document.trackingPreferences?.overrides.count, 1)
+        XCTAssertEqual(document.trackingPreferences?.routineDistances.count, 1)
+        let data = try JSONEncoder().encode(document)
+        defaults.removeObject(forKey: SetTrackingPreferences.storageKey)
+        XCTAssertThrowsError(try SavedWorkoutImporter.importData(data, into: context, trackingDefaults: defaults,
+            save: { throw SaveFailure.failed }))
+        XCTAssertTrue(SetTrackingPreferences.load(defaults: defaults).isEmpty)
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 1)
+
+        for _ in 0..<2 {
+            try SavedWorkoutImporter.importData(data, into: context, trackingDefaults: defaults)
+        }
+        let imported = try context.fetch(WorkoutRoutine.fetchRequest()).filter { $0 != source }
+        let importedSets = imported.compactMap {
+            ($0.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)?.workoutRoutineSets?.firstObject as? WorkoutRoutineSet
+        }
+        XCTAssertEqual(importedSets.count, 2)
+        XCTAssertEqual(Set(imported.compactMap(\.uuid)).count, 2)
+        XCTAssertEqual(Set(importedSets.compactMap(\.uuid)).count, 2)
+        for set in importedSets {
+            XCTAssertNotEqual(set.uuid, sourceSet.uuid)
+            XCTAssertEqual(SetTrackingPreferences.routineDistance(for: set.uuid, defaults: defaults), 25)
+        }
+        XCTAssertEqual(SetTrackingPreferences.override(for: exercise.exerciseUuid, defaults: defaults), .weightDistance)
+        XCTAssertNil(SetTrackingPreferences.override(for: unrelatedID, defaults: defaults))
+        XCTAssertEqual(SetTrackingPreferences.load(defaults: defaults).routineDistances.count, 2)
+    }
+
+    func testLegacyDocumentImportsWithoutMetadataAndUnrelatedMetadataIsRejected() throws {
+        let (source, _, _) = try routine()
+        let data = try JSONEncoder().encode(SavedWorkoutDocument(workout: source, defaults: defaults))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var metadata = try XCTUnwrap(object["trackingPreferences"] as? [String: Any])
+        metadata["routineDistances"] = [UUID().uuidString: ["meters": 500, "updatedAt": 1]]
+        object["trackingPreferences"] = metadata
+        let original = SetTrackingPreferences.load(defaults: defaults)
+        XCTAssertThrowsError(try SavedWorkoutImporter.importData(JSONSerialization.data(withJSONObject: object),
+            into: context, trackingDefaults: defaults))
+        XCTAssertEqual(SetTrackingPreferences.load(defaults: defaults), original)
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 1)
+        object["version"] = 1
+        object.removeValue(forKey: "trackingPreferences")
+        try SavedWorkoutImporter.importData(JSONSerialization.data(withJSONObject: object),
+            into: context, trackingDefaults: defaults)
+        XCTAssertEqual(SetTrackingPreferences.load(defaults: defaults), original)
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 2)
+    }
+
+    func testBlankRepeatStagesEveryTrackingTypeBeforeClearingValues() throws {
+        let source = Workout.create(context: context)
+        source.start = Date(timeIntervalSince1970: 1_000)
+        source.end = Date(timeIntervalSince1970: 2_000)
+        var ids: [UUID: SetTrackingType] = [:]
+        for type in SetTrackingType.allCases {
+            let exercise = WorkoutExercise.create(context: context)
+            let id = UUID()
+            ids[id] = type
+            exercise.exerciseUuid = id
+            exercise.workout = source
+            let set = WorkoutSet.create(context: context)
+            set.workoutExercise = exercise
+            set.isCompleted = true
+            set.weightValue = type.usesWeight ? 20 : 0
+            set.repetitionsValue = type.usesReps ? 12 : 0
+            set.durationValue = type.usesDuration ? 60 : nil
+            set.distanceValue = type.usesDistance ? 500 : nil
+            if type == .weightedBodyweight || type == .assistedBodyweight {
+                SetTrackingPreferences.setOverride(type, for: id, defaults: defaults)
+            }
+        }
+        try context.save()
+        let original = SetTrackingPreferences.load(defaults: defaults)
+        let draft = source.repeatTrackingDraft(defaults: defaults)
+        let blank = try XCTUnwrap(source.copyForRepeat(blank: true))
+        for exercise in blank.workoutExercises?.array as? [WorkoutExercise] ?? [] {
+            let id = try XCTUnwrap(exercise.exerciseUuid)
+            XCTAssertEqual(draft.override(for: id), ids[id])
+            for set in exercise.workoutSets?.array as? [WorkoutSet] ?? [] {
+                XCTAssertNil(SetTrackingType.infer(from: set.trackingData))
+            }
+        }
+        XCTAssertEqual(SetTrackingPreferences.load(defaults: defaults), original)
+        // copyForRepeat creates a draft; the production start boundary assigns
+        // these fields before persisting its unfinished sets.
+        blank.start = Date(timeIntervalSince1970: 3_000)
+        blank.isCurrentWorkout = true
+        try context.save()
+        draft.commit()
+        for exercise in blank.workoutExercises?.array as? [WorkoutExercise] ?? [] {
+            let id = try XCTUnwrap(exercise.exerciseUuid)
+            XCTAssertEqual(exercise.trackingType(catalogExercise: nil, defaults: defaults), ids[id])
+        }
+    }
+
+    func testFailedRepeatStartDoesNotPublishInferredTypes() throws {
+        let source = Workout.create(context: context)
+        source.start = Date(timeIntervalSince1970: 1_000)
+        source.end = Date(timeIntervalSince1970: 2_000)
+        let exercise = WorkoutExercise.create(context: context)
+        exercise.workout = source
+        exercise.exerciseUuid = UUID()
+        let set = WorkoutSet.create(context: context)
+        set.workoutExercise = exercise
+        set.durationValue = 90
+        set.isCompleted = true
+        try context.save()
+        var saveCalled = false
+        XCTAssertThrowsError(
+            try Workout.startRepeating(source, blank: true, trackingDefaults: defaults, save: {
+                saveCalled = true
+                throw SaveFailure.failed
+            })
+        ) { error in
+            XCTAssertTrue(error is SaveFailure)
+        }
+        XCTAssertTrue(saveCalled)
+        XCTAssertTrue(SetTrackingPreferences.load(defaults: defaults).isEmpty)
+        XCTAssertEqual(try context.count(for: Workout.fetchRequest()), 1)
+        XCTAssertFalse(source.isCurrentWorkout)
+    }
+
+    func testUnfinishedZeroLoadLiftingRowsDoNotInferRepsOnly() {
+        let exercise = WorkoutExercise.create(context: context)
+        exercise.exerciseUuid = UUID()
+        let set = WorkoutSet.create(context: context)
+        set.workoutExercise = exercise
+        set.repetitionsValue = 5
+        set.weightValue = 0
+        XCTAssertEqual(exercise.trackingType(catalogExercise: nil, defaults: defaults), .weightReps)
+        set.isCompleted = true
+        XCTAssertEqual(exercise.trackingType(catalogExercise: nil, defaults: defaults), .bodyweightReps)
+    }
+}
+
+final class WorkoutSetPersonalRecordTests: XCTestCase {
+    private typealias Tracking = WorkoutDataKit.SetTrackingType
+    private typealias Values = WorkoutDataKit.SetTrackingType.SetData
+    private var container: NSPersistentContainer!
+    private var originalPreferences: Data?
+    private var context: NSManagedObjectContext { container.viewContext }
+    private let date = Date(timeIntervalSince1970: 1_700_000_000)
+
+    override func setUp() {
+        super.setUp()
+        container = setUpInMemoryNSPersistentContainer()
+        originalPreferences = UserDefaults.standard.data(forKey: WorkoutDataKit.SetTrackingPreferences.storageKey)
+    }
+
+    override func tearDown() {
+        UserDefaults.standard.set(originalPreferences, forKey: WorkoutDataKit.SetTrackingPreferences.storageKey)
+        context.reset()
+        container = nil
+        super.tearDown()
+    }
+
+    private func exercise(_ id: UUID, at offset: TimeInterval, current: Bool = false) -> WorkoutExercise {
+        let workout = Workout.create(context: context)
+        workout.start = date.addingTimeInterval(offset)
+        workout.end = date.addingTimeInterval(offset + 600)
+        workout.isCurrentWorkout = current
+        let exercise = WorkoutExercise.create(context: context)
+        exercise.exerciseUuid = id
+        exercise.workout = workout
+        return exercise
+    }
+
+    @discardableResult
+    private func set(_ values: Values, in exercise: WorkoutExercise, completed: Bool = true) -> WorkoutSet {
+        let set = WorkoutSet.create(context: context)
+        // Timed/distance records must work with absent legacy weight/reps fields.
+        set.weight = values.weight > 0 ? NSNumber(value: values.weight) : nil
+        set.repetitions = values.reps > 0 ? NSNumber(value: values.reps) : nil
+        set.durationValue = values.duration
+        set.distanceValue = values.distance
+        set.isCompleted = completed
+        let sets = exercise.workoutSets?.mutableCopy() as? NSMutableOrderedSet ?? NSMutableOrderedSet()
+        sets.add(set)
+        exercise.workoutSets = sets
+        return set
+    }
+
+    private func prefer(_ type: Tracking, for id: UUID) {
+        WorkoutDataKit.SetTrackingPreferences.setOverride(type, for: id)
+    }
+
+    private func assertHistoryAgrees(catalog: [UUID: Exercise] = [:],
+                                     file: StaticString = #filePath, line: UInt = #line) throws {
+        let workouts = try context.fetch(Workout.fetchRequest()).filter { !$0.isCurrentWorkout }
+        let completedSets = workouts.flatMap { $0.workoutExercises?.array as? [WorkoutExercise] ?? [] }
+            .flatMap { $0.workoutSets?.array as? [WorkoutSet] ?? [] }.filter(\.isCompleted)
+        let expected = Set(completedSets.filter { $0.isPersonalRecord == true }.map(\.objectID))
+        let snapshot = TrainingHistorySnapshot.build(from: Array(workouts.reversed()), catalog: catalog)
+        XCTAssertEqual(snapshot.recordSetIDs, expected, file: file, line: line)
+    }
+
+    private var progressions: [(Tracking, Values, Values, Values)] {
+        [
+            (.weightReps, .init(weight: 40, reps: 8), .init(weight: 35, reps: 7), .init(weight: 45, reps: 8)),
+            (.bodyweightReps, .init(reps: 8), .init(reps: 7), .init(reps: 9)),
+            (.weightedBodyweight, .init(weight: 20, reps: 8), .init(weight: 15, reps: 7), .init(weight: 25, reps: 8)),
+            (.assistedBodyweight, .init(weight: 30, reps: 8), .init(weight: 35, reps: 7), .init(weight: 25, reps: 8)),
+            (.duration, .init(duration: 60), .init(duration: 50), .init(duration: 70)),
+            (.weightDuration, .init(weight: 20, duration: 60), .init(weight: 15, duration: 50), .init(weight: 25, duration: 60)),
+            (.distanceDuration, .init(duration: 300, distance: 1_000), .init(duration: 250, distance: 900), .init(duration: 350, distance: 1_100)),
+            (.weightDistance, .init(weight: 20, distance: 30), .init(weight: 15, distance: 25), .init(weight: 25, distance: 30))
+        ]
+    }
+
+    private func checkProgressions(useOverrides: Bool, file: StaticString = #filePath, line: UInt = #line) throws {
+        for (type, baseline, worse, improved) in progressions {
+            if !useOverrides, type == .weightedBodyweight || type == .assistedBodyweight { continue }
+            let id = UUID()
+            if useOverrides { prefer(type, for: id) }
+            set(baseline, in: exercise(id, at: 0))
+            try context.save()
+            let current = exercise(id, at: 3_600, current: true)
+            let tie = set(baseline, in: current)
+            let regression = set(worse, in: current)
+            let record = set(improved, in: current)
+            let duplicate = set(improved, in: current)
+            XCTAssertEqual(tie.isPersonalRecord, false, type.rawValue, file: file, line: line)
+            XCTAssertEqual(regression.isPersonalRecord, false, type.rawValue, file: file, line: line)
+            XCTAssertEqual(record.isPersonalRecord, true, type.rawValue, file: file, line: line)
+            XCTAssertEqual(duplicate.isPersonalRecord, false, type.rawValue, file: file, line: line)
+            current.workout?.isCurrentWorkout = false
+            try assertHistoryAgrees(file: file, line: line)
+            try context.save()
+            // Exercise the persisted-store path as well as pending inserts.
+            XCTAssertEqual(record.isPersonalRecord, true, type.rawValue, file: file, line: line)
+            XCTAssertEqual(duplicate.isPersonalRecord, false, type.rawValue, file: file, line: line)
+            try assertHistoryAgrees(file: file, line: line)
+        }
+    }
+
+    func testAllTrackingTypesCompareTheirOwnMeasurements() throws {
+        try checkProgressions(useOverrides: true)
+    }
+
+    func testRecordedDimensionsAreInferredWithoutAnOverride() throws {
+        try checkProgressions(useOverrides: false)
+    }
+
+    func testPredicatesAlsoWorkInSQLite() throws {
+        context.reset()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("PersonalRecords.sqlite")
+        container = NSPersistentContainer(name: "PersonalRecords", managedObjectModel: WorkoutDataStorage.model)
+        defer {
+            context.reset()
+            try? container.persistentStoreCoordinator.destroyPersistentStore(at: url, ofType: NSSQLiteStoreType, options: nil)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        _ = try container.persistentStoreCoordinator.addPersistentStore(ofType: NSSQLiteStoreType,
+            configurationName: nil, at: url, options: nil)
+        try checkProgressions(useOverrides: true)
+        try checkProgressions(useOverrides: false)
+        try checkOnlyCompletedPriorSetsOfTheSameExerciseCountAsHistory()
+    }
+
+    func testFirstWorkoutInEachDimensionOnlyEstablishesABaseline() throws {
+        for (type, baseline, _, improved) in progressions {
+            let id = UUID()
+            prefer(type, for: id)
+            let first = exercise(id, at: 0, current: true)
+            XCTAssertEqual(set(baseline, in: first).isPersonalRecord, false, type.rawValue)
+            XCTAssertEqual(set(improved, in: first).isPersonalRecord, false, type.rawValue)
+            first.workout?.isCurrentWorkout = false
+            try assertHistoryAgrees()
+        }
+    }
+
+    func testLoadPairsPreserveTheLegacyParetoComparison() throws {
+        let cases: [(Tracking, Values, Values, Values)] = [
+            (.weightReps, .init(weight: 40, reps: 8), .init(weight: 45, reps: 6), .init(weight: 35, reps: 10)),
+            (.weightedBodyweight, .init(weight: 40, reps: 8), .init(weight: 45, reps: 6), .init(weight: 35, reps: 10)),
+            (.weightDuration, .init(weight: 40, duration: 60), .init(weight: 45, duration: 50), .init(weight: 35, duration: 70)),
+            (.weightDistance, .init(weight: 40, distance: 30), .init(weight: 45, distance: 25), .init(weight: 35, distance: 35))
+        ]
+        for (type, baseline, heavier, more) in cases {
+            let id = UUID()
+            prefer(type, for: id)
+            set(baseline, in: exercise(id, at: 0))
+            try context.save()
+            let current = exercise(id, at: 3_600, current: true)
+            XCTAssertEqual(set(heavier, in: current).isPersonalRecord, true, type.rawValue)
+            XCTAssertEqual(set(more, in: current).isPersonalRecord, true, type.rawValue)
+            XCTAssertEqual(set(heavier, in: current).isPersonalRecord, false, type.rawValue)
+            current.workout?.isCurrentWorkout = false
+            try assertHistoryAgrees()
+            let later = exercise(id, at: 7_200)
+            XCTAssertEqual(set(heavier, in: later).isPersonalRecord, false, type.rawValue)
+            XCTAssertEqual(set(more, in: later).isPersonalRecord, false, type.rawValue)
+            XCTAssertEqual(set(baseline, in: later).isPersonalRecord, false, type.rawValue)
+            try assertHistoryAgrees()
+        }
+    }
+
+    func testAssistanceReversesLoadAndAllowsZeroAssistance() throws {
+        let id = UUID()
+        prefer(.assistedBodyweight, for: id)
+        set(.init(weight: 30, reps: 8), in: exercise(id, at: 0))
+        try context.save()
+        let current = exercise(id, at: 3_600, current: true)
+        XCTAssertEqual(set(.init(weight: 40, reps: 8), in: current).isPersonalRecord, false)
+        XCTAssertEqual(set(.init(weight: 20, reps: 8), in: current).isPersonalRecord, true)
+        XCTAssertEqual(set(.init(weight: 30, reps: 9), in: current).isPersonalRecord, true)
+        XCTAssertEqual(set(.init(weight: 30, reps: 7), in: current).isPersonalRecord, false)
+        let unassisted = set(.init(reps: 8), in: current)
+        unassisted.weightValue = 0
+        XCTAssertEqual(unassisted.isPersonalRecord, true)
+        let duplicate = set(.init(reps: 8), in: current)
+        duplicate.weightValue = 0
+        XCTAssertEqual(duplicate.isPersonalRecord, false)
+        current.workout?.isCurrentWorkout = false
+        try assertHistoryAgrees()
+    }
+
+    func testOverrideChangesAreReadWithoutStaleCachedResults() throws {
+        let id = UUID()
+        set(.init(weight: 30, reps: 8), in: exercise(id, at: 0))
+        try context.save()
+        let candidate = set(.init(weight: 20, reps: 8), in: exercise(id, at: 3_600, current: true))
+        prefer(.weightedBodyweight, for: id)
+        XCTAssertEqual(candidate.isPersonalRecord, false)
+        prefer(.assistedBodyweight, for: id)
+        XCTAssertEqual(candidate.isPersonalRecord, true)
+        prefer(.weightedBodyweight, for: id)
+        XCTAssertEqual(candidate.isPersonalRecord, false)
+    }
+
+    func testDifferentDimensionsNeverEstablishOrSuppressARecord() throws {
+        let id = UUID()
+        set(.init(weight: 100, reps: 100), in: exercise(id, at: 0))
+        try context.save()
+        let current = exercise(id, at: 7_200, current: true)
+        set(.init(weight: 200, reps: 200), in: current)
+        let timed = set(.init(duration: 90), in: current)
+        XCTAssertEqual(timed.isPersonalRecord, false) // No prior duration baseline.
+        set(.init(duration: 60), in: exercise(id, at: 3_600))
+        try context.save()
+        XCTAssertEqual(timed.isPersonalRecord, true)
+        // A later preference must still resolve recorded reps and seconds separately.
+        prefer(.assistedBodyweight, for: id)
+        XCTAssertEqual(timed.isPersonalRecord, true)
+    }
+
+    func testDistanceTiesDoNotWinThroughFasterPace() throws {
+        let id = UUID()
+        set(.init(duration: 300, distance: 1_000), in: exercise(id, at: 0))
+        try context.save()
+        let current = exercise(id, at: 3_600, current: true)
+        XCTAssertEqual(set(.init(duration: 240, distance: 1_000), in: current).isPersonalRecord, false)
+        XCTAssertEqual(set(.init(distance: 1_100), in: current).isPersonalRecord, true)
+        current.workout?.isCurrentWorkout = false
+        try assertHistoryAgrees()
+    }
+
+    func testCompatibleOverridesStillSeparateRecordedDimensions() throws {
+        let id = UUID()
+        prefer(.bodyweightReps, for: id)
+        set(.init(reps: 8), in: exercise(id, at: 0))
+        try context.save()
+        let loaded = set(.init(weight: 20, reps: 8), in: exercise(id, at: 7_200, current: true))
+        XCTAssertEqual(loaded.isPersonalRecord, false) // Added load resolves to weighted bodyweight.
+        set(.init(weight: 10, reps: 8), in: exercise(id, at: 3_600))
+        try context.save()
+        XCTAssertEqual(loaded.isPersonalRecord, true)
+        loaded.workoutExercise?.workout?.isCurrentWorkout = false
+
+        let distanceID = UUID()
+        prefer(.distanceDuration, for: distanceID)
+        set(.init(duration: 3_600), in: exercise(distanceID, at: 0))
+        try context.save()
+        let current = exercise(distanceID, at: 7_200, current: true)
+        set(.init(duration: 7_200), in: current)
+        let distance = set(.init(distance: 1_000), in: current)
+        XCTAssertEqual(distance.isPersonalRecord, false) // Time alone is not a distance baseline.
+        set(.init(distance: 500), in: exercise(distanceID, at: 3_600))
+        try context.save()
+        XCTAssertEqual(distance.isPersonalRecord, true)
+    }
+
+    func testExplicitZeroLoadRemainsValidForWeightedOverrides() throws {
+        let types: [Tracking] = [.weightedBodyweight, .assistedBodyweight, .weightDuration]
+        for type in types {
+            let id = UUID()
+            prefer(type, for: id)
+            let values: Values = type == .weightDuration ? .init(duration: 60) : .init(reps: 8)
+            let baseline = set(values, in: exercise(id, at: 0))
+            baseline.weightValue = 0
+            try context.save()
+            let current = exercise(id, at: 3_600, current: true)
+            let tie = set(values, in: current)
+            tie.weightValue = 0
+            XCTAssertEqual(tie.isPersonalRecord, false, type.rawValue)
+            let more: Values = type == .weightDuration ? .init(duration: 70) : .init(reps: 9)
+            let record = set(more, in: current)
+            record.weightValue = 0
+            XCTAssertEqual(record.isPersonalRecord, true, type.rawValue)
+            current.workout?.isCurrentWorkout = false
+            try assertHistoryAgrees()
+        }
+    }
+
+    func testOnlyCompletedPriorSetsOfTheSameExerciseCountAsHistory() throws {
+        try checkOnlyCompletedPriorSetsOfTheSameExerciseCountAsHistory()
+    }
+
+    private func checkOnlyCompletedPriorSetsOfTheSameExerciseCountAsHistory() throws {
+        let id = UUID()
+        set(.init(reps: 100), in: exercise(UUID(), at: 0))
+        let earlier = set(.init(reps: 100), in: exercise(id, at: 0))
+        let peer = set(.init(reps: 100), in: exercise(id, at: 3_600))
+        set(.init(reps: 100), in: exercise(id, at: 7_200))
+        try context.save()
+        earlier.isCompleted = false
+        let candidate = set(.init(reps: 10), in: exercise(id, at: 3_600, current: true))
+        XCTAssertEqual(candidate.isPersonalRecord, false) // No completed prior baseline.
+        earlier.isCompleted = true
+        earlier.repetitionsValue = 8
+        XCTAssertEqual(candidate.isPersonalRecord, true) // Peer/future/other UUID are ignored.
+        let peerWorkout = try XCTUnwrap(peer.workoutExercise?.workout)
+        peerWorkout.start = date.addingTimeInterval(1_800)
+        XCTAssertEqual(candidate.isPersonalRecord, false)
+        peerWorkout.start = date.addingTimeInterval(3_600)
+        XCTAssertEqual(candidate.isPersonalRecord, true) // Moving it back removes the suppressor.
+        let earlierWorkout = try XCTUnwrap(earlier.workoutExercise?.workout)
+        earlierWorkout.end = date.addingTimeInterval(4_200)
+        earlierWorkout.start = date.addingTimeInterval(3_600)
+        XCTAssertEqual(candidate.isPersonalRecord, false) // The edited date also removes the baseline.
+        earlierWorkout.start = date
+        earlierWorkout.end = date.addingTimeInterval(600)
+        XCTAssertEqual(candidate.isPersonalRecord, true)
+        peerWorkout.start = date.addingTimeInterval(1_800)
+        XCTAssertEqual(candidate.isPersonalRecord, false)
+        try context.save()
+        XCTAssertEqual(candidate.isPersonalRecord, false)
+    }
+
+    func testEarlierUnfinishedRowsStillSuppressAndLaterRowsDoNot() throws {
+        let id = UUID()
+        set(.init(duration: 60), in: exercise(id, at: 0))
+        try context.save()
+        let current = exercise(id, at: 3_600, current: true)
+        let earlier = set(.init(duration: 120), in: current, completed: false)
+        let candidate = set(.init(duration: 90), in: current)
+        XCTAssertEqual(candidate.isPersonalRecord, false)
+        current.workoutSets = NSOrderedSet(array: [candidate, earlier])
+        XCTAssertEqual(candidate.isPersonalRecord, true)
+        earlier.durationValue = 80
+        current.workoutSets = NSOrderedSet(array: [earlier, candidate])
+        XCTAssertEqual(candidate.isPersonalRecord, true)
+    }
+
+    func testHistoryPreservesEarlierRowSuppressionForEveryDimension() throws {
+        for (type, baseline, _, improved) in progressions {
+            let id = UUID()
+            prefer(type, for: id)
+            set(baseline, in: exercise(id, at: 0))
+            try context.save()
+            let current = exercise(id, at: 3_600)
+            let earlier = set(improved, in: current, completed: false)
+            let candidate = set(improved, in: current)
+            XCTAssertEqual(candidate.isPersonalRecord, false, type.rawValue)
+            try assertHistoryAgrees()
+            current.workoutSets = NSOrderedSet(array: [candidate, earlier])
+            XCTAssertEqual(candidate.isPersonalRecord, true, type.rawValue)
+            try assertHistoryAgrees()
+            // Completed rows, rather than unfinished suppressors, enter history.
+            set(baseline, in: exercise(id, at: 7_200))
+            try assertHistoryAgrees()
+            // The snapshot above tolerates an unfinished row in memory, but
+            // finishing must remove it before the historical graph can save.
+            current.workout?.deleteUncompletedSets()
+            try context.save()
+            try assertHistoryAgrees()
+        }
+    }
+
+    func testHistoryIgnoresInvalidBaselinesAndRequiresStoredLoad() throws {
+        for type in [Tracking.assistedBodyweight, .weightDuration, .weightDistance] {
+            let id = UUID()
+            prefer(type, for: id)
+            let baseline: Values
+            let improved: Values
+            switch type {
+            case .assistedBodyweight:
+                baseline = .init(weight: 30, reps: 8)
+                improved = .init(weight: 20, reps: 8)
+            case .weightDuration:
+                baseline = .init(weight: 20, duration: 60)
+                improved = .init(weight: 25, duration: 60)
+            default:
+                baseline = .init(weight: 20, distance: 30)
+                improved = .init(weight: 25, distance: 30)
+            }
+            let prior = set(baseline, in: exercise(id, at: 0))
+            prior.weight = nil
+            let current = exercise(id, at: 3_600)
+            let candidate = set(improved, in: current)
+            XCTAssertEqual(candidate.isPersonalRecord, false, type.rawValue)
+            try assertHistoryAgrees()
+            prior.weightValue = baseline.weight
+            XCTAssertEqual(candidate.isPersonalRecord, true, type.rawValue)
+            try assertHistoryAgrees()
+            candidate.weight = nil
+            XCTAssertNotEqual(candidate.isPersonalRecord, true, type.rawValue)
+            try assertHistoryAgrees()
+            candidate.weightValue = -1
+            XCTAssertNotEqual(candidate.isPersonalRecord, true, type.rawValue)
+            try assertHistoryAgrees()
+            candidate.weightValue = .infinity
+            XCTAssertNotEqual(candidate.isPersonalRecord, true, type.rawValue)
+            try assertHistoryAgrees()
+            candidate.weightValue = improved.weight
+            try context.save()
+            try assertHistoryAgrees()
+        }
+    }
+
+    func testHistoryUsesTheSamePreferenceAsBadgesRatherThanCatalogMetadata() throws {
+        let id = UUID()
+        let catalogExercise = Exercise(uuid: id, everkineticId: 10_000, title: "Assisted Pull-up",
+            alias: [], description: nil, primaryMuscle: [], secondaryMuscle: [], equipment: ["machine"],
+            steps: [], tips: [], references: [], pdfPaths: [])
+        set(.init(weight: 30, reps: 8), in: exercise(id, at: 0))
+        let candidate = set(.init(weight: 20, reps: 8), in: exercise(id, at: 3_600))
+        try context.save()
+        XCTAssertEqual(candidate.isPersonalRecord, false)
+        try assertHistoryAgrees(catalog: [id: catalogExercise])
+        prefer(.assistedBodyweight, for: id)
+        XCTAssertEqual(candidate.isPersonalRecord, true)
+        try assertHistoryAgrees(catalog: [id: catalogExercise])
+        prefer(.weightedBodyweight, for: id)
+        XCTAssertEqual(candidate.isPersonalRecord, false)
+        try assertHistoryAgrees(catalog: [id: catalogExercise])
+    }
+
+    func testHistoryKeepsPeerWorkoutsAndDimensionsSeparate() throws {
+        let id = UUID()
+        let baseline = exercise(id, at: 0)
+        set(.init(duration: 60), in: baseline)
+        let peer = exercise(id, at: 3_600)
+        set(.init(duration: 120), in: peer)
+        let current = exercise(id, at: 3_600)
+        set(.init(weight: 100, reps: 100), in: current)
+        let candidate = set(.init(duration: 90), in: current)
+        let distance = set(.init(distance: 1_000), in: current)
+        try context.save()
+        XCTAssertEqual(candidate.isPersonalRecord, true)
+        XCTAssertEqual(distance.isPersonalRecord, false)
+        try assertHistoryAgrees()
+        set(.init(distance: 500), in: baseline)
+        try context.save()
+        XCTAssertEqual(distance.isPersonalRecord, true)
+        try assertHistoryAgrees()
+    }
+
+    func testInvalidOrMissingMeasurementsAndMetadataDoNotEarnBadges() throws {
+        let id = UUID()
+        prefer(.weightDuration, for: id)
+        set(.init(weight: 20, duration: 60), in: exercise(id, at: 0))
+        try context.save()
+        let current = exercise(id, at: 3_600, current: true)
+        let candidate = set(.init(weight: 25, duration: 70), in: current)
+        XCTAssertEqual(candidate.isPersonalRecord, true)
+        candidate.weight = nil
+        XCTAssertNil(candidate.isPersonalRecord)
+        candidate.weightValue = 25
+        candidate.duration = .infinity
+        XCTAssertNotEqual(candidate.isPersonalRecord, true)
+        candidate.duration = 70
+        candidate.weightValue = -1
+        XCTAssertEqual(candidate.isPersonalRecord, false)
+        candidate.weightValue = 25
+        current.workout?.start = nil
+        XCTAssertNil(candidate.isPersonalRecord)
+        current.workout?.start = date.addingTimeInterval(3_600)
+        current.exerciseUuid = nil
+        XCTAssertNil(candidate.isPersonalRecord)
+    }
+}
+
+final class WorkoutNoteSeparationTests: XCTestCase {
+    private enum SaveFailure: Error { case expected }
+
+    private func makeDefaults() throws -> UserDefaults {
+        let suite = "WorkoutNoteSeparationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
+    }
+
+    func testSaveAsWorkoutKeepsOnlyRoutineExerciseNotesAndDuplicatePreservesThem() throws {
+        for useExplicitLinks in [false, true] {
+            let container = setUpInMemoryNSPersistentContainer()
+            let context = container.viewContext
+            let defaults = try makeDefaults()
+            let routine = WorkoutRoutine.create(context: context)
+            routine.workoutPlan = WorkoutPlan.create(context: context)
+            let exerciseID = UUID()
+            let cues: [String?] = ["First plan cue", "Second plan cue", nil]
+            let sources = cues.map { cue -> WorkoutRoutineExercise in
+                let exercise = WorkoutRoutineExercise.create(context: context)
+                exercise.exerciseUuid = exerciseID
+                exercise.comment = cue
+                return exercise
+            }
+            routine.workoutRoutineExercises = NSOrderedSet(array: sources)
+            let workout = routine.createWorkout(context: context)
+            workout.start = Date(timeIntervalSince1970: 1_700_000_000)
+            workout.isCurrentWorkout = true
+            let logged = try XCTUnwrap(workout.workoutExercises?.array as? [WorkoutExercise])
+            for exercise in logged { exercise.comment = "Only relevant to this session" }
+            try context.save()
+            if useExplicitLinks {
+                workout.persistRoutineNoteLinks(defaults: defaults)
+                workout.workoutExercises = NSOrderedSet(array: Array(logged.reversed()))
+            }
+            // Exercises added during the session have no routine cue to carry forward.
+            let added = WorkoutExercise.create(context: context)
+            added.exerciseUuid = UUID()
+            added.comment = "Another session-only note"
+            workout.addToWorkoutExercises(added)
+            ExerciseNotes.setNote("Persistent exercise cue", for: exerciseID, defaults: defaults, notify: false)
+            try context.save()
+            let linksBefore = WorkoutRoutineNoteLinks.load(defaults: defaults)
+            let notesBefore = ExerciseNotes.load(defaults: defaults)
+            let expected: [String?] = (useExplicitLinks ? Array(cues.reversed()) : cues) + [nil]
+
+            let session = try WorkoutPlanEditorSession(
+                parentContext: context,
+                route: .init(kind: .createFromWorkout(workoutID: workout.objectID, containerID: nil)),
+                trackingDefaults: defaults)
+            let draftExercises = try XCTUnwrap(
+                session.routine.workoutRoutineExercises?.array as? [WorkoutRoutineExercise])
+            XCTAssertEqual(draftExercises.map(\.comment), expected)
+            try session.commit()
+            let saved = try XCTUnwrap(context.fetch(WorkoutRoutine.fetchRequest()).first {
+                $0.uuid == session.routine.uuid
+            })
+            let savedExercises = try XCTUnwrap(saved.workoutRoutineExercises?.array as? [WorkoutRoutineExercise])
+            XCTAssertEqual(savedExercises.map(\.comment), expected)
+
+            let duplicate = try WorkoutPlanEditorSession(
+                parentContext: context, route: .init(kind: .duplicate(planID: saved.objectID)),
+                trackingDefaults: defaults)
+            let duplicatedExercises = try XCTUnwrap(
+                duplicate.routine.workoutRoutineExercises?.array as? [WorkoutRoutineExercise])
+            XCTAssertEqual(duplicatedExercises.map(\.comment), expected)
+            duplicate.cancel()
+            XCTAssertEqual(sources.map(\.comment), cues)
+            XCTAssertTrue(logged.allSatisfy { $0.comment == "Only relevant to this session" })
+            XCTAssertEqual(added.comment, "Another session-only note")
+            XCTAssertEqual(WorkoutRoutineNoteLinks.load(defaults: defaults), linksBefore)
+            XCTAssertEqual(ExerciseNotes.load(defaults: defaults), notesBefore)
+        }
+    }
+
+    func testRepeatingNeverCopiesTransientExerciseOrSetNotes() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let defaults = try makeDefaults()
+        let source = Workout.create(context: context)
+        source.comment = "Session-only summary"
+        let exercise = WorkoutExercise.create(context: context)
+        exercise.workout = source
+        exercise.exerciseUuid = UUID()
+        exercise.comment = "Left shoulder felt tired today"
+        let set = WorkoutSet.create(context: context)
+        set.workoutExercise = exercise
+        set.comment = "Lost balance on the last rep"
+        set.repetitionsValue = 8
+        set.isCompleted = true
+        let exerciseID = try XCTUnwrap(exercise.exerciseUuid)
+        ExerciseNotes.setNote("Seat height 4", for: exerciseID, defaults: defaults)
+
+        for blank in [false, true] {
+            let repeated = try XCTUnwrap(source.copyForRepeat(blank: blank))
+            let copied = try XCTUnwrap(repeated.workoutExercises?.firstObject as? WorkoutExercise)
+            let copiedSet = try XCTUnwrap(copied.workoutSets?.firstObject as? WorkoutSet)
+            XCTAssertNil(repeated.comment)
+            XCTAssertNil(copied.comment)
+            XCTAssertNil(copiedSet.comment)
+            XCTAssertEqual(copied.exerciseUuid, exerciseID)
+            XCTAssertEqual(ExerciseNotes.note(for: copied.exerciseUuid, defaults: defaults), "Seat height 4")
+        }
+        XCTAssertEqual(exercise.comment, "Left shoulder felt tired today")
+        XCTAssertEqual(set.comment, "Lost balance on the last rep")
+    }
+
+    func testRoutineStartKeepsPlanNotesOutOfTransientFieldAndFailedSavePublishesNoLinks() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let defaults = try makeDefaults()
+        let routine = WorkoutRoutine.create(context: context)
+        routine.workoutPlan = WorkoutPlan.create(context: context)
+        let planExercise = WorkoutRoutineExercise.create(context: context)
+        planExercise.workoutRoutine = routine
+        planExercise.exerciseUuid = UUID()
+        planExercise.comment = "Perform lateral flexion"
+        try context.save()
+        var inspected = false
+
+        XCTAssertThrowsError(try Workout.startNew(in: context, routine: routine, notesDefaults: defaults, save: {
+            let workout = try XCTUnwrap(context.fetch(Workout.currentWorkoutFetchRequest).first)
+            let logged = try XCTUnwrap(workout.workoutExercises?.firstObject as? WorkoutExercise)
+            XCTAssertNil(logged.comment)
+            XCTAssertEqual(logged.routineNoteSource(defaults: defaults)?.comment, "Perform lateral flexion")
+            XCTAssertTrue(WorkoutRoutineNoteLinks.load(defaults: defaults).links.isEmpty)
+            inspected = true
+            throw SaveFailure.expected
+        }))
+        XCTAssertTrue(inspected)
+        XCTAssertTrue(WorkoutRoutineNoteLinks.load(defaults: defaults).links.isEmpty)
+        XCTAssertEqual(planExercise.comment, "Perform lateral flexion")
+        XCTAssertEqual(try context.count(for: Workout.fetchRequest()), 0)
+    }
+
+    func testRoutineLinkSurvivesDuplicateExerciseReorderingAndRejectsReplacement() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let defaults = try makeDefaults()
+        let routine = WorkoutRoutine.create(context: context)
+        routine.workoutPlan = WorkoutPlan.create(context: context)
+        let exerciseID = UUID()
+        var sources: [WorkoutRoutineExercise] = []
+        for text in ["First plan cue", "Second plan cue"] {
+            let source = WorkoutRoutineExercise.create(context: context)
+            source.exerciseUuid = exerciseID
+            source.comment = text
+            sources.append(source)
+        }
+        routine.workoutRoutineExercises = NSOrderedSet(array: sources)
+        let workout = routine.createWorkout(context: context)
+        workout.start = Date(timeIntervalSince1970: 1_700_000_000)
+        workout.isCurrentWorkout = true
+        let logged = try XCTUnwrap(workout.workoutExercises?.array as? [WorkoutExercise])
+        try context.save()
+        workout.persistRoutineNoteLinks(defaults: defaults)
+        workout.workoutExercises = NSOrderedSet(array: Array(logged.reversed()))
+        XCTAssertEqual(logged[0].routineNoteSource(defaults: defaults)?.comment, "First plan cue")
+        XCTAssertEqual(logged[1].routineNoteSource(defaults: defaults)?.comment, "Second plan cue")
+        sources[0].comment = "Updated plan cue"
+        XCTAssertEqual(logged[0].routineNoteSource(defaults: defaults)?.comment, "Updated plan cue")
+        logged[0].exerciseUuid = UUID()
+        XCTAssertNil(logged[0].routineNoteSource(defaults: defaults))
     }
 }

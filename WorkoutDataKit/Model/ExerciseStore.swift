@@ -22,6 +22,7 @@ public class ExerciseStore: ObservableObject {
     
     public let builtInExercises: [Exercise]
     private let catalogMetadata: ExerciseCatalogMetadata
+    private let catalogSecondaryIDs: Set<UUID>
     
     @Published private(set) public var customExercises: [Exercise] {
         didSet { rebuildExerciseLookup() }
@@ -34,6 +35,8 @@ public class ExerciseStore: ObservableObject {
 
     /// Shared history snapshot. Searching and rendering only read this cache.
     @Published private(set) public var lastPerformedDates: [UUID: Date] = [:]
+    /// Every exercise in any workout or saved workout, logged or not.
+    @Published private(set) public var workoutReferencedExerciseIDs: Set<UUID> = []
     private var recencyContext: NSManagedObjectContext?
     private var recencyObserver: AnyCancellable?
     private var recencyRefreshRunning = false
@@ -44,28 +47,54 @@ public class ExerciseStore: ObservableObject {
     }
     
     public var shownExercises: [Exercise] {
-        orderedByRecency(exercises.filter { !isHidden(exercise: $0) })
+        let hidden = Set(userDefaults.refreshedHiddenExerciseUuids())
+        return orderedByRecency(exercises.filter { !hidden.contains($0.uuid) })
     }
     
     public var hiddenExercises: [Exercise] {
-        exercises.filter { isHidden(exercise: $0) }
+        let hidden = Set(userDefaults.refreshedHiddenExerciseUuids())
+        return exercises.filter { hidden.contains($0.uuid) }
+    }
+
+    /// Whether a list shows this exercise before searching or asking for more.
+    /// Anything the person has used always stays, and custom exercises are never secondary.
+    public func isBrowsable(_ exercise: Exercise) -> Bool {
+        !catalogSecondaryIDs.contains(exercise.uuid)
+            || lastPerformedDates[exercise.uuid] != nil
+            || workoutReferencedExerciseIDs.contains(exercise.uuid)
+    }
+
+    /// What a list shows for these matches. Searching or asking for more reaches everything,
+    /// browsable exercises first, and a filter never comes up empty because of the cleanup.
+    public func listed(_ matches: [Exercise], showingAll: Bool) -> [Exercise] {
+        let browsable = matches.filter(isBrowsable)
+        guard showingAll else { return browsable.isEmpty ? matches : browsable }
+        return browsable + matches.filter { !isBrowsable($0) }
     }
     
     private let customExercisesURL: URL?
     
     private let userDefaults: UserDefaults
+    private var hiddenExercisesObserver: AnyCancellable?
     
     public init(builtInExercisesURL: URL = ExerciseStore.defaultBuiltInExercisesURL, customExercisesURL: URL?, userDefaults: UserDefaults = UserDefaults.standard) {
         self.userDefaults = userDefaults
         self.customExercisesURL = customExercisesURL
         let catalog = Self.loadBuiltInExercises(builtInExercisesURL: builtInExercisesURL)
         builtInExercises = catalog
+        catalogSecondaryIDs = ExerciseCatalogMetadata.secondaryIDs(
+            in: catalog, duplicates: Self.loadCatalogDuplicates(builtInExercisesURL: builtInExercisesURL)
+        )
         let preferredAliases = Self.loadPreferredAliases(builtInExercisesURL: builtInExercisesURL)
         let metadata = ExerciseCatalogMetadata(exercises: catalog, preferredAliases: preferredAliases)
         catalogMetadata = metadata
         customExercises = Self.loadCustomExercises(customExercisesURL: customExercisesURL).map(metadata.enriching)
         assert(!customExercises.contains { !$0.isCustom }, "Decoded custom exercise that is not custom.")
         rebuildExerciseLookup()
+        hiddenExercisesObserver = NotificationCenter.default.publisher(
+            for: UserDefaults.hiddenExercisesDidChangeNotification, object: userDefaults)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
     }
     
     private static func loadBuiltInExercises(builtInExercisesURL: URL?) -> [Exercise] {
@@ -75,8 +104,11 @@ public class ExerciseStore: ObservableObject {
             let exercises = ExerciseCatalogMetadata.updatingCatalog(
                 legacy, with: loadMetadataTemplates(builtInExercisesURL: builtInExercisesURL)
             )
+            let illustrated = ExerciseCatalogMetadata.addingLegacyArt(
+                loadLegacyArt(builtInExercisesURL: builtInExercisesURL), to: exercises
+            )
             let aliases = loadPreferredAliases(builtInExercisesURL: builtInExercisesURL)
-            return ExerciseCatalogMetadata.addingAliases(aliases, to: exercises)
+            return ExerciseCatalogMetadata.addingAliases(aliases, to: illustrated)
         } catch {
             fatalError("Error decoding built in exercises: \(error.localizedDescription)")
         }
@@ -103,6 +135,22 @@ public class ExerciseStore: ObservableObject {
               let data = try? Data(contentsOf: url),
               let templates = try? JSONDecoder().decode([Exercise].self, from: data) else { return [] }
         return templates
+    }
+
+    private static func loadLegacyArt(builtInExercisesURL: URL?) -> [ExerciseCatalogMetadata.LegacyArt] {
+        guard let url = builtInExercisesURL?.deletingLastPathComponent()
+            .appendingPathComponent("legacy-art.json"),
+              let data = try? Data(contentsOf: url),
+              let art = try? JSONDecoder().decode([ExerciseCatalogMetadata.LegacyArt].self, from: data) else { return [] }
+        return art
+    }
+
+    private static func loadCatalogDuplicates(builtInExercisesURL: URL?) -> [ExerciseCatalogMetadata.CatalogDuplicate] {
+        guard let url = builtInExercisesURL?.deletingLastPathComponent()
+            .appendingPathComponent("catalog-duplicates.json"),
+              let data = try? Data(contentsOf: url),
+              let duplicates = try? JSONDecoder().decode([ExerciseCatalogMetadata.CatalogDuplicate].self, from: data) else { return [] }
+        return duplicates
     }
 
     private static func loadPreferredAliases(builtInExercisesURL: URL?) -> [String: UUID] {
@@ -141,7 +189,7 @@ extension ExerciseStore {
                       savedContext.persistentStoreCoordinator === coordinator else { return false }
                 return [NSInsertedObjectsKey, NSUpdatedObjectsKey, NSDeletedObjectsKey].contains { key in
                     (notification.userInfo?[key] as? Set<NSManagedObject>)?.contains {
-                        $0 is Workout || $0 is WorkoutExercise || $0 is WorkoutSet
+                        $0 is Workout || $0 is WorkoutExercise || $0 is WorkoutSet || $0 is WorkoutRoutineExercise
                     } == true
                 }
             }
@@ -160,13 +208,19 @@ extension ExerciseStore {
         recencyRefreshRunning = true
         context.perform { [weak self] in
             context.reset()
-            let result = Result { try ExerciseRecency.latestDates(in: context) }
+            let result = Result {
+                (dates: try ExerciseRecency.latestDates(in: context),
+                 referenced: try ExerciseRecency.workoutReferencedIDs(in: context))
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.recencyContext === context else { return }
                 self.recencyRefreshRunning = false
                 switch result {
-                case .success(let dates):
-                    if self.lastPerformedDates != dates { self.lastPerformedDates = dates }
+                case .success(let snapshot):
+                    if self.lastPerformedDates != snapshot.dates { self.lastPerformedDates = snapshot.dates }
+                    if self.workoutReferencedExerciseIDs != snapshot.referenced {
+                        self.workoutReferencedExerciseIDs = snapshot.referenced
+                    }
                 case .failure(let error):
                     // Keep the previous snapshot if the store is temporarily unavailable.
                     os_log("Could not refresh exercise recency: %{public}@", type: .error, error.localizedDescription)
@@ -214,6 +268,23 @@ public enum ExerciseRecency {
             dates[uuid] = max(dates[uuid] ?? date, date)
         }
         return dates
+    }
+
+    /// Scalar fetches of every exercise in any workout or saved workout, so the
+    /// catalog cleanup can never take one of them out of a default list.
+    public static func workoutReferencedIDs(in context: NSManagedObjectContext) throws -> Set<UUID> {
+        var ids = Set<UUID>()
+        for entity in ["WorkoutExercise", "WorkoutRoutineExercise"] {
+            let request = NSFetchRequest<NSDictionary>(entityName: entity)
+            request.resultType = .dictionaryResultType
+            request.includesPendingChanges = false
+            request.returnsDistinctResults = true
+            request.propertiesToFetch = ["exerciseUuid"]
+            for row in try context.fetch(request) {
+                if let uuid = row["exerciseUuid"] as? UUID { ids.insert(uuid) }
+            }
+        }
+        return ids
     }
 
     /// Keep the caller's existing order (including search relevance) for unseen
