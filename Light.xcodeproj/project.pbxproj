@@ -2575,7 +2575,7 @@
 				CODE_SIGN_ENTITLEMENTS = IronIntents/IronIntents.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				INFOPLIST_FILE = IronIntents/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -2602,7 +2602,7 @@
 				CODE_SIGN_ENTITLEMENTS = IronIntents/IronIntents.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				INFOPLIST_FILE = IronIntents/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -2629,7 +2629,7 @@
 				CODE_SIGN_ENTITLEMENTS = IronIntentsUI/IronIntentsUIPersonalTeam.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				INFOPLIST_FILE = IronIntentsUI/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -2656,7 +2656,7 @@
 				CODE_SIGN_ENTITLEMENTS = IronIntentsUI/IronIntentsUI.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				INFOPLIST_FILE = IronIntentsUI/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -2801,7 +2801,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = Iron/IronSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				INFOPLIST_FILE = Iron/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -2826,7 +2826,7 @@
 				CODE_SIGN_ENTITLEMENTS = Iron/Iron.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				INFOPLIST_FILE = Iron/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -2899,7 +2899,7 @@
 				CODE_SIGN_ENTITLEMENTS = "WatchIron Extension/WatchIron Extension.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				DEVELOPMENT_ASSET_PATHS = "\"WatchIron Extension/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
@@ -2935,7 +2935,7 @@
 				CODE_SIGN_ENTITLEMENTS = "WatchIron Extension/WatchIron Extension.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				DEVELOPMENT_ASSET_PATHS = "\"WatchIron Extension/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
@@ -2966,7 +2966,7 @@
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_ENTITLEMENTS = "WatchIron Extension/WatchIron Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_ASSET_PATHS = "\"WatchIron Extension/Preview Content\"";
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				ENABLE_PREVIEWS = YES;
@@ -3002,7 +3002,7 @@
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_ENTITLEMENTS = "WatchIron Extension/WatchIron Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_ASSET_PATHS = "\"WatchIron Extension/Preview Content\"";
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				ENABLE_PREVIEWS = YES;
@@ -3041,7 +3041,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = IronWidget/IronWidgetSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				INFOPLIST_FILE = IronWidget/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -3071,7 +3071,7 @@
 				CODE_SIGN_ENTITLEMENTS = IronWidget/IronWidgetExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				INFOPLIST_FILE = IronWidget/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
