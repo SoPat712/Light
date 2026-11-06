@@ -17,6 +17,13 @@ Builds are installed with `~/.local/share/light/tools/install-NN.sh`. Lane brief
   - The Exercises filter section loses its extra top spacing, to match History.
 - **Roll back:** `git revert` this entry's commit (it touches only ExerciseMuscleGroupsView, HistoryView and AddExercisesSheet).
 
+### A past workout's exercise page opens read-only (build 98)
+- **Why:** the owner approved read-only-by-default for finished workouts (audit D1). The exercise page reached from a finished workout was still the live logger, so it was inconsistent.
+- **Decided:**
+  - Read rows match the workout page's ("1  115 lb × 4"). Edit/Done switches to the unchanged editor. Notes show as plain text.
+  - Previous Sessions uses short list dates ("Thu, Oct 29").
+- **Roll back:** `git revert` this entry's commit (it touches only WorkoutExerciseDetailView).
+
 ### WorkoutDataKit compiles optimized in Debug (build 97)
 - **Decided:** set `SWIFT_OPTIMIZATION_LEVEL = "-O"` for the WorkoutDataKit target's Debug configuration only.
 - **Why:**

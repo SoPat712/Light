@@ -30,6 +30,7 @@ enum HistorySetTrackingValues {
 struct WorkoutExerciseDetailView: View {
     @Environment(\.managedObjectContext) private var managedObjectContext
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var restTimerStore: RestTimerStore
     @EnvironmentObject private var exerciseStore: ExerciseStore
@@ -43,6 +44,7 @@ struct WorkoutExerciseDetailView: View {
     @State private var plateCalculatorSet: WorkoutSet?
     @State private var persistenceError: String?
     @State private var deleteFeedback = 0
+    @State private var isEditing = false
 
     init(workoutExercise: WorkoutExercise) {
         self.workoutExercise = workoutExercise
@@ -97,6 +99,15 @@ struct WorkoutExerciseDetailView: View {
                 if exercise != nil {
                     Button("Exercise Details", systemImage: "info.circle") { showExerciseInfo = true }
                         .labelStyle(.iconOnly)
+                }
+
+                if !isCurrentWorkout {
+                    Button(isEditing ? "Done" : "Edit") {
+                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                            isEditing.toggle()
+                        }
+                    }
+                    .accessibilityLabel(isEditing ? "Done Editing Workout Exercise" : "Edit Workout Exercise")
                 }
 
                 if isCurrentWorkout {
@@ -201,7 +212,11 @@ struct WorkoutExerciseDetailView: View {
         Section {
             sessionSummary
                 .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 12, trailing: 10))
-            setRows
+            if isCurrentWorkout || isEditing {
+                setRows
+            } else {
+                readOnlySetRows
+            }
         } header: {
             Text("Overview")
         }
@@ -323,6 +338,40 @@ struct WorkoutExerciseDetailView: View {
         if completedWorkoutSets.contains(where: { $0.durationValue != nil }) { return "duration" }
         if workoutExercise.trackedCompletedVolume > 0 { return "volume" }
         return "reps"
+    }
+
+    @ViewBuilder
+    private var readOnlySetRows: some View {
+        Text("Session Sets")
+            .font(.headline)
+            .foregroundStyle(IronTheme.primaryText)
+            .accessibilityAddTraits(.isHeader)
+            .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10))
+
+        if workoutSets.isEmpty {
+            Text("No sets")
+                .font(.subheadline)
+                .foregroundStyle(IronTheme.secondaryText)
+                .listRowInsets(EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10))
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(workoutSets.enumerated()), id: \.element.id) { index, set in
+                    if index > 0 { Divider() }
+                    HistoryReadOnlySetRow(set: set, number: index + 1)
+                }
+            }
+            .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
+        }
+
+        if let comment = workoutExercise.comment,
+           !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Text(comment)
+                .font(.body)
+                .foregroundStyle(IronTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("Notes for this workout: \(comment)")
+                .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 8, trailing: 10))
+        }
     }
 
     @ViewBuilder
@@ -448,7 +497,7 @@ struct WorkoutExerciseDetailView: View {
 
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Text(Workout.dateFormatter.string(from: session.workout?.start, fallback: "Unknown date"))
+                Text(LightFormat.listDate(session.workout?.start))
                 if sets.contains(where: { $0.isPersonalRecord ?? false }) {
                     Image(systemName: "medal.fill")
                         .font(.caption)
@@ -639,6 +688,136 @@ struct WorkoutExerciseDetailView: View {
             persistenceError = "\(failureMessage) \(error.localizedDescription)"
             return false
         }
+    }
+}
+
+private struct HistoryReadOnlySetRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @ObservedObject var set: WorkoutSet
+    let number: Int
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(number)")
+                .font(.ironMetric(.body, weight: .semibold))
+                .foregroundStyle(IronTheme.secondaryText)
+                .frame(width: 32, alignment: .leading)
+
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 6) {
+                    result
+                    metadata
+                }
+            } else {
+                result
+                Spacer(minLength: 0)
+                metadata
+            }
+        }
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .opacity(set.isCompleted ? 1 : 0.45)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var result: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            resultText
+                .font(.ironMetric(.body, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            let additional = set.additionalTrackingTitle(weightUnit: settingsStore.weightUnit)
+            if !additional.isEmpty {
+                Text(additional)
+                    .font(.ironMetric(.footnote, weight: .semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var resultText: Text {
+        var title = AttributedString(set.resultTitle(weightUnit: settingsStore.weightUnit))
+        title.foregroundColor = IronTheme.primaryText
+        let units = [settingsStore.weightUnit.unit.symbol, WorkoutSet.distanceUnit(settingsStore.weightUnit), "reps", "rep"]
+        for unit in units {
+            if let range = title.range(of: unit) {
+                title[range].foregroundColor = IronTheme.secondaryText
+            }
+        }
+        return Text(title)
+    }
+
+    @ViewBuilder
+    private var metadata: some View {
+        if set.rpeValue != nil || set.tagValue != nil {
+            HStack(spacing: 8) {
+                if let rpe = set.rpeValue {
+                    Text("RPE \(String(format: "%g", rpe))")
+                        .font(.ironMetric(.subheadline, weight: .semibold))
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let tag = set.tagValue {
+                    Text(tagSymbol(tag))
+                        .font(.ironMetric(.callout, weight: .semibold))
+                        .foregroundStyle(tagTint(tag))
+                        .frame(width: 30, height: 30)
+                        .background(tagFill(tag), in: Circle())
+                }
+            }
+        }
+    }
+
+    private func tagSymbol(_ tag: WorkoutSetTag) -> String {
+        switch tag {
+        case .warmUp: return "W"
+        case .dropSet: return "D"
+        case .failure: return "F"
+        }
+    }
+
+    private func tagTint(_ tag: WorkoutSetTag) -> Color {
+        if set.isCompleted { return IronTheme.setFill(for: tag).tint }
+        return tag == .warmUp ? IronTheme.metricSets : IronTheme.secondaryText
+    }
+
+    private func tagFill(_ tag: WorkoutSetTag) -> Color {
+        if !set.isCompleted { return tag == .warmUp ? IronTheme.metricSetsContainer : IronTheme.field }
+        switch tag {
+        case .warmUp: return IronTheme.setWarmUpContainer
+        case .dropSet: return IronTheme.setDropContainer
+        case .failure: return IronTheme.setFailureContainer
+        }
+    }
+
+    private var accessibilitySummary: String {
+        var parts = ["Set \(number)"]
+        if let tag = set.tagValue { parts.append(tag.title) }
+        if let duration = set.durationValue {
+            let formatter = DateComponentsFormatter()
+            formatter.unitsStyle = .full
+            formatter.allowedUnits = [.hour, .minute, .second]
+            parts.append(formatter.string(from: duration) ?? SetTrackingType.durationText(duration))
+        }
+        if let distance = set.distanceValue {
+            parts.append("Distance " + WorkoutSet.distanceTitle(distance, weightUnit: settingsStore.weightUnit))
+        }
+        if set.trackingType.usesWeight || set.weightValue > 0 {
+            let weight = WeightUnit.convert(weight: set.weightValue, from: .metric, to: settingsStore.weightUnit)
+            let value = settingsStore.weightUnit.displayNumberFormatter.string(from: weight as NSNumber) ?? "—"
+            let label = set.trackingType == .assistedBodyweight ? "Assistance" : (set.trackingType == .weightedBodyweight ? "Added weight" : "Weight")
+            let unit = settingsStore.weightUnit == .metric ? "kilograms" : "pounds"
+            parts.append("\(label), \(value) \(unit)")
+        }
+        if set.trackingType.usesReps || set.repetitionsValue > 0 {
+            parts.append("\(set.repetitionsValue) \(set.repetitionsValue == 1 ? "rep" : "reps")")
+        }
+        if let rpe = set.rpeValue { parts.append("RPE \(String(format: "%g", rpe))") }
+        parts.append(set.isCompleted ? "completed" : "not completed")
+        if set.isPersonalRecord == true { parts.append("personal record") }
+        return parts.joined(separator: ", ")
     }
 }
 
