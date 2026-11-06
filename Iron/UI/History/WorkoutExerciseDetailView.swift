@@ -45,6 +45,8 @@ struct WorkoutExerciseDetailView: View {
     @State private var persistenceError: String?
     @State private var deleteFeedback = 0
     @State private var isEditing = false
+    @State private var isNavigationTitleVisible = false
+    @State private var headerHeight: CGFloat = 0
 
     init(workoutExercise: WorkoutExercise) {
         self.workoutExercise = workoutExercise
@@ -53,6 +55,10 @@ struct WorkoutExerciseDetailView: View {
 
     private var exercise: Exercise? {
         workoutExercise.exercise(in: exerciseStore.exercises)
+    }
+
+    private var titleText: String {
+        exercise?.title ?? "Exercise Log"
     }
 
     private var workoutSets: [WorkoutSet] {
@@ -80,7 +86,7 @@ struct WorkoutExerciseDetailView: View {
 
     var body: some View {
         List {
-            exerciseHeader
+            trackedExerciseHeader
                 .listRowInsets(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
@@ -88,13 +94,20 @@ struct WorkoutExerciseDetailView: View {
             previousSessionsSection
         }
         .listStyle(.insetGrouped)
+        .modifier(ListHeaderScrollTitleModifier(
+            headerHeight: headerHeight,
+            isNavigationTitleVisible: $isNavigationTitleVisible
+        ))
         .sensoryFeedback(.impact(weight: .medium), trigger: deleteFeedback) { _, _ in settingsStore.workoutHaptics }
         .sensoryFeedback(.error, trigger: persistenceError) { _, error in error != nil && settingsStore.workoutHaptics }
         .contentMargins(.horizontal, 10, for: .scrollContent)
         .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
-        .navigationTitle("")
+        .navigationTitle(titleText)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                navigationTitleView
+            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if exercise != nil {
                     Button("Exercise Details", systemImage: "info.circle") { showExerciseInfo = true }
@@ -207,6 +220,22 @@ struct WorkoutExerciseDetailView: View {
         .onDisappear { _ = save() }
     }
 
+    private var navigationTitleView: some View {
+        Text(titleText)
+            .font(.headline)
+            .lineLimit(1)
+            // Fade only the ink so the title remains available to accessibility.
+            .foregroundStyle(IronTheme.primaryText.opacity(showsNavigationTitle ? 1 : 0))
+            .accessibilityAddTraits(.isHeader)
+            .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: showsNavigationTitle)
+    }
+
+    /// Before iOS 18 the header's scroll position isn't tracked, so the title stays visible.
+    private var showsNavigationTitle: Bool {
+        if #available(iOS 18, *) { return isNavigationTitleVisible }
+        return true
+    }
+
     @ViewBuilder
     private var exerciseSection: some View {
         Section {
@@ -223,6 +252,16 @@ struct WorkoutExerciseDetailView: View {
         .listRowSeparator(.hidden)
     }
 
+    @ViewBuilder
+    private var trackedExerciseHeader: some View {
+        if #available(iOS 18, *) {
+            exerciseHeader
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+        } else {
+            exerciseHeader
+        }
+    }
+
     private var exerciseHeader: some View {
         Button { showExerciseInfo = true } label: {
             HStack(alignment: .top, spacing: 10) {
@@ -231,7 +270,7 @@ struct WorkoutExerciseDetailView: View {
                         .accessibilityHidden(true)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(exercise?.title ?? "Exercise Log")
+                    Text(titleText)
                         .font(.title2.weight(.bold))
                         .foregroundStyle(IronTheme.primaryText)
                         .lineLimit(nil)

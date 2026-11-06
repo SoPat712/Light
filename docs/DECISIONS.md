@@ -10,6 +10,11 @@ Builds are installed with `~/.local/share/light/tools/install-NN.sh`. Lane brief
 
 ## 2026-11-06
 
+### Exercise pages show their name in the bar once scrolled (build 99)
+- **Found in the overnight sweep at Extra Large text:** a scrolled exercise page, and a past workout's exercise page, had an empty navigation bar. Both also set an empty screen title, so VoiceOver had no page name. A finished workout's page already fades its name into the bar once its header scrolls away.
+- **Decided:** both exercise pages copy the workout page's behavior through one shared modifier, `ListHeaderScrollTitleModifier` in `SwiftUISupport.swift`. The big header is unchanged; the bar shows a one-line copy once it's gone. Before iOS 18 the bar title just stays visible.
+- **Roll back:** `git revert` this entry's commit (it touches only ExerciseDetailView, WorkoutExerciseDetailView and SwiftUISupport).
+
 ### Pinned search uses a hard top scroll edge (build 98)
 - **Found in the overnight sweep:** with search pinned, scrolled rows read through the field and bar on Exercises, History and the add-exercise picker, in light and dark.
 - **Decided:**

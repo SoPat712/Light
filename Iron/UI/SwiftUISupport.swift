@@ -14,6 +14,25 @@ import WorkoutDataKit
 
 // Palette and motion live in IronStyle; metric fonts live in IronMetricFont.
 
+/// Flips the binding once a List has scrolled past its first row of the given height (iOS 18+; no-op before).
+struct ListHeaderScrollTitleModifier: ViewModifier {
+    let headerHeight: CGFloat
+    @Binding var isNavigationTitleVisible: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.contentInsets.top > headerHeight
+                } action: { _, visible in
+                    isNavigationTitleVisible = visible
+                }
+        } else {
+            content
+        }
+    }
+}
+
 /// Consistent compact durations and calendar-aware dates for workout lists.
 enum LightFormat {
     private struct FormatterKey: Hashable {

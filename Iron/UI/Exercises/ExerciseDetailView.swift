@@ -252,6 +252,7 @@ struct ExerciseDetailView : View {
     @EnvironmentObject var exerciseStore: ExerciseStore
     @Environment(\.managedObjectContext) var managedObjectContext
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .title) private var scaledHeaderThumbnailSize: CGFloat = 88
     var exercise: Exercise
     
@@ -261,6 +262,8 @@ struct ExerciseDetailView : View {
     @State private var showingEditExercise = false
     @State private var showingMedia = false
     @State private var historyDestination: HistoryDestination?
+    @State private var isNavigationTitleVisible = false
+    @State private var headerHeight: CGFloat = 0
 
     private enum HistoryDestination: Hashable {
         case allSessions
@@ -295,7 +298,7 @@ struct ExerciseDetailView : View {
     var body: some View {
         List {
             Section {
-                exerciseHeader
+                trackedExerciseHeader
                     .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -414,6 +417,10 @@ struct ExerciseDetailView : View {
             }
         }
         .listStyle(.insetGrouped)
+        .modifier(ListHeaderScrollTitleModifier(
+            headerHeight: headerHeight,
+            isNavigationTitleVisible: $isNavigationTitleVisible
+        ))
         .task { historyStore.observe(in: managedObjectContext) }
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
@@ -447,9 +454,12 @@ struct ExerciseDetailView : View {
         .sheet(isPresented: $showingMedia) {
             ExerciseMediaSheet(exercise: currentExercise)
         }
-        .navigationTitle("")
+        .navigationTitle(currentExercise.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                navigationTitleView
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Edit Exercise Note", systemImage: "pin") { showingNoteEditor = true }
@@ -476,6 +486,22 @@ struct ExerciseDetailView : View {
         }
     }
 
+    private var navigationTitleView: some View {
+        Text(currentExercise.title)
+            .font(.headline)
+            .lineLimit(1)
+            // Fade only the ink so the title remains available to accessibility.
+            .foregroundStyle(IronTheme.primaryText.opacity(showsNavigationTitle ? 1 : 0))
+            .accessibilityAddTraits(.isHeader)
+            .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: showsNavigationTitle)
+    }
+
+    /// Before iOS 18 the header's scroll position isn't tracked, so the title stays visible.
+    private var showsNavigationTitle: Bool {
+        if #available(iOS 18, *) { return isNavigationTitleVisible }
+        return true
+    }
+
     private func instructionRow(number: Int, step: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text("\(number)")
@@ -487,6 +513,16 @@ struct ExerciseDetailView : View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Step \(number). \(step)")
+    }
+
+    @ViewBuilder
+    private var trackedExerciseHeader: some View {
+        if #available(iOS 18, *) {
+            exerciseHeader
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+        } else {
+            exerciseHeader
+        }
     }
 
     private var exerciseHeader: some View {
@@ -518,7 +554,7 @@ struct ExerciseDetailView : View {
                     .font(.title.bold())
                     .accessibilityAddTraits(.isHeader)
                     .foregroundStyle(IronTheme.primaryText)
-                    // The page has no navigation title, so the name always shows in full.
+                    // The big header always shows the full name; the bar shows a one-line copy once it scrolls away.
                     .fixedSize(horizontal: false, vertical: true)
                 Text(headerSubtitle)
                     .font(.subheadline)
