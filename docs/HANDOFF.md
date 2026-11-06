@@ -948,13 +948,11 @@ still a good, unrejected idea; propose it.**
 - **Signing:** the IronIntentsUI target uses personal-team entitlements in Debug
   (`IronIntentsUI/IronIntentsUIPersonalTeam.entitlements`); don't reintroduce upstream app
   groups there.
-- **Siri extensions shelved (2026-11-01, owner's call):** the free signing team allows 10 App IDs
-  per 7 days and Overland shares it, so the Iron target no longer embeds or depends on `IronIntents`
-  and `IronIntentsUI`. Both targets and their code remain. **Before a real release, restore them:**
-  add `8A60439A239C4DBB00CFB7C0` and `8A604397239C4DBB00CFB7C0` back to the Iron target's Embed
-  Foundation Extensions phase, add `8A604396239C4DBB00CFB7C0` and `8A604399239C4DBB00CFB7C0` back to
-  its dependencies, and set `Shortcuts.isAvailable` to true. Live Activity buttons use App Intents
-  in `Shared/WidgetKit/WidgetKind.swift` and don't depend on these extensions.
+- **Siri extensions restored:** they were shelved on 2026-11-01 to save App IDs on the free team.
+  On the paid team they are embedded again as `me.joshpatra.light.intents` and
+  `me.joshpatra.light.intentsui`, and `Shortcuts.isAvailable` is true. The restore is in checkpoint
+  `fb0bd17`. Live Activity buttons use App Intents in `Shared/WidgetKit/WidgetKind.swift` and don't
+  depend on these extensions.
 - **Canvas:** the design canvas is a claude.ai artifact
   (<https://claude.ai/artifact/XwxfzWTFvH2PNZWqMRpihv>; pages Round 1–5). Agents without the
   Artifact tool can't edit it. Use SwiftUI previews and screenshots for design proposals
