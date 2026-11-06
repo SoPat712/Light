@@ -951,7 +951,7 @@ still a good, unrejected idea; propose it.**
 - **Siri extensions restored:** they were shelved on 2026-11-01 to save App IDs on the free team.
   On the paid team they are embedded again as `me.joshpatra.light.intents` and
   `me.joshpatra.light.intentsui`, and `Shortcuts.isAvailable` is true. The restore is in checkpoint
-  `fb0bd17`. Live Activity buttons use App Intents in `Shared/WidgetKit/WidgetKind.swift` and don't
+  `1607275`. Live Activity buttons use App Intents in `Shared/WidgetKit/WidgetKind.swift` and don't
   depend on these extensions.
 - **Canvas:** the design canvas is a claude.ai artifact
   (<https://claude.ai/artifact/XwxfzWTFvH2PNZWqMRpihv>; pages Round 1–5). Agents without the

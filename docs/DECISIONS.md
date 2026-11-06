@@ -4,7 +4,7 @@ Calls made for the owner without his explicit sign-off on the detail. Newest fir
 
 Builds are installed with `~/.local/share/light/tools/install-NN.sh`. Lane briefs and reports live in `~/.local/share/light/lanes/ui/`.
 
-**Checkpoint commit `fb0bd17`** (2026-11-06) contains every entry below dated up to and including build 97. Those entries can't be reverted one by one with git. Use each entry's "Roll back" steps instead. Entries added after this checkpoint each get their own commit.
+**Checkpoint commit `1607275`** (2026-11-06) contains every entry below dated up to and including build 97. Those entries can't be reverted one by one with git. Use each entry's "Roll back" steps instead. Entries added after this checkpoint each get their own commit.
 
 ---
 
