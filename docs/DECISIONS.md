@@ -10,6 +10,13 @@ Builds are installed with `~/.local/share/light/tools/install-NN.sh`. Lane brief
 
 ## 2026-11-06
 
+### Pinned search uses a hard top scroll edge (build 98)
+- **Found in the overnight sweep:** with search pinned, scrolled rows read through the field and bar on Exercises, History and the add-exercise picker, in light and dark.
+- **Decided:**
+  - On iOS 26 and later, the lists use `.scrollEdgeEffectStyle(.hard, for: .top)`; iOS 16–25 get a visible navigation bar background.
+  - The Exercises filter section loses its extra top spacing, to match History.
+- **Roll back:** `git revert` this entry's commit (it touches only ExerciseMuscleGroupsView, HistoryView and AddExercisesSheet).
+
 ### WorkoutDataKit compiles optimized in Debug (build 97)
 - **Decided:** set `SWIFT_OPTIMIZATION_LEVEL = "-O"` for the WorkoutDataKit target's Debug configuration only.
 - **Why:**

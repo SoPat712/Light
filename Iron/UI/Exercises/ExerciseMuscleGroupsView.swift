@@ -139,6 +139,7 @@ struct ExerciseMuscleGroupsView : View {
                 exerciseCountFooter(search.isEmpty ? candidates?.exercises.count ?? 0 : results.count)
             }
         }
+        .modifier(ExerciseLibraryScrollEdge())
     }
 
     @ViewBuilder
@@ -182,10 +183,21 @@ struct ExerciseMuscleGroupsView : View {
         .accessibilityValue("^[\(count) exercise](inflect: true)")
     }
 
+    @ViewBuilder
     private var filterRow: some View {
-        filterControls
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+        let section = Section {
+            filterControls
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        }
+
+        if #available(iOS 17, *) {
+            // A standalone filter section otherwise adds a grouped-list gap
+            // before the first exercise header.
+            section.listSectionSpacing(0)
+        } else {
+            section
+        }
     }
 
     private var filterControls: some View {
@@ -317,6 +329,18 @@ struct ExerciseMuscleGroupsView : View {
             Text("Try a different muscle group or equipment.")
         } else {
             Text("All exercises are hidden. Restore one from Hidden Exercises in the Library section.")
+        }
+    }
+}
+
+private struct ExerciseLibraryScrollEdge: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.scrollEdgeEffectStyle(.hard, for: .top)
+        } else if #available(iOS 16, *) {
+            content.toolbarBackground(.visible, for: .navigationBar)
+        } else {
+            content
         }
     }
 }

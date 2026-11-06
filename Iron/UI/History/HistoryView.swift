@@ -106,6 +106,7 @@ struct HistoryView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .modifier(HistoryScrollEdge())
         .modifier(HistoryScrollClearance())
         .navigationTitle("History")
         .modifier(HistoryTitleDisplayMode())
@@ -343,6 +344,18 @@ private struct WorkoutHistoryRow: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct HistoryScrollEdge: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.scrollEdgeEffectStyle(.hard, for: .top)
+        } else if #available(iOS 16, *) {
+            content.toolbarBackground(.visible, for: .navigationBar)
+        } else {
+            content
+        }
     }
 }
 

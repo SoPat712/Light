@@ -361,6 +361,7 @@ struct AddExercisesSheet: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .modifier(ExercisePickerScrollEdge())
             .modifier(ExercisePickerListMargins())
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
@@ -634,6 +635,18 @@ private struct ExercisePickerNavigation<Content: View>: View {
         } else {
             NavigationView { content }
                 .navigationViewStyle(.stack)
+        }
+    }
+}
+
+private struct ExercisePickerScrollEdge: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.scrollEdgeEffectStyle(.hard, for: .top)
+        } else if #available(iOS 16, *) {
+            content.toolbarBackground(.visible, for: .navigationBar)
+        } else {
+            content
         }
     }
 }
