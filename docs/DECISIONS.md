@@ -10,6 +10,11 @@ Builds are installed with `~/.local/share/light/tools/install-NN.sh`. Lane brief
 
 ## 2026-11-06
 
+### Previous Sessions rows use the exercise page's set chips (build 100)
+- **Found in the overnight sweep at Extra Large text:** a past workout's exercise page listed each earlier session as one comma-joined line ("115 lb × 4, 120 lb × 5, …") limited to two lines. It broke mid-set ("× 8" alone on a line) and cut off long sessions.
+- **Decided:** those rows now show the same wrapping set chips ("115×4") as the exercise page's History, through one shared `ExerciseSetChip`. Record sets get the record tint and warm-ups the warm-up tint, as there. The date, the session total and the note line are unchanged. VoiceOver reads each row as one sentence.
+- **Roll back:** `git revert` this entry's commit (it touches only ExerciseHistoryView and WorkoutExerciseDetailView).
+
 ### Exercise pages show their name in the bar once scrolled (build 99)
 - **Found in the overnight sweep at Extra Large text:** a scrolled exercise page, and a past workout's exercise page, had an empty navigation bar. Both also set an empty screen title, so VoiceOver had no page name. A finished workout's page already fades its name into the bar once its header scrolls away.
 - **Decided:** both exercise pages copy the workout page's behavior through one shared modifier, `ListHeaderScrollTitleModifier` in `SwiftUISupport.swift`. The big header is unchanged; the bar shows a one-line copy once it's gone. Before iOS 18 the bar title just stays visible.

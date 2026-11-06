@@ -264,7 +264,7 @@ struct ExerciseHistorySessionRow: View {
                     }
                     ExerciseChipFlowLayout(spacing: 6) {
                         ForEach(sets) { set in
-                            setChip(set, isRecord: set.id == recordSetID)
+                            ExerciseSetChip(set: set, isRecord: set.id == recordSetID, weightUnit: settingsStore.weightUnit)
                         }
                     }
                 }
@@ -278,7 +278,25 @@ struct ExerciseHistorySessionRow: View {
         }
     }
 
-    private func setChip(_ set: WorkoutSet, isRecord: Bool) -> some View {
+    private func weightNumber(_ value: Double) -> String {
+        settingsStore.weightUnit.displayNumberFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
+    private func accessibilitySummary(_ workout: Workout) -> String {
+        let best = bestOneRM.map { "Best estimated one rep max \(weightNumber($0)) \(settingsStore.weightUnit.unit.symbol)\(isRecord ? ", personal record" : "")." } ?? ""
+        let results = sets.enumerated().map { index, set in
+            "Set \(index + 1)\(set.tagValue == .warmUp ? ", warm up" : "")\(set.id == recordSetID ? ", personal record" : ""), \(set.resultTitle(weightUnit: settingsStore.weightUnit))"
+        }.joined(separator: ". ")
+        return "\(ExerciseSessionDate.string(from: workout.start)), \(workout.displayTitle(in: exerciseStore.exercises)). \(best) \(results)"
+    }
+}
+
+struct ExerciseSetChip: View {
+    let set: WorkoutSet
+    let isRecord: Bool
+    let weightUnit: WeightUnit
+
+    var body: some View {
         let warmUp = set.tagValue == .warmUp
         let color = isRecord ? IronTheme.metricRecord : warmUp ? IronTheme.metricSets : IronTheme.primaryText
         let fill = isRecord ? IronTheme.metricRecordContainer : warmUp ? IronTheme.metricSetsContainer : IronTheme.tertiaryFill
@@ -296,22 +314,14 @@ struct ExerciseHistorySessionRow: View {
 
     private func chipTitle(_ set: WorkoutSet) -> String {
         if set.durationValue == nil, set.distanceValue == nil, set.weightValue > 0 {
-            let weight = WeightUnit.convert(weight: set.weightValue, from: .metric, to: settingsStore.weightUnit)
+            let weight = WeightUnit.convert(weight: set.weightValue, from: .metric, to: weightUnit)
             return "\(weightNumber(weight))×\(set.repetitionsValue)"
         }
-        return set.resultTitle(weightUnit: settingsStore.weightUnit)
+        return set.resultTitle(weightUnit: weightUnit)
     }
 
     private func weightNumber(_ value: Double) -> String {
-        settingsStore.weightUnit.displayNumberFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
-    }
-
-    private func accessibilitySummary(_ workout: Workout) -> String {
-        let best = bestOneRM.map { "Best estimated one rep max \(weightNumber($0)) \(settingsStore.weightUnit.unit.symbol)\(isRecord ? ", personal record" : "")." } ?? ""
-        let results = sets.enumerated().map { index, set in
-            "Set \(index + 1)\(set.tagValue == .warmUp ? ", warm up" : "")\(set.id == recordSetID ? ", personal record" : ""), \(set.resultTitle(weightUnit: settingsStore.weightUnit))"
-        }.joined(separator: ". ")
-        return "\(ExerciseSessionDate.string(from: workout.start)), \(workout.displayTitle(in: exerciseStore.exercises)). \(best) \(results)"
+        weightUnit.displayNumberFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
     }
 }
 

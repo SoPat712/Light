@@ -530,9 +530,6 @@ struct WorkoutExerciseDetailView: View {
 
     private func previousSessionRow(_ session: WorkoutExercise) -> some View {
         let sets = session.workoutSets?.array as? [WorkoutSet] ?? []
-        let summary = sets
-            .map { $0.resultTitle(weightUnit: settingsStore.weightUnit) }
-            .joined(separator: ", ")
 
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
@@ -548,10 +545,26 @@ struct WorkoutExerciseDetailView: View {
                     .foregroundStyle(IronTheme.secondaryText)
             }
 
-            Text(sets.isEmpty ? "No sets" : summary)
-                .font(.ironMetric(.caption, weight: .semibold))
-                .foregroundStyle(IronTheme.secondaryText)
-                .lineLimit(2)
+            if sets.isEmpty {
+                Text("No sets")
+                    .font(.ironMetric(.caption, weight: .semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .lineLimit(2)
+            } else if #available(iOS 16, *) {
+                ExerciseChipFlowLayout(spacing: 6) {
+                    ForEach(sets) { set in
+                        ExerciseSetChip(set: set, isRecord: set.isPersonalRecord ?? false, weightUnit: settingsStore.weightUnit)
+                    }
+                }
+                .padding(.top, 4)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(sets) { set in
+                        ExerciseSetChip(set: set, isRecord: set.isPersonalRecord ?? false, weightUnit: settingsStore.weightUnit)
+                    }
+                }
+                .padding(.top, 4)
+            }
 
             if let comment = session.comment, !comment.isEmpty {
                 Text(comment)
@@ -561,6 +574,23 @@ struct WorkoutExerciseDetailView: View {
             }
         }
         .padding(.vertical, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(previousSessionAccessibilityLabel(session, sets: sets))
+    }
+
+    private func previousSessionAccessibilityLabel(_ session: WorkoutExercise, sets: [WorkoutSet]) -> String {
+        let results = sets.isEmpty ? "No sets" : sets
+            .map { $0.resultTitle(weightUnit: settingsStore.weightUnit) }
+            .joined(separator: ", ")
+        var label = "\(LightFormat.listDate(session.workout?.start)). \(previousSessionResult(session)). \(results)"
+        let hasRecord = sets.contains { $0.isPersonalRecord ?? false }
+        if hasRecord {
+            label += ". Personal record."
+        }
+        if let comment = session.comment, !comment.isEmpty {
+            label += "\(hasRecord ? " " : ". ")\(comment)"
+        }
+        return label
     }
 
     private func previousSessionResult(_ session: WorkoutExercise) -> String {
