@@ -227,7 +227,7 @@ struct ExerciseHistorySessionRow: View {
     private var recordSetID: NSManagedObjectID? {
         guard isRecord else { return nil }
         return sets.compactMap { set -> (WorkoutSet, Double)? in
-            ExerciseProgressData.epleyEstimate(for: set, maxReps: settingsStore.maxRepetitionsOneRepMax)
+            ExerciseProgressData.epleyEstimate(for: set)
                 .map { (set, $0) }
         }.max { $0.1 < $1.1 }?.0.id
     }

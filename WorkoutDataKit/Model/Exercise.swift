@@ -17,6 +17,9 @@ public struct Exercise: Hashable {
     public let uuid: UUID // we use this for actually identifying the exercise
     public let everkineticId: Int // this is the everkinetic exercise id or 10000 if it's a custom exercise
     public let title: String
+    /// The source name, retained when the built-in catalog changes its display title.
+    /// Custom exercises always keep the title supplied by the person who created them.
+    public let originalTitle: String
     public let alias: [String]
     public let description: String? // primer
     public let primaryMuscle: [String] // primary
@@ -42,10 +45,12 @@ public struct Exercise: Hashable {
                 references: [String],
                 pdfPaths: [String],
                 imageFilename: String? = nil,
-                animationFilename: String? = nil) {
+                animationFilename: String? = nil,
+                originalTitle: String? = nil) {
         self.uuid = uuid
         self.everkineticId = everkineticId
         self.title = title
+        self.originalTitle = originalTitle ?? title
         self.alias = alias
         self.description = description
         self.primaryMuscle = primaryMuscle
@@ -296,7 +301,8 @@ extension Exercise: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(uuid, forKey: .uuid)
         try container.encode(everkineticId, forKey: .id)
-        try container.encode(title, forKey: .title)
+        // Catalog display formatting never changes a serialized exercise name.
+        try container.encode(originalTitle, forKey: .title)
         try container.encode(alias, forKey: .alias)
         try container.encodeIfPresent(description, forKey: .primer)
         try container.encode(primaryMuscle, forKey: .primary)

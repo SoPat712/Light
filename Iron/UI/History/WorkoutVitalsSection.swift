@@ -7,11 +7,13 @@ import UIKit
 struct WorkoutVitalsSection: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("workoutVitals.autoLoad") private var autoLoad = false
 
     let start: Date
     let end: Date
 
     private enum LoadState: Equatable {
+        case notLoaded
         case loading
         case needsAccess
         case empty
@@ -24,75 +26,64 @@ struct WorkoutVitalsSection: View {
         let bpm: Double
     }
 
-    @State private var state = LoadState.loading
-    @State private var requestingAccess = false
+    @State private var state = LoadState.notLoaded
     @State private var selectedPointID: Int?
 
     var body: some View {
         Group {
             switch state {
+            case .notLoaded:
+                if autoLoad {
+                    Color.clear.frame(height: 0)
+                } else {
+                    accessPrompt
+                }
             case .loading, .empty:
                 // A real (zero-height) view, so `.task` still runs.
                 Color.clear.frame(height: 0)
             case .needsAccess:
-                section { accessPrompt }
+                accessPrompt
             case .loaded(let vitals):
                 section { content(vitals) }
             }
         }
         .task(id: [start, end]) {
             selectedPointID = nil
-            await load()
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-ironDemoVitals") {
+                await load()
+                return
+            }
+            #endif
+            if autoLoad {
+                await load()
+            } else {
+                state = .notLoaded
+            }
         }
     }
 
     private func section<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Heart Rate")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(IronTheme.secondaryText)
-                .padding(.leading, 16)
-                .padding(.top, 22)
-                .padding(.bottom, 8)
-            content()
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        }
+        content()
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(.top, 12)
     }
 
     // MARK: Access
 
     private var accessPrompt: some View {
         Button(action: requestAccess) {
-            HStack(spacing: 12) {
-                Image(systemName: "heart.fill")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(IronTheme.metricHeartRate)
-                    .frame(width: 32, height: 32)
-                    .background(IronTheme.metricHeartRate.opacity(0.14), in: Circle())
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Show Heart Rate and Calories")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(IronTheme.primaryText)
-                    Text("Read from Apple Health for this workout.")
-                        .font(.subheadline)
-                        .foregroundStyle(IronTheme.secondaryText)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                if requestingAccess {
-                    ProgressView()
-                } else {
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(IronTheme.tertiaryText)
-                }
-            }
-            .frame(minHeight: IronTheme.controlHeight)
-            .contentShape(Rectangle())
+            Label("Show Heart Rate", systemImage: "heart.fill")
+                .font(.subheadline.weight(.semibold))
+                .frame(minHeight: IronTheme.controlHeight)
         }
-        .buttonStyle(.plain)
-        .disabled(requestingAccess)
+        .buttonStyle(.bordered)
+        .tint(IronTheme.accent)
+        .accessibilityLabel("Show Heart Rate")
+        .accessibilityHint("Reads heart rate and active calories from Apple Health for this workout")
+        .padding(.top, 12)
     }
 
     // MARK: Content
@@ -313,7 +304,9 @@ struct WorkoutVitalsSection: View {
 
     // MARK: Loading
 
-    private func load() async {
+    @MainActor
+    private func load(requestAccessIfNeeded: Bool = false) async {
+        state = .loading
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-ironDemoVitals") {
             state = .loaded(Self.demoVitals(start: start, end: end))
@@ -325,25 +318,33 @@ struct WorkoutVitalsSection: View {
         }
         guard !Task.isCancelled else { return }
         if needsRequest {
-            state = .needsAccess
-            return
+            guard requestAccessIfNeeded else {
+                state = .needsAccess
+                return
+            }
+            let result = await withCheckedContinuation { continuation in
+                HealthManager.shared.requestVitalsReadPermission { continuation.resume(returning: $0) }
+            }
+            guard !Task.isCancelled else { return }
+            guard case .success = result else {
+                state = .needsAccess
+                return
+            }
         }
         let vitals = await withCheckedContinuation { continuation in
             HealthManager.shared.fetchWorkoutVitals(start: start, end: end) { continuation.resume(returning: $0) }
         }
         guard !Task.isCancelled else { return }
-        state = vitals.isEmpty ? .empty : .loaded(vitals)
+        if vitals.isEmpty {
+            state = .empty
+        } else {
+            autoLoad = true
+            state = .loaded(vitals)
+        }
     }
 
     private func requestAccess() {
-        requestingAccess = true
-        HealthManager.shared.requestVitalsReadPermission { _ in
-            DispatchQueue.main.async {
-                requestingAccess = false
-                state = .loading
-                Task { await load() }
-            }
-        }
+        Task { await load(requestAccessIfNeeded: true) }
     }
 
     #if DEBUG

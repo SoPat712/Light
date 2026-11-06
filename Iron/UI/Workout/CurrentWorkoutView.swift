@@ -21,6 +21,13 @@ private struct PersonalRecordBanner: Identifiable, Equatable {
     let detail: String
 }
 
+#if DEBUG
+@MainActor
+private enum LoggerAssistDemoState {
+    static var preparedWorkouts = Set<NSManagedObjectID>()
+}
+#endif
+
 /// Sensor ticks invalidate only this row, not the sets, charts or muscle paths.
 private struct WorkoutWatchMetricsView: View {
     @ObservedObject var store: WatchWorkoutMetricsStore
@@ -135,26 +142,64 @@ struct CurrentWorkoutView: View {
     @State private var showingArrangeExercises = false
     @State private var selectedExerciseDetail: Exercise?
     @State private var personalRecordBanner: PersonalRecordBanner?
-    @State private var scrollTarget: NSManagedObjectID?
-    @State private var pendingSetScrollTarget: NSManagedObjectID?
+    @State private var scrollRequest: LoggerScrollRequest?
+    @State private var pendingCompletion: PendingLoggerCompletion?
+    @State private var isFocusTransitionActive = false
+    @State private var waitsForRPEDismissal = false
+    @State private var hasDeferredLoggerChanges = false
+    @State private var deferredCompletionEffects: [WorkoutSet] = []
+    @ObservedObject private var prefillPreferences = SetTrackingPreferences.cache
+    @State private var historySetsByExercise: [NSManagedObjectID: [WorkoutSet]] = [:]
+    @State private var prefillHistorySetsByExercise: [NSManagedObjectID: [WorkoutSet]] = [:]
+    @State private var routineNoteSourcesByExercise: [NSManagedObjectID: WorkoutRoutineExercise] = [:]
+    @State private var loggerHistoryNeedsRefresh = false
     @State private var openSwipeSetID: NSManagedObjectID?
     @State private var runningSetTimers: [NSManagedObjectID: Date] = [:]
     @State private var restPillExerciseID: NSManagedObjectID?
     @State private var restPillSetID: NSManagedObjectID?
     @State private var isRestPillVisible = false
-    @State private var restPillRevealsAt: Date?
     @State private var restRingPulses = false
     @State private var restEndFeedback = 0
+    @State private var restReadyPulse = 0
+    @State private var restReadySetID: NSManagedObjectID?
+    @State private var loggerViewport = CGRect.zero
+    @State private var showsSetEditorSheet = false
     @State private var showsRunningRestRuler = false
     @State private var restLengthClampFeedback = 0
     // Local action counters keep Watch and Live Activity updates silent on iPhone.
     @State private var actionFeedback = 0
     @State private var deleteFeedback = 0
-    @State private var restStripScrollRequest = 0
+    @State private var restStripHighlightRequest = 0
     @State private var restStripHighlighted = false
     @State private var recentExerciseSuggestions: [RecentExerciseSuggestion] = []
 
     private let loggerHorizontalInset: CGFloat = 10
+
+    private struct PendingLoggerCompletion {
+        let id = UUID()
+        let set: WorkoutSet
+        let focus: WorkoutSetFocus?
+        var suggestion: LoggerAssist.Suggestion? = nil
+    }
+
+    private struct LoggerScrollRequest: Equatable {
+        enum Target: Equatable {
+            case object(NSManagedObjectID)
+            case restStrip
+        }
+
+        let id = UUID()
+        let target: Target?
+        var completionID: UUID? = nil
+    }
+
+    private var holdsCompletionLayout: Bool {
+        pendingCompletion != nil && !isFocusTransitionActive
+    }
+
+    private var defersLoggerEffects: Bool {
+        pendingCompletion != nil || waitsForRPEDismissal || isFocusTransitionActive
+    }
 
     private struct RecentExerciseSuggestion: Identifiable {
         let exercise: Exercise
@@ -182,7 +227,7 @@ struct CurrentWorkoutView: View {
         case workoutTime
         case restTimer
         case workoutOptions
-        case plates(WorkoutSet)
+        case plates(WorkoutSet, initialMode: PlateLoadout.Mode? = nil)
         case warmups(WorkoutSet)
 
         var id: String {
@@ -190,7 +235,7 @@ struct CurrentWorkoutView: View {
             case .workoutTime: return "workout-time"
             case .restTimer: return "rest-timer"
             case .workoutOptions: return "workout-options"
-            case .plates(let set): return "plates-\(set.objectID.uriRepresentation().absoluteString)"
+            case .plates(let set, _): return "plates-\(set.objectID.uriRepresentation().absoluteString)"
             case .warmups(let set): return "warmups-\(set.objectID.uriRepresentation().absoluteString)"
             }
         }
@@ -274,7 +319,7 @@ struct CurrentWorkoutView: View {
     }
 
     var body: some View {
-        let focus = WorkoutSetFocus.next(in: workout)
+        let focus = holdsCompletionLayout ? pendingCompletion?.focus : WorkoutSetFocus.next(in: workout)
         NavigationStack {
             ZStack {
                 Color(.systemGroupedBackground)
@@ -285,7 +330,7 @@ struct CurrentWorkoutView: View {
                         workoutTopBar
                         if !workoutExercises.isEmpty {
                             WorkoutSessionProgressBar(workout: workout, focusedExerciseID: focus?.exerciseID) { exerciseID in
-                                scrollTarget = exerciseID
+                                scrollRequest = LoggerScrollRequest(target: .object(exerciseID))
                             }
                             .padding(.horizontal, IronTheme.horizontalPadding)
                             .padding(.top, 2)
@@ -301,7 +346,9 @@ struct CurrentWorkoutView: View {
                             ZStack(alignment: .top) {
                                 ScrollViewReader { scrollProxy in
                                     ScrollView {
-                                        LazyVStack(spacing: 0) {
+                                        // All set anchors exist before a guided scroll. A lazy
+                                        // group required a second, competing materialization scroll.
+                                        VStack(spacing: 0) {
                                             workoutMetadata
 
                                             if workoutExercises.isEmpty {
@@ -333,17 +380,12 @@ struct CurrentWorkoutView: View {
                                     // glass floating over the viewport as content scrolls behind it.
                                     .contentMargins(.top, isSessionHeaderCollapsed ? collapsedSummaryClearance : 0, for: .scrollContent)
                                     .clipped()
-                                    .onChange(of: restStripScrollRequest) { _, _ in
-                                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
-                                            scrollProxy.scrollTo("active-rest-strip", anchor: .center)
-                                        }
-                                    }
-                                    .onChange(of: scrollTarget) { _, target in
-                                        guard let target else { return }
-                                        withAnimation(reduceMotion ? nil : IronMotion.focusScroll) {
-                                            scrollProxy.scrollTo(target, anchor: .top)
-                                        }
-                                        scrollTarget = nil
+                                    .onGeometryChange(for: CGRect.self) { proxy in
+                                        proxy.frame(in: .global)
+                                    } action: { loggerViewport = $0 }
+                                    .onChange(of: scrollRequest) { _, request in
+                                        guard let request else { return }
+                                        performLoggerScroll(request, using: scrollProxy)
                                     }
                                 }
                                 if isSessionHeaderCollapsed {
@@ -475,9 +517,13 @@ struct CurrentWorkoutView: View {
         .ironScreen()
         .ironSelectsNumberOnFocus()
         .onAppear {
+            refreshLoggerHistory()
             WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
             refreshRecentExerciseSuggestions()
             #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-ironDemoLoggerAssist") {
+                prepareLoggerAssistDemo()
+            }
             if ProcessInfo.processInfo.arguments.contains("-ironInspectAddExercises") {
                 showingExerciseSelector = true
             } else if ProcessInfo.processInfo.arguments.contains("-ironInspectFinishWorkout") {
@@ -498,7 +544,13 @@ struct CurrentWorkoutView: View {
             applyIdleTimerPreference()
         }
         .onDisappear {
+            flushDeferredLoggerChanges()
             UIApplication.shared.isIdleTimerDisabled = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            // A minimize/background transition must never leave the batched log
+            // dependent on an animation callback to reach durable storage.
+            flushDeferredLoggerChanges()
         }
         .onReceive(managedObjectContext.publisher) { changes in
             // Child-set edits (including Watch events) do not always invalidate
@@ -520,13 +572,26 @@ struct CurrentWorkoutView: View {
             applyIdleTimerPreference()
         }
         .onChange(of: exerciseStore.lastPerformedDates) { _, _ in
+            refreshLoggerHistory()
             refreshRecentExerciseSuggestions()
         }
         .onChange(of: workoutExercises.map(\.objectID)) { _, _ in
+            refreshLoggerHistory()
             if workoutExercises.isEmpty { refreshRecentExerciseSuggestions() }
         }
-        .task(id: restPillTimerSnapshot) {
+        .task(id: pendingCompletion == nil ? restPillTimerSnapshot : nil) {
             await updateRestPillPresentation()
+        }
+        .onReceive(restTimerStore.didExpire) { _ in
+            guard activeSheet == nil, noteEditor == nil, !showingExerciseSelector,
+                  !showingFinishEditor, !showingArrangeExercises, supersetExercise == nil,
+                  selectedExerciseDetail == nil, !showingDiscardConfirmation,
+                  !showingFinishDiscardConfirmation, !showsSetEditorSheet,
+                  persistenceError == nil, exercisePendingRemoval == nil,
+                  let focus = WorkoutSetFocus.next(in: workout) else { return }
+            restReadySetID = focus.setID
+            restReadyPulse += 1
+            UIAccessibility.post(notification: .announcement, argument: "Rest over. Next set ready.")
         }
         .sensoryFeedback(.impact(weight: .light), trigger: restEndFeedback) { _, _ in
             settingsStore.workoutHaptics && !NotificationManager.watchOwnsRestAlerts
@@ -536,6 +601,46 @@ struct CurrentWorkoutView: View {
         .sensoryFeedback(.impact(weight: .medium), trigger: deleteFeedback) { _, _ in settingsStore.workoutHaptics }
         .sensoryFeedback(.error, trigger: persistenceError) { _, error in error != nil && settingsStore.workoutHaptics }
     }
+
+    #if DEBUG
+    /// Launch with the sample-data flags, then open the active workout. Only
+    /// sample sets are changed; production workouts and preferences stay intact.
+    @MainActor
+    private func prepareLoggerAssistDemo() {
+        guard !LoggerAssistDemoState.preparedWorkouts.contains(workout.objectID), workout.importSource == "sample",
+              let exercise = workoutExercises.first(where: { $0.exercise(in: exerciseStore.exercises)?.type == .barbell })
+        else { return }
+        let previous = latestHistorySets(for: exercise)
+        guard previous.first?.workoutExercise?.workout?.importSource == "sample" else { return }
+        let unit = settingsStore.weightUnit
+        let weight = WeightUnit.convert(weight: unit == .imperial ? 200 : 90, from: unit, to: .metric)
+        let saved = persistMutation {
+            exercise.restTimerDurationValue = 5
+            for set in previous where set.tagValue != .warmUp {
+                set.weightValue = weight
+                set.repetitionsValue = 5
+                set.minTargetRepetitionsValue = 5
+                set.maxTargetRepetitionsValue = 5
+                set.isCompleted = true
+            }
+            for set in workoutSets(for: exercise) {
+                set.tagValue = nil
+                set.weightValue = weight
+                set.repetitionsValue = 5
+                set.isCompleted = false
+                set.completedAt = nil
+                set.rpeValue = 8
+            }
+        }
+        if saved {
+            LoggerAssistDemoState.preparedWorkouts.insert(workout.objectID)
+            restTimerStore.cancel()
+            workout.objectWillChange.send()
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            scrollRequest = LoggerScrollRequest(target: .object(exercise.objectID))
+        }
+    }
+    #endif
 
     private func applyIdleTimerPreference() {
         UIApplication.shared.isIdleTimerDisabled = settingsStore.keepScreenAwakeDuringWorkout
@@ -650,7 +755,7 @@ struct CurrentWorkoutView: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
 
-        case .plates(let set):
+        case .plates(let set, let initialMode):
             utilitySheet(
                 title: "Plate Calculator",
                 subtitle: "",
@@ -662,6 +767,7 @@ struct CurrentWorkoutView: View {
                     unit: settingsStore.weightUnit,
                     initialTarget: max(displayWeight(for: set), settingsStore.weightUnit.barbellWeight),
                     exerciseKey: set.workoutExercise?.exerciseUuid?.uuidString,
+                    initialMode: initialMode,
                     onClose: { activeSheet = nil },
                     onApply: { value in
                         let metricWeight = WeightUnit.convert(
@@ -670,14 +776,8 @@ struct CurrentWorkoutView: View {
                             to: .metric
                         )
                         let saved = persistMutation {
-                            if let workoutExercise = set.workoutExercise {
-                                // Logged sets keep what was actually lifted.
-                                workoutSets(for: workoutExercise)
-                                    .filter { !$0.isCompleted || $0.objectID == set.objectID }
-                                    .forEach { $0.weightValue = metricWeight }
-                            } else {
-                                set.weightValue = metricWeight
-                            }
+                            set.weightValue = metricWeight
+                            SetTrackingPreferences.markLoggerField(.weight, for: set.uuid)
                         }
                         if saved {
                             WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
@@ -1433,7 +1533,7 @@ struct CurrentWorkoutView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Add \(suggestion.exercise.title)")
         .accessibilityValue(recentExerciseSubtitle(suggestion))
-        .accessibilityHint("Uses your previous set values when prefill is enabled")
+        .accessibilityHint("Fills values from the preceding set or your last session")
     }
 
     private func recentExerciseSubtitle(_ suggestion: RecentExerciseSuggestion) -> String {
@@ -1517,6 +1617,7 @@ struct CurrentWorkoutView: View {
         let sets = workoutSets(for: workoutExercise)
         let isBarbell = exercise?.type == .barbell
         let trackingType = workoutExercise.setTrackingType
+        let previousSets = latestHistorySets(for: workoutExercise)
 
         return VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 10) {
@@ -1595,35 +1696,44 @@ struct CurrentWorkoutView: View {
             .padding(.top, 12)
 
             ForEach(Array(sets.enumerated()), id: \.element.id) { setIndex, set in
-                let previousSet = latestHistorySet(for: workoutExercise, at: setIndex)
+                let previousSet = latestHistorySet(for: workoutExercise, at: setIndex, historySets: previousSets)
                 InlineWorkoutSetRow(
                     set: set,
                     index: setIndex,
                     trackingType: set.isCompleted ? set.trackingType : trackingType,
                     isBarbell: isBarbell && trackingType.usesWeight,
+                    equipment: exercise?.equipment ?? [],
                     previousTitle: previousSet?.resultTitle(weightUnit: settingsStore.weightUnit) ?? "—",
-                    onOpenPlateCalculator: { activeSheet = .plates(set) },
+                    onOpenPlateCalculator: { initialMode in activeSheet = .plates(set, initialMode: initialMode) },
                     onToggleCompleted: { toggleCompleted(set, in: workoutExercise) },
                     onDelete: { deleteSet(set, from: workoutExercise) },
-                    onChanged: {
-                        let saved = save()
-                        if saved {
-                            workout.objectWillChange.send()
-                            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
-                        }
-                        return saved
-                    },
+                    onChanged: saveLoggerEdit,
                     allowsSwipeToDelete: true,
                     openSwipeSetID: $openSwipeSetID,
                     isCurrent: focusedSetID == set.objectID,
                     previousWeight: previousSet?.weightValue,
                     previousRepetitions: previousSet.map { Int($0.repetitionsValue) },
-                    onCompletionFlow: { advanceToNextSet(after: set) }
+                    suggestedValues: suggestedSetValues(for: set, in: workoutExercise),
+                    suggestion: holdsCompletionLayout && pendingCompletion?.set.objectID == set.objectID
+                        ? pendingCompletion?.suggestion
+                        : (focusedSetID == set.objectID
+                            ? loggerSuggestion(for: set, in: workoutExercise, historySets: previousSets) : nil),
+                    restReadyPulse: restReadySetID == set.objectID ? restReadyPulse : 0,
+                    loggerViewport: visibleLoggerViewport,
+                    onEditorSheetChanged: { showsSetEditorSheet = $0 },
+                    onCompletionFlow: { advanceToNextSet(after: set) },
+                    holdsFocusedEditor: holdsCompletionLayout && pendingCompletion?.set.objectID == set.objectID,
+                    onValueEdited: { SetTrackingPreferences.markLoggerField($0, for: set.uuid) },
+                    onRPEChanged: {
+                        waitsForRPEDismissal = true
+                        hasDeferredLoggerChanges = true
+                        deferScheduledWatchWork()
+                        return true
+                    },
+                    onRPEDismissed: { finishRPEPresentation(for: set) }
                 )
                 .environmentObject(settingsStore)
                 .id(set.objectID)
-                .onAppear { revealPendingSet(set.objectID) }
-                .onChange(of: pendingSetScrollTarget) { _, _ in revealPendingSet(set.objectID) }
                 .transition(
                     reduceMotion ? .opacity : .asymmetric(
                         insertion: .move(edge: .bottom).combined(with: .opacity),
@@ -1644,8 +1754,8 @@ struct CurrentWorkoutView: View {
                 value: sets.count
             )
             .animation(
-                IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion),
-                value: sets.first(where: { !$0.isCompleted })?.objectID
+                reduceMotion ? nil : IronMotion.focusScroll,
+                value: focusedSetID
             )
 
             if isRestPillVisible,
@@ -1684,7 +1794,9 @@ struct CurrentWorkoutView: View {
 
     private func workoutExerciseNotes(for workoutExercise: WorkoutExercise) -> some View {
         let exerciseNote = ExerciseNotes.note(for: workoutExercise.exerciseUuid)
-        let planNote = workoutExercise.routineNote
+        let trimmedPlanNote = cachedRoutineNoteSource(for: workoutExercise)?.comment?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let planNote = trimmedPlanNote?.isEmpty == false ? trimmedPlanNote : nil
         let hasPinnedNotes = exerciseNote != nil || planNote != nil
         // The header's 44 pt thumbnail and 10 pt gap establish the title column.
         let titleInset = IronTheme.iconButtonSize + 10
@@ -1847,7 +1959,7 @@ struct CurrentWorkoutView: View {
                 noteEditor = NoteEditor(exercise: workoutExercise, isRoutine: false)
             }
         }
-        if workoutExercise.routineNoteSource() != nil {
+        if cachedRoutineNoteSource(for: workoutExercise) != nil {
             Button("Edit Workout Plan Note", systemImage: "list.bullet") {
                 noteEditor = NoteEditor(exercise: workoutExercise, isRoutine: true)
             }
@@ -1858,6 +1970,15 @@ struct CurrentWorkoutView: View {
         )) {
             ForEach(SetTrackingType.allCases) { type in
                 Text(type.title).tag(type)
+            }
+        }
+
+        if let workingSet = sets.first(where: { $0.tagValue != .warmUp }),
+           !sets.contains(where: { $0.tagValue == .warmUp }),
+           workoutExercise.setTrackingType.usesWeight,
+           warmupWorkingWeight(for: workingSet, in: workoutExercise) > 0 {
+            Button("Add Warm-Up Sets", systemImage: "flame") {
+                addSuggestedWarmupSets(before: workingSet, isBarbell: isBarbell)
             }
         }
 
@@ -1901,15 +2022,26 @@ struct CurrentWorkoutView: View {
     private func setTableHeader(trackingType: SetTrackingType) -> some View {
         if !usesAccessibilityHeaderLayout {
             HStack(spacing: InlineWorkoutSetLayout.spacing) {
-                Text("SET").frame(width: InlineWorkoutSetLayout.setWidth)
-                Text("PREVIOUS").frame(width: InlineWorkoutSetLayout.previousWidth, alignment: .center)
+                Text("SET")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(width: InlineWorkoutSetLayout.setWidth)
+                Text("PREVIOUS")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(width: InlineWorkoutSetLayout.previousWidth, alignment: .center)
                 ForEach(trackingType.columns) { column in
                     Text(trackingType.header(for: column, weightUnit: settingsStore.weightUnit.unit.symbol,
                                              distanceUnit: WorkoutSet.distanceUnit(settingsStore.weightUnit)))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                         .frame(maxWidth: .infinity)
                 }
                 if settingsStore.logRPE {
-                    Text("RPE").frame(width: InlineWorkoutSetLayout.rpeWidth)
+                    Text("RPE")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(width: InlineWorkoutSetLayout.rpeWidth)
                 }
                 Image(systemName: "checkmark")
                     .frame(width: InlineWorkoutSetLayout.completionWidth)
@@ -1954,10 +2086,17 @@ struct CurrentWorkoutView: View {
         reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity)
     }
 
-    /// Presentation follows the shared timer; no timer or notification work is delayed.
-    /// This task is cancelled on adjustment, pause, skip, restart, or dismissal.
+    private var visibleLoggerViewport: CGRect {
+        let topInset = isSessionHeaderCollapsed ? collapsedSummaryClearance : 0
+        return CGRect(x: loggerViewport.minX, y: loggerViewport.minY + topInset,
+                      width: loggerViewport.width, height: max(0, loggerViewport.height - topInset))
+    }
+
+    /// External timer changes keep their existing presentation. A local log
+    /// inserts the strip with the focus/scroll transaction instead of this task.
     @MainActor
     private func updateRestPillPresentation() async {
+        guard pendingCompletion == nil else { return }
         let snapshot = restPillTimerSnapshot
         guard let remaining = restTimerStore.restTimerRemainingTime, remaining > 0,
               let exercise = activeRestTimerExercise else {
@@ -1968,11 +2107,6 @@ struct CurrentWorkoutView: View {
             return
         }
 
-        if !reduceMotion, let revealDate = restPillRevealsAt {
-            do {
-                try await Task.sleep(for: .seconds(max(0, revealDate.timeIntervalSinceNow)))
-            } catch { return }
-        }
         guard !Task.isCancelled else { return }
 
         restRingPulses = false
@@ -2018,8 +2152,8 @@ struct CurrentWorkoutView: View {
             }
         }
         .id("active-rest-strip")
-        .task(id: restStripScrollRequest) {
-            guard restStripScrollRequest > 0 else { return }
+        .task(id: restStripHighlightRequest) {
+            guard restStripHighlightRequest > 0 else { return }
             withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                 restStripHighlighted = true
             }
@@ -2049,9 +2183,10 @@ struct CurrentWorkoutView: View {
             .padding(8)
             .frame(maxWidth: .infinity)
             .background(
-                IronTheme.metricTimeContainer,
+                restTimerStore.isPaused ? IronTheme.warning.opacity(0.18) : IronTheme.metricTimeContainer,
                 in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous)
             )
+            .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: restTimerStore.isPaused)
         }
     }
 
@@ -2063,19 +2198,19 @@ struct CurrentWorkoutView: View {
             }
         } label: {
             HStack(spacing: 8) {
-                IronRestRing(progress: duration > 0 ? remaining / duration : 0)
+                IronRestRing(progress: duration > 0 ? remaining / duration : 0, tint: restTimerTint)
                     .scaleEffect(reduceMotion || !restRingPulses ? 1 : 1.12)
                     .opacity(reduceMotion && restRingPulses ? 0.5 : 1)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(countdown)
                         .font(.ironMetric(.title3))
-                        .foregroundStyle(IronTheme.metricTime)
+                        .foregroundStyle(restTimerTint)
                         .contentTransition(reduceMotion ? .opacity : .numericText(countsDown: true))
                         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: countdown)
                     Text("Rest of \(restTimerTimeText(duration))")
                         .font(.caption2)
-                        .foregroundStyle(IronTheme.secondaryText)
+                        .foregroundStyle(restTimerTint)
                 }
                 .fixedSize(horizontal: true, vertical: false)
                 Spacer(minLength: 0)
@@ -2097,7 +2232,8 @@ struct CurrentWorkoutView: View {
             Spacer(minLength: 4)
             activeTimerControl(
                 systemImage: restTimerStore.isPaused ? "play.fill" : "pause.fill",
-                label: restTimerStore.isPaused ? "Resume rest timer" : "Pause rest timer"
+                label: restTimerStore.isPaused ? "Resume rest timer" : "Pause rest timer",
+                tint: restTimerTint
             ) {
                 restTimerStore.isPaused ? restTimerStore.resume() : restTimerStore.pause()
                 WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
@@ -2124,6 +2260,7 @@ struct CurrentWorkoutView: View {
         title: String = "",
         systemImage: String? = nil,
         label: String,
+        tint: Color = IronTheme.primaryText,
         action: @escaping () -> Void
     ) -> some View {
         Button {
@@ -2145,7 +2282,7 @@ struct CurrentWorkoutView: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(IronTheme.primaryText)
+        .foregroundStyle(tint)
         .accessibilityLabel(label)
     }
 
@@ -2170,7 +2307,8 @@ struct CurrentWorkoutView: View {
             Button {
                 if running {
                     actionFeedback += 1
-                    restStripScrollRequest += 1
+                    restStripHighlightRequest += 1
+                    scrollRequest = LoggerScrollRequest(target: .restStrip)
                 } else {
                     toggleDefaultRestRuler(for: workoutExercise)
                 }
@@ -2188,6 +2326,7 @@ struct CurrentWorkoutView: View {
             }
             .buttonStyle(.plain)
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: time)
+            .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: restTimerStore.isPaused)
             .accessibilityLabel("Exercise rest length")
             .accessibilityValue(time)
             .accessibilityHint(running ? "Shows the running rest timer" : "Shows rest length")
@@ -2797,9 +2936,13 @@ struct CurrentWorkoutView: View {
     }
 
     private func createDefaultWorkoutSets(for workoutExercise: WorkoutExercise, exercise: Exercise) -> (sets: NSOrderedSet, type: SetTrackingType) {
-        let history = settingsStore.prefillPreviousValues
-            ? (try? managedObjectContext.fetch(workoutExercise.historyFetchRequest)) ?? []
-            : []
+        let request = workoutExercise.historyFetchRequest
+        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            request.predicate ?? NSPredicate(value: true),
+            NSPredicate(format: "%K != nil", #keyPath(WorkoutExercise.workout.end))
+        ])
+        request.fetchLimit = 1
+        let history = (try? managedObjectContext.fetch(request)) ?? []
         let recentSets = history.first?.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
         let numberOfSets = max(recentSets.count, 3)
         let type = SetTrackingPreferences.override(for: exercise.uuid)
@@ -2808,24 +2951,10 @@ struct CurrentWorkoutView: View {
 
         let sets: [WorkoutSet] = (0..<numberOfSets).map { index in
             let set = WorkoutSet.create(context: managedObjectContext)
-            let previous = recentSets.indices.contains(index) ? recentSets[index] : recentSets.last
-            if let previous = previous {
-                set.durationValue = previous.durationValue
-                set.distanceValue = previous.distanceValue
-                set.weightValue = previous.weightValue
-                set.repetitionsValue = previous.repetitionsValue
-                set.tagValue = previous.tagValue
-            } else {
-                set.repetitionsValue = 5
-                if exercise.type == .barbell {
-                    set.weightValue = WeightUnit.convert(
-                        weight: settingsStore.weightUnit.barbellWeight,
-                        from: settingsStore.weightUnit,
-                        to: .metric
-                    )
-                }
-            }
-            set.prepare(for: type)
+            set.tagValue = recentSets.indices.contains(index) ? recentSets[index].tagValue : nil
+            // Measurements remain empty until entered or logged. The shared
+            // resolver supplies the actual text shown by every unfinished row.
+            SetTrackingPreferences.setLoggerFields([], for: set.uuid)
             set.isCompleted = false
             return set
         }
@@ -2834,25 +2963,23 @@ struct CurrentWorkoutView: View {
 
     @discardableResult
     private func addSet(to workoutExercise: WorkoutExercise) -> Bool {
+        persistSetAddition {
+            let existingSets = workoutSets(for: workoutExercise)
+            let set = WorkoutSet.create(context: managedObjectContext)
+            set.workoutExercise = workoutExercise
+
+            set.tagValue = existingSets.last?.tagValue
+            SetTrackingPreferences.setLoggerFields([], for: set.uuid)
+            set.isCompleted = false
+        }
+    }
+
+    /// Both Add Set and quick warm-ups publish only after the same durable save.
+    @discardableResult
+    private func persistSetAddition(_ mutation: () -> Void) -> Bool {
         var saved = false
         withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
-            saved = persistMutation {
-                let existingSets = workoutSets(for: workoutExercise)
-                let set = WorkoutSet.create(context: managedObjectContext)
-                set.workoutExercise = workoutExercise
-
-                if let source = existingSets.last ?? latestHistorySet(for: workoutExercise, at: existingSets.count) {
-                    set.durationValue = source.durationValue
-                    set.distanceValue = source.distanceValue
-                    set.weightValue = source.weightValue
-                    set.repetitionsValue = source.repetitionsValue
-                    set.tagValue = source.tagValue
-                } else {
-                    set.repetitionsValue = 5
-                }
-                set.prepare(for: workoutExercise.setTrackingType)
-                set.isCompleted = false
-            }
+            saved = persistMutation(mutation)
         }
         if saved {
             actionFeedback += 1
@@ -2906,65 +3033,51 @@ struct CurrentWorkoutView: View {
     }
 
     private func toggleCompleted(_ set: WorkoutSet, in workoutExercise: WorkoutExercise) {
+        if pendingCompletion != nil {
+            guard isFocusTransitionActive else { return }
+            // A new local log may interrupt travel. Keep its predecessor's
+            // edits in the same batch; the old completion token cannot flush
+            // storage or issue another scroll during this newer action.
+            pendingCompletion = nil
+            isFocusTransitionActive = false
+        }
         let justCompleted = !set.isCompleted
-        do {
-            try managedObjectContext.persistMutation(save: { try managedObjectContext.save() }) {
-                set.isCompleted = justCompleted
-                set.completedAt = justCompleted ? Date() : nil
-                if justCompleted {
-                    if workoutExercise.setTrackingType.usesDuration, set.durationValue == nil {
-                        set.durationValue = 60
-                    }
-                    set.weightValue = max(set.weightValue, 0)
-                    set.repetitionsValue = max(set.repetitionsValue, 0)
-                    workout.start = workout.start ?? Date()
-                }
-            }
-        } catch {
-            persistenceError = "The set was not changed. \(error.localizedDescription)"
-            return
-        }
-
-        // Remember the resolved catalog default after the first successful log,
-        // so aggregate consumers without a catalog also know assistance semantics.
-        if justCompleted, let exerciseID = workoutExercise.exerciseUuid,
-           SetTrackingPreferences.override(for: exerciseID) == nil {
-            SetTrackingPreferences.setOverride(workoutExercise.setTrackingType, for: exerciseID)
-        }
-        // Summary metrics and the next current row derive from child-set values.
-        workout.objectWillChange.send()
-
+        let suggestedValues = justCompleted ? suggestedSetValues(for: set, in: workoutExercise) : nil
         if justCompleted {
-            let isRecord = settingsStore.personalRecordAlerts && set.isPersonalRecord == true
-
-            // The row emits success only after a local completion succeeds.
-            if settingsStore.workoutSounds {
-                IronSoundPlayer.shared.play(isRecord ? .setRecord : .setComplete)
-            }
-            if isRecord {
-                announcePersonalRecord(for: set, in: workoutExercise)
-            }
-
-            if settingsStore.autoStartRestTimer {
-                restPillRevealsAt = Date().addingTimeInterval(0.38)
-                restTimerStore.start(duration: restTimerDuration(for: workoutExercise))
-            }
-        } else {
-            restTimerStore.cancel()
-        }
-
-        if justCompleted {
-            WorkoutLiveActivityManager.shared.setCompleted(
-                set,
-                in: workoutExercise,
-                workout: workout
+            // Hold the editor's geometry through the RPE presentation. The model
+            // can accept both edits now, with one save after the guided motion.
+            pendingCompletion = PendingLoggerCompletion(
+                set: set, focus: WorkoutSetFocus.next(in: workout),
+                suggestion: loggerSuggestion(for: set, in: workoutExercise, historySets: latestHistorySets(for: workoutExercise))
             )
+            hasDeferredLoggerChanges = true
+            if let suggestedValues {
+                set.weight = suggestedValues.weight.map { NSNumber(value: $0) }
+                set.repetitions = suggestedValues.repetitions.map { NSNumber(value: $0) }
+                set.durationValue = suggestedValues.duration
+                set.distanceValue = suggestedValues.distance
+            }
+            set.isCompleted = true
+            set.completedAt = Date()
+            workout.start = workout.start ?? Date()
+            deferredCompletionEffects.append(set)
+            deferScheduledWatchWork()
+            if settingsStore.autoStartRestTimer {
+                restTimerStore.start(duration: restTimerDuration(for: workoutExercise), deferringWatchUpdate: true)
+            }
         } else {
+            guard persistMutation({
+                set.isCompleted = false
+                set.completedAt = nil
+            }) else { return }
+            restTimerStore.cancel()
+            flushDeferredLoggerChanges()
             WorkoutLiveActivityManager.shared.startOrUpdate(
                 for: workout,
                 preservingTransition: false
             )
         }
+        workout.objectWillChange.send()
     }
 
     private func announcePersonalRecord(for set: WorkoutSet, in workoutExercise: WorkoutExercise) {
@@ -2975,38 +3088,151 @@ struct CurrentWorkoutView: View {
         }
     }
 
-    /// Use the editor's schedule for ordinary exercises and superset rounds.
-    /// When RPE is requested, the row calls this after its picker is dismissed.
+    /// One exact anchor for ordinary sets, exercise changes and superset rounds.
+    /// The RPE route reaches this only from the sheet's onDismiss callback.
     private func advanceToNextSet(after completed: WorkoutSet) {
-        guard let next = WorkoutSetFocus.next(in: workout) else { return }
-        // The finished set stays at the top, with the rest timer and the next set under it.
-        // Going back to an earlier set has to scroll up to that set instead.
-        let keepsCompleted = completedSet(completed, precedes: next)
-        let exerciseID = keepsCompleted ? completed.workoutExercise?.objectID ?? next.exerciseID : next.exerciseID
-        pendingSetScrollTarget = keepsCompleted ? completed.objectID : next.setID
-        // Materialize a distant lazy group first. Its row then supplies the
-        // precise anchor, including sets below a long exercise or superset.
-        scrollTarget = exerciseCardGroups.first {
-            $0.exercises.contains { $0.objectID == exerciseID }
-        }?.id ?? exerciseID
+        guard let pendingCompletion, pendingCompletion.set == completed,
+              !isFocusTransitionActive else { return }
+        scrollRequest = LoggerScrollRequest(
+            target: WorkoutSetFocus.next(in: workout).map { .object($0.setID) },
+            completionID: pendingCompletion.id
+        )
     }
 
-    private func completedSet(_ completed: WorkoutSet, precedes next: WorkoutSetFocus) -> Bool {
-        guard let exercise = completed.workoutExercise,
-              let exercises = workout.workoutExercises?.array as? [WorkoutExercise],
-              let completedExercise = exercises.firstIndex(where: { $0.objectID == exercise.objectID }),
-              let nextExercise = exercises.firstIndex(where: { $0.objectID == next.exerciseID }) else { return false }
-        if completedExercise != nextExercise { return completedExercise < nextExercise }
-        let sets = workoutSets(for: exercise)
-        guard let completedIndex = sets.firstIndex(where: { $0.objectID == completed.objectID }),
-              let nextIndex = sets.firstIndex(where: { $0.objectID == next.setID }) else { return false }
-        return completedIndex < nextIndex
+    private func finishRPEPresentation(for set: WorkoutSet) {
+        waitsForRPEDismissal = false
+        if pendingCompletion != nil {
+            advanceToNextSet(after: set)
+        } else if hasDeferredLoggerChanges {
+            // Add RPE uses the same motion to the next unfinished set. If this
+            // set has not been logged, it remains that target rather than being
+            // silently completed or skipped.
+            let suggestion = set.workoutExercise.flatMap {
+                loggerSuggestion(for: set, in: $0, historySets: latestHistorySets(for: $0))
+            }
+            pendingCompletion = PendingLoggerCompletion(
+                set: set, focus: WorkoutSetFocus.next(in: workout), suggestion: suggestion
+            )
+            advanceToNextSet(after: set)
+        } else {
+            flushDeferredLoggerChanges()
+        }
     }
 
-    private func revealPendingSet(_ id: NSManagedObjectID) {
-        guard pendingSetScrollTarget == id else { return }
-        pendingSetScrollTarget = nil
-        scrollTarget = id
+    private func performLoggerScroll(_ request: LoggerScrollRequest, using proxy: ScrollViewProxy) {
+        guard !isFocusTransitionActive else { return }
+        if let completionID = request.completionID {
+            guard pendingCompletion?.id == completionID else { return }
+            deferScheduledWatchWork()
+        }
+
+        let updates = {
+            if request.completionID != nil {
+                isFocusTransitionActive = true
+                // Focused-card collapse/expansion, rest insertion and the exact
+                // scroll anchor share this transaction and its one timing curve.
+                presentRestPillForCompletion()
+                workout.objectWillChange.send()
+            }
+            switch request.target {
+            case .object(let id): proxy.scrollTo(id, anchor: .top)
+            case .restStrip: proxy.scrollTo("active-rest-strip", anchor: .center)
+            case nil: break
+            }
+        }
+        let finished = {
+            guard let completionID = request.completionID,
+                  pendingCompletion?.id == completionID else { return }
+            pendingCompletion = nil
+            isFocusTransitionActive = false
+            flushDeferredLoggerChanges()
+            if loggerHistoryNeedsRefresh { refreshLoggerHistory() }
+        }
+        let animation = request.target == .restStrip ? IronMotion.snappy : IronMotion.focusScroll
+
+        if reduceMotion {
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction, updates)
+            // Let the jump/layout commit before a save or snapshot can block it.
+            DispatchQueue.main.async(execute: finished)
+        } else if #available(iOS 17, *) {
+            withAnimation(animation, completionCriteria: .removed, updates, completion: finished)
+        } else {
+            withAnimation(animation, updates)
+            // iOS 15/16 have no animation-completion API. Match focusScroll's
+            // 0.65s duration, then yield one frame before persistence.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: finished)
+        }
+    }
+
+    private func presentRestPillForCompletion() {
+        guard let remaining = restTimerStore.restTimerRemainingTime, remaining > 0,
+              let exercise = activeRestTimerExercise else {
+            isRestPillVisible = false
+            showsRunningRestRuler = false
+            return
+        }
+        restRingPulses = false
+        restPillExerciseID = exercise.objectID
+        restPillSetID = workoutSets(for: exercise)
+            .filter(\.isCompleted)
+            .max { ($0.completedAt ?? .distantPast) < ($1.completedAt ?? .distantPast) }?.objectID
+        isRestPillVisible = true
+    }
+
+    private func saveLoggerEdit() -> Bool {
+        if defersLoggerEffects {
+            hasDeferredLoggerChanges = true
+            return true
+        }
+        if hasDeferredLoggerChanges {
+            flushDeferredLoggerChanges()
+            return !hasDeferredLoggerChanges
+        }
+        guard save() else { return false }
+        workout.objectWillChange.send()
+        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        return true
+    }
+
+    private func deferScheduledWatchWork() {
+        // Re-arm both existing 750ms debounces. A snapshot/library build queued
+        // by the last typed value must not land during dismissal or the 650ms
+        // focus motion; the final durable save will coalesce these again.
+        WatchConnectionManager.shared.syncCurrentWorkoutSnapshot()
+        WatchConnectionManager.shared.scheduleWorkoutLibrarySync()
+    }
+
+    private func flushDeferredLoggerChanges() {
+        guard hasDeferredLoggerChanges else { return }
+        // On failure the dirty graph and pending effects remain available for
+        // retry; the existing persistence alert makes the failure visible.
+        guard save() else { return }
+        hasDeferredLoggerChanges = false
+        restTimerStore.flushDeferredWatchUpdate()
+        WatchConnectionManager.shared.syncCurrentWorkoutSnapshot()
+        workout.objectWillChange.send()
+        let completedSets = deferredCompletionEffects
+        deferredCompletionEffects = []
+        var publishedCompletion = false
+        for set in completedSets where !set.isDeleted && set.isCompleted {
+            guard let exercise = set.workoutExercise else { continue }
+            if let exerciseID = exercise.exerciseUuid,
+               SetTrackingPreferences.override(for: exerciseID) == nil {
+                SetTrackingPreferences.setOverride(exercise.setTrackingType, for: exerciseID)
+            }
+            let isRecord = settingsStore.personalRecordAlerts && set.isPersonalRecord == true
+            if settingsStore.workoutSounds {
+                IronSoundPlayer.shared.play(isRecord ? .setRecord : .setComplete)
+            }
+            if isRecord { announcePersonalRecord(for: set, in: exercise) }
+            WorkoutLiveActivityManager.shared.setCompleted(set, in: exercise, workout: workout)
+            publishedCompletion = true
+        }
+        if !publishedCompletion {
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        }
     }
 
     @discardableResult
@@ -3055,16 +3281,183 @@ struct CurrentWorkoutView: View {
         return title.count == 5 && title.hasPrefix("0") ? String(title.dropFirst()) : title
     }
 
-    private func latestHistorySet(for workoutExercise: WorkoutExercise, at index: Int) -> WorkoutSet? {
-        guard let history = try? managedObjectContext.fetch(workoutExercise.historyFetchRequest),
-              let previousExercise = history.first,
-              let previousSets = previousExercise.workoutSets?.array.compactMap({ $0 as? WorkoutSet }),
-              !previousSets.isEmpty else { return nil }
-        return previousSets.indices.contains(index) ? previousSets[index] : previousSets.last
+    private func latestHistorySets(for workoutExercise: WorkoutExercise) -> [WorkoutSet] {
+        historySetsByExercise[workoutExercise.objectID] ?? []
+    }
+
+    private func cachedRoutineNoteSource(for exercise: WorkoutExercise) -> WorkoutRoutineExercise? {
+        guard let source = routineNoteSourcesByExercise[exercise.objectID], !source.isDeleted else { return nil }
+        return source
+    }
+
+    /// History and plan-note sources are stable during a live log. Fetch/fault
+    /// them before interaction, never from a row's body during guided motion.
+    private func refreshLoggerHistory() {
+        guard !defersLoggerEffects else {
+            loggerHistoryNeedsRefresh = true
+            return
+        }
+        SetTrackingPreferences.beginLoggerSession(workoutID: workout.uuid, startedAt: workout.start)
+        var history: [NSManagedObjectID: [WorkoutSet]] = [:]
+        var prefillHistory: [NSManagedObjectID: [WorkoutSet]] = [:]
+        var noteSources: [NSManagedObjectID: WorkoutRoutineExercise] = [:]
+        for exercise in workoutExercises {
+            noteSources[exercise.objectID] = exercise.routineNoteSource()
+            let request = exercise.historyFetchRequest
+            request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+                request.predicate ?? NSPredicate(value: true),
+                NSPredicate(format: "%K != nil", #keyPath(WorkoutExercise.workout.end))
+            ])
+            request.fetchLimit = 1
+            request.returnsObjectsAsFaults = false
+            request.relationshipKeyPathsForPrefetching = ["workoutSets"]
+            if let previousExercise = (try? managedObjectContext.fetch(request))?.first {
+                history[exercise.objectID] = workoutSets(for: previousExercise)
+            }
+            request.sortDescriptors = [NSSortDescriptor(keyPath: \WorkoutExercise.workout?.end, ascending: false)]
+            if let previousExercise = (try? managedObjectContext.fetch(request))?.first {
+                prefillHistory[exercise.objectID] = workoutSets(for: previousExercise)
+            }
+            registerExistingSetFields(in: exercise, previous: history[exercise.objectID] ?? [],
+                                      plan: workout.workoutRoutine == nil ? nil : noteSources[exercise.objectID])
+        }
+        historySetsByExercise = history
+        prefillHistorySetsByExercise = prefillHistory
+        routineNoteSourcesByExercise = noteSources
+        loggerHistoryNeedsRefresh = false
+    }
+
+    /// Existing sessions predate field provenance. Preserve measurements that
+    /// differ from their old automatic defaults, and freeze this launch's plan
+    /// targets by set UUID before warm-up insertion can shift row positions.
+    private func registerExistingSetFields(in exercise: WorkoutExercise, previous: [WorkoutSet], plan: WorkoutRoutineExercise?) {
+        let plans = plan?.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? []
+        let isBarbell = exercise.exercise(in: exerciseStore.exercises)?.type == .barbell
+        let defaultWeight = isBarbell
+            ? WeightUnit.convert(weight: settingsStore.weightUnit.barbellWeight, from: settingsStore.weightUnit, to: .metric) : 0
+        for (index, set) in workoutSets(for: exercise).enumerated() {
+            guard SetTrackingPreferences.loggerFields(for: set.uuid) == nil else { continue }
+            let target = plans.indices.contains(index) ? plans[index] : nil
+            let targets = SetValuePrefill.Values(weight: target?.weightValue,
+                repetitions: target == nil ? nil : (set.maxTargetRepetitionsValue.map(Int.init) ?? set.minTargetRepetitionsValue.map(Int.init)),
+                duration: target?.durationValue, distance: SetTrackingPreferences.routineDistance(for: target?.uuid))
+            let old = previous.indices.contains(index) ? previous[index] : previous.last
+            let baseline = SetValuePrefill.Values(weight: old?.weightValue ?? defaultWeight,
+                repetitions: old.map { Int($0.repetitionsValue) } ?? 5,
+                duration: old?.durationValue ?? 60, distance: old?.distanceValue)
+            let values = prefillValues(of: set)
+            var fields = Set<SetTrackingType.Column>()
+            // The legacy Repeat creator turns historical reps into target
+            // attributes, even for timed sets. Those copied results were not
+            // typed into a saved workout or this session.
+            let copiedRepeat = workout.workoutRoutine == nil &&
+                (set.minTargetRepetitionsValue != nil || set.maxTargetRepetitionsValue != nil)
+            for column in exercise.setTrackingType.columns {
+                guard let value = values[column] else { continue }
+                if set.isCompleted || (!copiedRepeat && value != baseline[column] && value != targets[column]
+                    && !(column == .weight && value == 0)
+                    && !(column == .reps && value == 5)
+                    && !(column == .duration && value == 60)) {
+                    fields.insert(column)
+                }
+            }
+            SetTrackingPreferences.setLoggerFields(fields, for: set.uuid, targets: targets)
+        }
+    }
+
+    private func latestHistorySet(
+        for workoutExercise: WorkoutExercise, at index: Int, historySets: [WorkoutSet]? = nil
+    ) -> WorkoutSet? {
+        let previousSets = historySets ?? latestHistorySets(for: workoutExercise)
+        let currentSets = workoutSets(for: workoutExercise)
+        guard currentSets.indices.contains(index) else {
+            return previousSets.indices.contains(index) ? previousSets[index] : previousSets.last
+        }
+        // Warm-up insertion must not shift the working sets' Previous values.
+        let isWarmup = currentSets[index].tagValue == .warmUp
+        let matching = previousSets.filter { ($0.tagValue == .warmUp) == isWarmup }
+        let ordinal = currentSets.prefix(index).filter { ($0.tagValue == .warmUp) == isWarmup }.count
+        return matching.indices.contains(ordinal) ? matching[ordinal] : matching.last
+    }
+
+    private func suggestedSetValues(
+        for set: WorkoutSet, in workoutExercise: WorkoutExercise
+    ) -> SetValuePrefill.Values? {
+        guard !set.isCompleted else { return nil }
+        let sets = workoutSets(for: workoutExercise)
+        guard let index = sets.firstIndex(of: set) else { return nil }
+        let previous = prefillHistorySetsByExercise[workoutExercise.objectID] ?? []
+        let ownership = SetTrackingPreferences.load().loggerFields ?? [:]
+        let inputs = sets.map { row -> SetValuePrefill.SetInput in
+            let entry = row.uuid.flatMap { ownership[$0.uuidString] }
+            let targets = entry?.targets
+                ?? .init(repetitions: workout.workoutRoutine == nil ? nil
+                    : (row.maxTargetRepetitionsValue.map(Int.init) ?? row.minTargetRepetitionsValue.map(Int.init)))
+            return .init(values: prefillValues(of: row),
+                         userEnteredFields: entry?.fields ?? [],
+                         targets: targets, isCompleted: row.isCompleted, isWarmup: row.tagValue == .warmUp)
+        }
+        return SetValuePrefill.resolve(
+            currentSets: inputs,
+            previousSets: previous.map { .init(values: prefillValues(of: $0), isWarmup: $0.tagValue == .warmUp) },
+            trackingType: workoutExercise.setTrackingType
+        )[index]
+    }
+
+    private func prefillValues(of set: WorkoutSet) -> SetValuePrefill.Values {
+        .init(weight: set.weight?.doubleValue, repetitions: set.repetitions?.intValue,
+              duration: set.durationValue, distance: set.distanceValue)
+    }
+
+    private func loggerSuggestion(
+        for set: WorkoutSet, in workoutExercise: WorkoutExercise, historySets: [WorkoutSet]
+    ) -> LoggerAssist.Suggestion? {
+        guard !set.isCompleted, set.tagValue != .warmUp, workoutExercise.setTrackingType.usesReps else { return nil }
+        let workingSets = workoutSets(for: workoutExercise).filter { $0.tagValue != .warmUp }
+        let previousWorkingSets = historySets.filter { $0.tagValue != .warmUp }
+        guard let index = workingSets.firstIndex(of: set),
+              previousWorkingSets.allSatisfy(\.isCompleted) else { return nil }
+        let previous = previousWorkingSets.map {
+            LoggerAssist.PreviousSet(
+                weight: displayWeight(for: $0), repetitions: Int($0.repetitionsValue),
+                minTarget: $0.minTargetRepetitionsValue.map(Int.init),
+                maxTarget: $0.maxTargetRepetitionsValue.map(Int.init)
+            )
+        }
+        guard let suggestion = LoggerAssist.suggestion(
+            previousWorkingSets: previous, workingSetIndex: index, increment: settingsStore.weightUnit.barbellIncrement
+        ), suggestion.repetitions <= Int(WorkoutSet.MAX_REPETITIONS),
+           WeightUnit.convert(weight: suggestion.weight, from: settingsStore.weightUnit, to: .metric) <= WorkoutSet.MAX_WEIGHT
+        else { return nil }
+        return suggestion
+    }
+
+    private func warmupWorkingWeight(for set: WorkoutSet, in workoutExercise: WorkoutExercise) -> Double {
+        displayWeight(for: set)
+    }
+
+    private func addSuggestedWarmupSets(before workingSet: WorkoutSet, isBarbell: Bool) {
+        guard let exercise = workingSet.workoutExercise,
+              !workoutSets(for: exercise).contains(where: { $0.tagValue == .warmUp }) else { return }
+        let unit = settingsStore.weightUnit
+        var barbell: PlateLoadout?
+        if isBarbell {
+            var setup = PlateLoadout.load(exerciseKey: exercise.exerciseUuid?.uuidString, unit: unit.plateLoadUnit)
+            if case .barbell = setup.mode {} else { setup = .standard(for: unit.plateLoadUnit) }
+            setup.loadedSides = .both
+            barbell = setup
+        }
+        let recommendations = LoggerAssist.warmupSets(
+            workingWeight: warmupWorkingWeight(for: workingSet, in: exercise),
+            increment: unit.barbellIncrement, barbell: barbell, inventory: .load()
+        ).map { WarmupRecommendation(percentage: 0, weight: $0.weight, repetitions: $0.repetitions) }
+        guard !recommendations.isEmpty else { return }
+        _ = addWarmupSets(recommendations, before: workingSet)
     }
 
     private func displayWeight(for set: WorkoutSet) -> Double {
-        WeightUnit.convert(weight: set.weightValue, from: .metric, to: settingsStore.weightUnit)
+        let filled = set.workoutExercise.flatMap { suggestedSetValues(for: set, in: $0) }
+        return WeightUnit.convert(weight: filled?.weight ?? set.weightValue, from: .metric, to: settingsStore.weightUnit)
     }
 
     @discardableResult
@@ -3073,7 +3466,7 @@ struct CurrentWorkoutView: View {
               let index = workoutExercise.workoutSets?.index(of: workingSet),
               index != NSNotFound else { return false }
 
-        let saved = persistMutation {
+        let saved = persistSetAddition {
             var insertionIndex = index
             for recommendation in recommendations {
                 let set = WorkoutSet.create(context: managedObjectContext)
@@ -3084,13 +3477,13 @@ struct CurrentWorkoutView: View {
                     to: .metric
                 )
                 set.repetitionsValue = Int16(recommendation.repetitions)
+                SetTrackingPreferences.setLoggerFields([.weight, .reps], for: set.uuid)
                 set.isCompleted = false
                 workoutExercise.insertIntoWorkoutSets(set, at: insertionIndex)
                 insertionIndex += 1
             }
         }
         if saved {
-            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
             activeSheet = nil
         }
         return saved
@@ -3234,6 +3627,7 @@ struct CurrentWorkoutView: View {
             persistenceError = "Your workout is still active. Light could not save it: \(error.localizedDescription)"
             return
         }
+        HealthManager.shared.syncWorkoutEffort(workout: workout)
         for (setID, distance) in routineDistanceChanges {
             SetTrackingPreferences.setRoutineDistance(distance, for: setID)
         }
@@ -3831,8 +4225,9 @@ struct InlineWorkoutSetRow: View {
     let trackingType: SetTrackingType
     private var usesDuration: Bool { trackingType.usesDuration }
     let isBarbell: Bool
+    let equipment: [String]
     let previousTitle: String
-    let onOpenPlateCalculator: () -> Void
+    let onOpenPlateCalculator: (PlateLoadout.Mode?) -> Void
     let onToggleCompleted: () -> Void
     let onDelete: () -> Bool
     let onChanged: () -> Bool
@@ -3842,13 +4237,39 @@ struct InlineWorkoutSetRow: View {
     // Stored in kilograms, just like the set; history is only a suggestion.
     var previousWeight: Double? = nil
     var previousRepetitions: Int? = nil
+    // Entry defaults use kilograms; the opt-in overload chip uses display units.
+    var suggestedValues: SetValuePrefill.Values? = nil
+    var suggestion: LoggerAssist.Suggestion? = nil
+    var restReadyPulse = 0
+    var loggerViewport = CGRect.zero
+    var onEditorSheetChanged: ((Bool) -> Void)? = nil
     var onCompletionFlow: (() -> Void)? = nil
+    var holdsFocusedEditor = false
+    var onValueEdited: ((SetTrackingType.Column) -> Void)? = nil
+    var onRPEChanged: (() -> Bool)? = nil
+    var onRPEDismissed: (() -> Void)? = nil
+
+    private var displayedValues: SetValuePrefill.Values {
+        if !set.isCompleted, let suggestedValues { return suggestedValues }
+        return .init(weight: set.weight?.doubleValue, repetitions: set.repetitions?.intValue,
+                     duration: set.durationValue, distance: set.distanceValue)
+    }
 
     private var showsFocusedEditor: Bool {
-        isCurrent && trackingType.usesReps && !set.isCompleted
+        isCurrent && trackingType.usesReps && (!set.isCompleted || holdsFocusedEditor)
+    }
+
+    private var focusedLayoutAnimation: Animation? {
+        if onCompletionFlow != nil { return reduceMotion ? nil : IronMotion.focusScroll }
+        return IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)
     }
 
     @State private var stepFeedback = 0
+    @State private var suggestionFeedback = 0
+    @State private var isFocusedEditorVisible = false
+    @State private var restGlowOpacity = 0.0
+    @State private var restGlowRequest = 0
+    @State private var handledRestGlowRequest = 0
     @State private var completionFeedback = 0
     @State private var isRaisedCurrent = false
     @State private var completionBounce = 0
@@ -3858,17 +4279,8 @@ struct InlineWorkoutSetRow: View {
         return set.isCompleted || isRaisedCurrent ? IronTheme.primaryText : IronTheme.secondaryText
     }
 
-    /// A number that still matches what was filled in stays quiet. One the user changed reads as theirs.
-    private var weightIsChanged: Bool {
-        let filledIn = previousWeight ?? (isBarbell
-            ? WeightUnit.convert(weight: settingsStore.weightUnit.barbellWeight, from: settingsStore.weightUnit, to: .metric)
-            : 0)
-        return set.weightValue > 0 && abs(set.weightValue - filledIn) > 0.000_001
-    }
-
-    private var repetitionsAreChanged: Bool {
-        return set.repetitionsValue > 0 && Int(set.repetitionsValue) != previousRepetitions ?? 5
-    }
+    private var weightIsChanged: Bool { displayedValues.weight != nil }
+    private var repetitionsAreChanged: Bool { displayedValues.repetitions != nil }
 
     private var badgeColor: Color {
         if set.isCompleted { return IronTheme.setFill(for: set.tagValue).tint }
@@ -3953,13 +4365,13 @@ struct InlineWorkoutSetRow: View {
         } else {
             Button(action: { showingDurationPicker = true }) {
                 durationLabel(
-                    text: set.durationValue.map(SetTrackingType.durationText) ?? (set.isCompleted ? "—" : "1:00"),
+                    text: displayedValues.duration.map(SetTrackingType.durationText) ?? "—",
                     isRunning: false
                 )
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Set duration")
-            .accessibilityValue(set.durationValue.map(SetTrackingType.durationText) ?? "Not entered")
+            .accessibilityValue(displayedValues.duration.map(SetTrackingType.durationText) ?? "Not entered")
         }
     }
 
@@ -3985,7 +4397,7 @@ struct InlineWorkoutSetRow: View {
 
     private func inlineTimerText(now: Date) -> String {
         guard let inlineTimerStart else {
-            return SetTrackingType.durationText(set.durationValue ?? 0)
+            return displayedValues.duration.map(SetTrackingType.durationText) ?? "—"
         }
         let elapsed = max(0, now.timeIntervalSince(inlineTimerStart))
         return SetTrackingType.durationText(elapsed)
@@ -3994,6 +4406,7 @@ struct InlineWorkoutSetRow: View {
     private func toggleInlineTimer() {
         if let inlineTimerStart {
             set.durationValue = max(1, (Date().timeIntervalSince(inlineTimerStart)).rounded())
+            onValueEdited?(.duration)
             self.inlineTimerStart = nil
             _ = onChanged()
         } else {
@@ -4039,55 +4452,32 @@ struct InlineWorkoutSetRow: View {
     }
 
     private var weightTextBinding: Binding<String> {
-        Binding(
-            get: { weightText },
-            set: { proposedValue in
-                let sanitizedValue = sanitizedDecimalInput(proposedValue)
-                guard proposedValue.isEmpty || !sanitizedValue.isEmpty else { return }
-                weightText = sanitizedValue
-
-                guard let displayValue = weightFormatter.number(from: sanitizedValue)?.doubleValue else {
-                    if sanitizedValue.isEmpty, set.weightValue != 0 {
-                        set.weightValue = 0
-                        _ = onChanged()
-                    }
-                    return
-                }
-
-                let metricValue = min(
-                    max(WeightUnit.convert(weight: displayValue, from: settingsStore.weightUnit, to: .metric), 0),
-                    WorkoutSet.MAX_WEIGHT
-                )
-                if abs(set.weightValue - metricValue) > 0.000_001 {
-                    set.weightValue = metricValue
-                    _ = onChanged()
-                }
+        Binding(get: { weightText }, set: { proposedValue in
+            let sanitized = sanitizedDecimalInput(proposedValue)
+            guard proposedValue.isEmpty || !sanitized.isEmpty else { return }
+            weightText = sanitized
+            let value = weightFormatter.number(from: sanitized).map {
+                min(max(WeightUnit.convert(weight: $0.doubleValue, from: settingsStore.weightUnit, to: .metric), 0), WorkoutSet.MAX_WEIGHT)
             }
-        )
+            set.weight = value.map { NSNumber(value: $0) }
+            onValueEdited?(.weight)
+            _ = onChanged()
+        })
     }
 
     private var repetitionsTextBinding: Binding<String> {
-        Binding(
-            get: { repetitionsText },
-            set: { proposedValue in
-                let sanitizedValue = sanitizedIntegerInput(proposedValue)
-                guard proposedValue.isEmpty || !sanitizedValue.isEmpty else { return }
-                repetitionsText = sanitizedValue
-
-                let value = min(
-                    max(Int(sanitizedValue) ?? 0, 0),
-                    Int(WorkoutSet.MAX_REPETITIONS)
-                )
-                if set.repetitionsValue != Int16(value) {
-                    set.repetitionsValue = Int16(value)
-                    _ = onChanged()
-                }
-            }
-        )
+        Binding(get: { repetitionsText }, set: { proposedValue in
+            let sanitized = sanitizedIntegerInput(proposedValue)
+            guard proposedValue.isEmpty || !sanitized.isEmpty else { return }
+            repetitionsText = sanitized
+            set.repetitions = Int(sanitized).map { NSNumber(value: min(max($0, 0), Int(WorkoutSet.MAX_REPETITIONS))) }
+            onValueEdited?(.reps)
+            _ = onChanged()
+        })
     }
 
     private var formattedDistance: String {
-        guard let meters = set.distanceValue else { return "" }
+        guard let meters = displayedValues.distance else { return "" }
         return weightFormatter.string(from: NSNumber(value: WorkoutSet.distanceDisplayValue(meters, weightUnit: settingsStore.weightUnit))) ?? ""
     }
     private var distanceTextBinding: Binding<String> {
@@ -4095,10 +4485,10 @@ struct InlineWorkoutSetRow: View {
             let sanitized = sanitizedDecimalInput(input)
             guard input.isEmpty || !sanitized.isEmpty else { return }
             distanceText = sanitized
-            let value = weightFormatter.number(from: sanitized)?.doubleValue ?? 0
-            let meters = WorkoutSet.distanceMeters(value, weightUnit: settingsStore.weightUnit)
-            guard (set.distanceValue ?? 0) != meters else { return }
-            set.distanceValue = meters
+            set.distanceValue = weightFormatter.number(from: sanitized).map {
+                WorkoutSet.distanceMeters($0.doubleValue, weightUnit: settingsStore.weightUnit)
+            }
+            onValueEdited?(.distance)
             _ = onChanged()
         })
     }
@@ -4131,10 +4521,11 @@ struct InlineWorkoutSetRow: View {
             )
             .padding(.horizontal, -InlineWorkoutSetLayout.completedChromeExpansion)
             .animation(
-                IronMotion.preferred(isCurrent && !usesDuration ? IronMotion.collapse : IronMotion.snappy, reduceMotion: reduceMotion),
+                onCompletionFlow != nil ? focusedLayoutAnimation
+                    : IronMotion.preferred(isCurrent && !usesDuration ? IronMotion.collapse : IronMotion.snappy, reduceMotion: reduceMotion),
                 value: set.isCompleted
             )
-            .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: showsFocusedEditor)
+            .animation(focusedLayoutAnimation, value: showsFocusedEditor)
             .background {
                 GeometryReader { proxy in
                     Color.clear
@@ -4179,9 +4570,21 @@ struct InlineWorkoutSetRow: View {
             if id != set.objectID, !isPerformingSwipeDelete { closeSwipe() }
         }
         .sensoryFeedback(.selection, trigger: stepFeedback) { _, _ in settingsStore.workoutHaptics }
+        .sensoryFeedback(.impact(weight: .light), trigger: suggestionFeedback) { _, _ in settingsStore.workoutHaptics }
         .sensoryFeedback(.success, trigger: completionFeedback) { _, _ in settingsStore.workoutHaptics }
+        .onChange(of: restReadyPulse) { _, pulse in
+            guard pulse > 0, showsFocusedEditor, isFocusedEditorVisible else { return }
+            restGlowRequest += 1
+        }
+        .onChange(of: showingRPEPicker || showingDurationPicker) { _, presented in
+            onEditorSheetChanged?(presented)
+        }
+        .onDisappear {
+            if showingRPEPicker || showingDurationPicker { onEditorSheetChanged?(false) }
+        }
         .onChange(of: showsFocusedEditor) { _, _ in
             if focusedField == nil { synchronizeEntryText() }
+            if !showsFocusedEditor { restGlowOpacity = 0 }
         }
         .onAppear {
             synchronizeEntryText()
@@ -4189,10 +4592,10 @@ struct InlineWorkoutSetRow: View {
             checkReveal = set.isCompleted ? 1 : 0
         }
         .onChange(of: isCurrent) { _, current in
-            withAnimation(IronMotion.preferred(
-                current ? IronMotion.snappy.delay(0.18) : IronMotion.snappy,
-                reduceMotion: reduceMotion
-            )) {
+            let animation = onCompletionFlow != nil ? focusedLayoutAnimation : IronMotion.preferred(
+                current ? IronMotion.snappy.delay(0.18) : IronMotion.snappy, reduceMotion: reduceMotion
+            )
+            withAnimation(animation) {
                 isRaisedCurrent = current && !set.isCompleted
             }
         }
@@ -4230,6 +4633,11 @@ struct InlineWorkoutSetRow: View {
             guard focusedField != .repetitions else { return }
             repetitionsText = formattedRepetitions
         }
+        .onChange(of: suggestedValues) { _, _ in
+            if focusedField != .weight { weightText = formattedWeight }
+            if focusedField != .repetitions { repetitionsText = formattedRepetitions }
+            if focusedField != .distance { distanceText = formattedDistance }
+        }
         .onChange(of: settingsStore.weightUnit) { _, _ in
             focusedField = nil
             synchronizeEntryText()
@@ -4259,18 +4667,24 @@ struct InlineWorkoutSetRow: View {
             }
         }
         .sheet(isPresented: $showingRPEPicker, onDismiss: {
+            if let onRPEDismissed {
+                advancesAfterRPE = false
+                onRPEDismissed()
+                return
+            }
             guard advancesAfterRPE else { return }
             advancesAfterRPE = false
             onCompletionFlow?()
         }) {
-            RPEPickerSheet(set: set, onChanged: onChanged)
+            RPEPickerSheet(set: set, onChanged: onRPEChanged ?? onChanged)
         }
         .sheet(isPresented: $showingDurationPicker) {
             IronDurationPickerSheet(
-                initialDuration: set.durationValue ?? 60,
+                initialDuration: displayedValues.duration ?? 0,
                 shouldDismiss: { !showingDurationSaveError }
             ) { duration in
                 set.durationValue = duration
+                onValueEdited?(.duration)
                 showingDurationSaveError = !onChanged()
             }
             .alert("Duration Not Saved", isPresented: $showingDurationSaveError) {
@@ -4308,11 +4722,20 @@ struct InlineWorkoutSetRow: View {
 
                 Spacer(minLength: 0)
                 if !previousTitle.isEmpty && previousTitle != "—" {
-                    Text("Last time \(previousTitle)")
-                        .font(.subheadline)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .foregroundStyle(IronTheme.secondaryText)
-                        .multilineTextAlignment(.trailing)
+                    if let suggestion = visibleSuggestion {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 8) {
+                                lastTimeText.fixedSize()
+                                suggestionChip(suggestion).fixedSize()
+                            }
+                            VStack(alignment: .trailing, spacing: 4) {
+                                lastTimeText
+                                suggestionChip(suggestion)
+                            }
+                        }
+                    } else {
+                        lastTimeText
+                    }
                 }
             }
 
@@ -4322,14 +4745,45 @@ struct InlineWorkoutSetRow: View {
             }
 
             HStack(spacing: 8) {
-                if isBarbell, settingsStore.showPlateCalculator, let hint = plateHint {
+                if plateHintPresentation == .hint, let hint = plateHint {
                     Button(action: openPlateCalculator) {
-                        Label(hint, systemImage: "circle.circle")
+                        HStack(spacing: 6) {
+                            if let load = plateHintLoad,
+                               plateHintDisplayWeight > load.loadout.baseWeight {
+                                PlateBarView(platesPerSide: load.solution.platesPerSide,
+                                             unit: settingsStore.weightUnit, height: 22,
+                                             showsSleeve: load.loadout.mode != .noBar)
+                                    .frame(height: 38)
+                                    .accessibilityHidden(true)
+                            } else {
+                                Image(systemName: "circle.circle")
+                            }
+                            Text(hint)
+                                .lineLimit(2)
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens the plate calculator")
+                } else if plateHintPresentation == .setUpChip {
+                    Button(action: openPlateCalculator) {
+                        Label("Plate Calculator", systemImage: "circle.circle")
                             .font(.subheadline)
                             .foregroundStyle(IronTheme.secondaryText)
+                            .lineLimit(2)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: IronTheme.controlHeight)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
+                                    .strokeBorder(IronTheme.outline, lineWidth: 0.5)
+                            }
+                            .contentShape(RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint("Opens the plate calculator")
@@ -4359,11 +4813,91 @@ struct InlineWorkoutSetRow: View {
                     .background(IronTheme.accent, in: Capsule())
             }
             .buttonStyle(.plain)
+            .disabled(holdsFocusedEditor && set.isCompleted)
             .accessibilityLabel("Log set \(index + 1)")
         }
         .padding(10)
         .background(IronTheme.raisedSurface, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous)
+                .strokeBorder(IronTheme.accent, lineWidth: 2)
+                .opacity(restGlowOpacity)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .onGeometryChange(for: Bool.self) { proxy in
+            !loggerViewport.isEmpty && proxy.frame(in: .global).intersects(loggerViewport)
+        } action: { visible in
+            isFocusedEditorVisible = visible
+            if !visible { restGlowOpacity = 0 }
+        }
+        .task(id: restGlowRequest) {
+            await showRestReadyGlow()
+        }
         .padding(.vertical, 6)
+    }
+
+    private var lastTimeText: some View {
+        Text("Last time \(previousTitle)")
+            .font(.subheadline)
+            .fixedSize(horizontal: false, vertical: true)
+            .foregroundStyle(IronTheme.secondaryText)
+            .multilineTextAlignment(.trailing)
+    }
+
+    private var visibleSuggestion: LoggerAssist.Suggestion? {
+        guard let suggestion, !set.isCompleted || holdsFocusedEditor, set.tagValue != .warmUp else { return nil }
+        let enteredWeight = weightFormatter.number(from: suggestionWeightTitle(suggestion))?.doubleValue ?? suggestion.weight
+        let metricWeight = WeightUnit.convert(weight: enteredWeight, from: settingsStore.weightUnit, to: .metric)
+        if abs(set.weightValue - metricWeight) < 0.000_001,
+           Int(set.repetitionsValue) == suggestion.repetitions { return nil }
+        return suggestion
+    }
+
+    private func suggestionWeightTitle(_ suggestion: LoggerAssist.Suggestion) -> String {
+        weightFormatter.string(from: NSNumber(value: suggestion.weight)) ?? "0"
+    }
+
+    private func suggestionChip(_ suggestion: LoggerAssist.Suggestion) -> some View {
+        let weight = suggestionWeightTitle(suggestion)
+        let title = suggestion.weight == 0 ? "Try \(suggestion.repetitions) reps" : "Try \(weight) × \(suggestion.repetitions)"
+        let unit = settingsStore.weightUnit == .imperial ? "pounds" : "kilograms"
+        return Button {
+            // Use the same bindings as typing, including validation, save and sync.
+            weightTextBinding.wrappedValue = weight
+            repetitionsTextBinding.wrappedValue = String(suggestion.repetitions)
+            suggestionFeedback += 1
+        } label: {
+            Label(title, systemImage: "arrow.up.right")
+                .font(.ironMetric(.subheadline, weight: .semibold))
+                .foregroundStyle(IronTheme.accent)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10)
+                .frame(minHeight: 32)
+                .background(IronTheme.accentSoft, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(suggestion.weight == 0
+            ? "Suggested: \(suggestion.repetitions) reps"
+            : "Suggested: \(weight) \(unit) for \(suggestion.repetitions) reps")
+        .accessibilityHint("Fills this set")
+    }
+
+    @MainActor
+    private func showRestReadyGlow() async {
+        guard restGlowRequest > handledRestGlowRequest,
+              showsFocusedEditor, isFocusedEditorVisible else { return }
+        handledRestGlowRequest = restGlowRequest
+        defer { restGlowOpacity = 0 }
+        let animation = IronMotion.preferred(IronMotion.fade.speed(0.45), reduceMotion: reduceMotion)
+        let fadeDuration: Duration = .milliseconds(reduceMotion ? 180 : 400)
+        for _ in 0..<(reduceMotion ? 1 : 2) {
+            guard !Task.isCancelled, showsFocusedEditor, isFocusedEditorVisible else { return }
+            withAnimation(animation) { restGlowOpacity = 1 }
+            do { try await Task.sleep(for: fadeDuration) } catch { return }
+            withAnimation(animation) { restGlowOpacity = 0 }
+            do { try await Task.sleep(for: fadeDuration) } catch { return }
+        }
     }
 
     private var focusedHeaderLayout: AnyLayout {
@@ -4380,7 +4914,7 @@ struct InlineWorkoutSetRow: View {
 
     private func focusedTile(_ field: EntryField) -> some View {
         let isWeight = field == .weight
-        let placeholder = isWeight ? previousWeightPlaceholder : previousRepetitions.map { String($0) } ?? "0"
+        let placeholder = "—"
         return VStack(alignment: .leading, spacing: InlineWorkoutSetLayout.spacing) {
             Text(isWeight ? weightAccessibilityTitle : "Reps")
                 .font(.subheadline)
@@ -4419,8 +4953,8 @@ struct InlineWorkoutSetRow: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(isWeight ? weightAccessibilityTitle : "Reps")
         .accessibilityValue(isWeight
-            ? WeightUnit.format(weight: set.weightValue, from: .metric, to: settingsStore.weightUnit)
-            : String(Int(set.repetitionsValue)))
+            ? displayedValues.weight.map { WeightUnit.format(weight: $0, from: .metric, to: settingsStore.weightUnit) } ?? "Not entered"
+            : displayedValues.repetitions.map(String.init) ?? "Not entered")
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment: step(field, direction: 1)
@@ -4433,7 +4967,7 @@ struct InlineWorkoutSetRow: View {
     private func stepButton(_ field: EntryField, direction: Int) -> some View {
         let action = direction > 0 ? "Increase" : "Decrease"
         let unitName = settingsStore.weightUnit == .imperial ? "pounds" : "kilograms"
-        let increment = weightFormatter.string(from: NSNumber(value: settingsStore.weightUnit.barbellIncrement)) ?? "0"
+        let increment = weightFormatter.string(from: NSNumber(value: settingsStore.weightUnit.adjustmentStep)) ?? "0"
         return Button { step(field, direction: direction) } label: {
             Image(systemName: direction > 0 ? "plus" : "minus")
                 .font(.body.weight(.bold))
@@ -4447,27 +4981,18 @@ struct InlineWorkoutSetRow: View {
         .accessibilityLabel(field == .weight ? "\(action) \(weightAccessibilityTitle.lowercased()) by \(increment) \(unitName)" : "\(action) reps by 1")
     }
 
-    private var displayWeight: Double {
-        WeightUnit.convert(weight: set.weightValue, from: .metric, to: settingsStore.weightUnit)
-    }
-
-    private var previousWeightPlaceholder: String {
-        guard let previousWeight else { return "0" }
-        let value = WeightUnit.convert(weight: previousWeight, from: .metric, to: settingsStore.weightUnit)
-        return weightFormatter.string(from: NSNumber(value: value)) ?? "0"
-    }
-
     private func step(_ field: EntryField, direction: Int) {
         let oldWeight = set.weightValue
         let oldRepetitions = set.repetitionsValue
         if field == .weight {
-            let previous = WeightUnit.convert(weight: previousWeight ?? 0, from: .metric, to: settingsStore.weightUnit)
-            let base = set.weightValue == 0 && direction > 0 ? previous : displayWeight
+            let base = WeightUnit.convert(
+                weight: displayedValues.weight ?? 0, from: .metric, to: settingsStore.weightUnit
+            )
             let maximum = WeightUnit.convert(weight: WorkoutSet.MAX_WEIGHT, from: .metric, to: settingsStore.weightUnit)
-            let value = min(max(base + Double(direction) * settingsStore.weightUnit.barbellIncrement, 0), maximum)
+            let value = min(max(base + Double(direction) * settingsStore.weightUnit.adjustmentStep, 0), maximum)
             weightTextBinding.wrappedValue = weightFormatter.string(from: NSNumber(value: value)) ?? "0"
         } else {
-            let base = set.repetitionsValue == 0 && direction > 0 ? previousRepetitions ?? 0 : Int(set.repetitionsValue)
+            let base = displayedValues.repetitions ?? 0
             let value = min(max(base + direction, 0), Int(WorkoutSet.MAX_REPETITIONS))
             repetitionsTextBinding.wrappedValue = String(value)
         }
@@ -4477,17 +5002,41 @@ struct InlineWorkoutSetRow: View {
         }
     }
 
-    private var plateHint: String? {
+    private var plateHintDisplayWeight: Double {
+        WeightUnit.convert(weight: displayedValues.weight ?? 0, from: .metric, to: settingsStore.weightUnit)
+    }
+
+    private var savedPlateSetup: PlateLoadout? {
+        guard let exerciseKey = set.workoutExercise?.exerciseUuid?.uuidString else { return nil }
+        return PlateCalculatorPreferences.load().loadouts[exerciseKey]
+    }
+
+    private var plateHintPresentation: LoggerAssist.PlateHintPresentation {
+        LoggerAssist.plateHintPresentation(
+            isBarbell: isBarbell, equipment: equipment, hasSavedSetup: savedPlateSetup != nil,
+            showPlateCalculator: settingsStore.showPlateCalculator
+        )
+    }
+
+    private var plateHintLoad: (loadout: PlateLoadout, inventory: PlateInventory, solution: PlateLoadSolution)? {
         let unit = settingsStore.weightUnit
         let preferences = PlateCalculatorPreferences.load()
         let exerciseKey = set.workoutExercise?.exerciseUuid?.uuidString
         let loadout = exerciseKey.flatMap { preferences.loadouts[$0] }?.converted(to: unit.plateLoadUnit)
             ?? PlateLoadout.standard(for: unit.plateLoadUnit)
-        guard displayWeight >= loadout.baseWeight else { return nil }
-        let solution = PlateLoadSolver.solve(target: displayWeight, loadout: loadout,
-                                            inventory: preferences.inventory ?? PlateInventory())
+        let target = plateHintDisplayWeight
+        guard target >= loadout.baseWeight else { return nil }
+        let inventory = preferences.inventory ?? PlateInventory()
+        let solution = PlateLoadSolver.solve(target: target, loadout: loadout,
+                                            inventory: inventory)
         // A hint must describe the actual load, not a rounded-down approximation.
-        guard abs(solution.loadedTotal - displayWeight) < 0.001 else { return nil }
+        guard abs(solution.loadedTotal - target) < 0.001 else { return nil }
+        return (loadout, inventory, solution)
+    }
+
+    private var plateHint: String? {
+        guard let load = plateHintLoad else { return nil }
+        let (loadout, _, solution) = load
         guard !solution.platesPerSide.isEmpty else {
             switch loadout.mode {
             case .barbell: return "Empty bar"
@@ -4506,8 +5055,14 @@ struct InlineWorkoutSetRow: View {
         let wasCompleted = set.isCompleted
         let animation = showsFocusedEditor ? IronMotion.collapse : IronMotion.snappy
         if showsFocusedEditor { focusedField = nil }
-        withAnimation(IronMotion.preferred(animation, reduceMotion: reduceMotion)) {
+        if onCompletionFlow != nil {
+            // The logger owns the only layout/scroll transaction, after RPE's
+            // dismissal. Historical rows retain their existing local animation.
             onToggleCompleted()
+        } else {
+            withAnimation(IronMotion.preferred(animation, reduceMotion: reduceMotion)) {
+                onToggleCompleted()
+            }
         }
         if !wasCompleted, set.isCompleted {
             completionFeedback += 1
@@ -4560,14 +5115,14 @@ struct InlineWorkoutSetRow: View {
         switch column {
         case .weight:
             setField(isFocused: focusedField == .weight, isChanged: weightIsChanged) {
-                TextField("0", text: weightTextBinding)
+                TextField("—", text: weightTextBinding)
                     .keyboardType(.decimalPad).focused($focusedField, equals: .weight)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .accessibilityLabel("\(weightAccessibilityTitle) in \(settingsStore.weightUnit.unit.symbol)")
             }
         case .reps:
             setField(isFocused: focusedField == .repetitions, isChanged: repetitionsAreChanged) {
-                TextField("0", text: repetitionsTextBinding)
+                TextField("—", text: repetitionsTextBinding)
                     .keyboardType(.numberPad).focused($focusedField, equals: .repetitions)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .accessibilityLabel("Repetitions")
@@ -4576,7 +5131,7 @@ struct InlineWorkoutSetRow: View {
             setField { durationControl }
         case .distance:
             setField(isFocused: focusedField == .distance) {
-                TextField("0", text: distanceTextBinding)
+                TextField("—", text: distanceTextBinding)
                     .keyboardType(.decimalPad).focused($focusedField, equals: .distance)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .accessibilityLabel("Distance in \(WorkoutSet.distanceUnit(settingsStore.weightUnit))")
@@ -4807,18 +5362,13 @@ struct InlineWorkoutSetRow: View {
     }
 
     private var formattedWeight: String {
-        if showsFocusedEditor && set.weightValue == 0 { return "" }
-        let displayValue = WeightUnit.convert(
-            weight: set.weightValue,
-            from: .metric,
-            to: settingsStore.weightUnit
-        )
-        let formatter = focusedField == .weight ? weightFormatter : settingsStore.weightUnit.displayNumberFormatter
-        return formatter.string(from: NSNumber(value: displayValue)) ?? "0"
+        guard let weight = displayedValues.weight else { return "" }
+        let displayValue = WeightUnit.convert(weight: weight, from: .metric, to: settingsStore.weightUnit)
+        return weightFormatter.string(from: NSNumber(value: displayValue)) ?? ""
     }
 
     private var formattedRepetitions: String {
-        showsFocusedEditor && set.repetitionsValue == 0 ? "" : String(Int(set.repetitionsValue))
+        displayedValues.repetitions.map(String.init) ?? ""
     }
 
     private func synchronizeEntryText() {
@@ -4828,31 +5378,12 @@ struct InlineWorkoutSetRow: View {
     }
 
     private func sanitizedDecimalInput(_ proposedValue: String) -> String {
-        let decimalSeparator = weightFormatter.decimalSeparator
-            ?? Locale.current.decimalSeparator
-            ?? "."
-        let maximumFractionDigits = settingsStore.weightUnit.maximumFractionDigits
-        var result = ""
-        var hasDecimalSeparator = false
-        var fractionDigitCount = 0
-
-        for character in proposedValue {
-            if let digit = character.wholeNumberValue {
-                if hasDecimalSeparator {
-                    guard fractionDigitCount < maximumFractionDigits else { continue }
-                    fractionDigitCount += 1
-                }
-                result.append(contentsOf: String(digit))
-            } else if (character == "." || character == "," || String(character) == decimalSeparator),
-                      maximumFractionDigits > 0,
-                      !hasDecimalSeparator {
-                if result.isEmpty {
-                    result = "0"
-                }
-                result.append(contentsOf: decimalSeparator)
-                hasDecimalSeparator = true
-            }
-        }
+        let result = WeightUnit.sanitizedDecimalInput(
+            proposedValue,
+            maximumFractionDigits: settingsStore.weightUnit.maximumFractionDigits,
+            decimalSeparator: weightFormatter.decimalSeparator ?? Locale.current.decimalSeparator ?? ".",
+            groupingSeparator: weightFormatter.groupingSeparator ?? Locale.current.groupingSeparator ?? ","
+        )
 
         if let value = weightFormatter.number(from: result)?.doubleValue {
             let maximumDisplayWeight = WeightUnit.convert(
@@ -4875,7 +5406,8 @@ struct InlineWorkoutSetRow: View {
 
     private func openPlateCalculator() {
         focusedField = nil
-        DispatchQueue.main.async(execute: onOpenPlateCalculator)
+        let initialMode: PlateLoadout.Mode? = plateHintPresentation == .setUpChip ? .machine(0) : nil
+        DispatchQueue.main.async { onOpenPlateCalculator(initialMode) }
     }
 
     private func setField<Content: View>(

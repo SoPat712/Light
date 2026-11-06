@@ -364,38 +364,40 @@ private struct WatchHomeView: View {
     @EnvironmentObject private var store: WorkoutSessionManagerStore
     @EnvironmentObject private var navigation: WatchNavigation
     var body: some View {
-        WatchContentList(extraBottomInset: 6) {
-            if let current = store.workoutSnapshot {
-                Button { navigation.openWorkout(); navigation.resumeRest(in: current) } label: {
-                    ResumeWorkoutCard(snapshot: current)
-                }.buttonStyle(.plain)
-            } else {
-                Button { navigation.beginFirstExercise(); store.startBlankWorkout() } label: { WatchActionLabel(title: "New Workout", symbol: "plus") }
-                    .watchGlassButton(prominent: true).frame(maxWidth: .infinity)
-                    .disabled(navigation.opensFirstExercise)
+        GeometryReader { page in
+            WatchContentList(extraBottomInset: 6) {
+                if let current = store.workoutSnapshot {
+                    Button { navigation.openWorkout(); navigation.resumeRest(in: current) } label: {
+                        ResumeWorkoutCard(snapshot: current)
+                    }.buttonStyle(.plain)
+                } else {
+                    Button { navigation.beginFirstExercise(); store.startBlankWorkout() } label: { WatchActionLabel(title: "New Workout", symbol: "plus") }
+                        .watchGlassButton(prominent: true).frame(height: page.size.width < 180 ? 44 : 52)
+                        .disabled(navigation.opensFirstExercise)
+                }
+                Section {
+                    ForEach(Array(saved.prefix(3))) { workout in
+                        NavigationLink(value: WatchRoute.savedDetail(workout.id)) {
+                            WatchLibraryWorkoutRow(title: workout.title, exercises: workout.exercises).watchPlatter()
+                        }.buttonStyle(.plain)
+                    }
+                    Button { navigation.path.append(.saved) } label: { WatchActionLabel(title: "All Saved Workouts") }
+                        .foregroundStyle(IronTheme.accentText).watchGlassButton()
+                } header: { WatchSectionTitle(title: "Saved Workouts") }
+                Section {
+                    ForEach(Array(store.library.history.prefix(3)), id: \.workoutID) { workout in
+                        NavigationLink(value: WatchRoute.historyDetail(workout.workoutID)) {
+                            WatchLibraryWorkoutRow(title: workout.title ?? "Workout", exercises: workout.exercises,
+                                date: workout.startDate, duration: workout.recordedDuration, unit: workout.weightUnit ?? store.preferredWeightUnit).watchPlatter()
+                        }.buttonStyle(.plain)
+                    }
+                    Button { navigation.path.append(.history) } label: { WatchActionLabel(title: "All History") }
+                        .foregroundStyle(IronTheme.accentText).watchGlassButton()
+                } header: { WatchSectionTitle(title: "History") }
+                NavigationLink(value: WatchRoute.settings) {
+                    WatchActionLabel(title: "Settings", symbol: "gearshape.fill")
+                }.foregroundStyle(IronTheme.accentText).watchGlassButton().padding(.top, 8)
             }
-            Section {
-                ForEach(Array(saved.prefix(3))) { workout in
-                    NavigationLink(value: WatchRoute.savedDetail(workout.id)) {
-                        WatchWorkoutSummaryRow(title: workout.title, exercises: workout.exercises).watchPlatter()
-                    }.buttonStyle(.plain)
-                }
-                Button { navigation.path.append(.saved) } label: { WatchActionLabel(title: "All Saved Workouts") }
-                    .foregroundStyle(IronTheme.accentText).watchGlassButton()
-            } header: { WatchSectionTitle(title: "Saved Workouts") }
-            Section {
-                ForEach(Array(store.library.history.prefix(3)), id: \.workoutID) { workout in
-                    NavigationLink(value: WatchRoute.historyDetail(workout.workoutID)) {
-                        WatchWorkoutSummaryRow(title: workout.title ?? "Workout", exercises: workout.exercises,
-                            date: workout.startDate, duration: workout.recordedDuration, unit: workout.weightUnit ?? store.preferredWeightUnit).watchPlatter()
-                    }.buttonStyle(.plain)
-                }
-                Button { navigation.path.append(.history) } label: { WatchActionLabel(title: "All History") }
-                    .foregroundStyle(IronTheme.accentText).watchGlassButton()
-            } header: { WatchSectionTitle(title: "History") }
-            NavigationLink(value: WatchRoute.settings) {
-                WatchSettingsLabel(title: "Settings", symbol: "gearshape.fill", color: IronTheme.settingsGray)
-            }.buttonStyle(.plain).padding(.top, 8)
         }
         .navigationTitle("").toolbarTitleDisplayMode(.inline).watchVitalsInset(showsBack: false)
     }
@@ -415,9 +417,121 @@ private struct ResumeWorkoutCard: View {
             Text(snapshot.title ?? "Workout").font(.headline.bold()).foregroundStyle(IronTheme.primaryText)
             WatchSessionMetrics(snapshot: snapshot, includesVolume: false)
             WatchProgressCells(sets: snapshot.allSets, spacing: 1.5).accessibilityHidden(true).padding(.top, 2)
-        }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
-            .background(IronTheme.accentWash, in: RoundedRectangle(cornerRadius: IronTheme.upNextCornerRadius, style: .continuous))
+        }.watchPlatter()
             .accessibilityElement(children: .combine)
+    }
+}
+
+/// Library rows have a neutral metric hierarchy; the live workout keeps its
+/// existing colored metrics. Keep this policy local to the home/history lane.
+private struct WatchLibraryWorkoutRow: View {
+    let title: String
+    let exercises: [WatchWorkoutExercise]
+    var date: Date? = nil
+    var duration: TimeInterval? = nil
+    var unit: WatchWorkoutWeightUnit = .kilogram
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.headline).foregroundStyle(IronTheme.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            if let date {
+                Text(WatchNumber.dateAndTime(date)).font(.footnote).foregroundStyle(IronTheme.secondaryText)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 4) { summaryMetrics }
+                VStack(alignment: .leading, spacing: 2) { summaryMetrics }
+            }.font(.ironMetric(.footnote, weight: .semibold))
+            if date == nil {
+                Text(WatchWorkoutSummary.muscles(exercises)).font(.footnote).foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+    @ViewBuilder private var summaryMetrics: some View {
+        if let duration {
+            WatchLibraryMetrics.durationText(duration)
+            + WatchLibraryMetrics.separator
+            + WatchLibraryMetrics.count(exercises.flatMap(\.sets).filter(\.completed).count, "set")
+            + WatchLibraryMetrics.separator
+            + WatchLibraryMetrics.totals(exercises, unit: unit)
+        } else {
+            WatchLibraryMetrics.count(exercises.flatMap(\.sets).count, "set")
+            Text("· ").foregroundColor(IronTheme.secondaryText)
+            + WatchLibraryMetrics.count(exercises.count, "exercise")
+        }
+    }
+}
+
+private enum WatchLibraryMetrics {
+    static var separator: Text { Text(" · ").foregroundColor(IronTheme.secondaryText) }
+
+    static func count(_ value: Int, _ singular: String) -> Text {
+        Text("\(value)").foregroundColor(IronTheme.secondaryText)
+        + Text(" " + WatchNumber.noun(value, singular)).foregroundColor(IronTheme.secondaryText)
+    }
+
+    static func duration(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds >= 60 else { return "<1m" }
+        let minutes = Int(seconds / 60)
+        guard minutes >= 60 else { return "\(minutes)m" }
+        let hours = "\(minutes / 60)h"
+        return minutes % 60 == 0 ? hours : hours + " \(minutes % 60)m"
+    }
+
+    static func durationText(_ seconds: TimeInterval) -> Text {
+        Text(duration(seconds)).foregroundColor(IronTheme.secondaryText)
+    }
+
+    private static func number(_ value: String, unit: String, color: Color = IronTheme.secondaryText) -> Text {
+        Text(value).foregroundColor(color)
+        + Text(" " + unit).font(.footnote).foregroundColor(IronTheme.secondaryText)
+    }
+
+    /// Match the existing completed-set totals: effective tracking type decides
+    /// which measurements count, and assistance never becomes lifting volume.
+    static func totals(_ exercises: [WatchWorkoutExercise], unit: WatchWorkoutWeightUnit,
+                       usesMetricColors: Bool = false) -> Text {
+        var volume = 0.0
+        var distance = 0.0
+        var duration: TimeInterval = 0
+        var reps = 0
+        var hasDistance = false
+        var hasDuration = false
+        var hasReps = false
+        for exercise in exercises {
+            for set in exercise.sets where set.completed {
+                let type = exercise.effectiveTrackingType(for: set)
+                volume += type.volume(weight: set.weight ?? 0, reps: set.reps ?? 0)
+                if type.usesDistance {
+                    hasDistance = true
+                    if let value = set.distance, value.isFinite, value > 0 { distance += value }
+                }
+                if type.usesDuration {
+                    hasDuration = true
+                    if let value = set.duration, value.isFinite, value > 0 { duration += value }
+                }
+                if type.usesReps {
+                    hasReps = true
+                    reps += max(0, set.reps ?? 0)
+                }
+            }
+        }
+        if volume > 0 || (!hasDistance && !hasDuration && !hasReps) {
+            return number(WatchNumber.compact(volume), unit: unit.symbol,
+                          color: usesMetricColors ? IronTheme.metricVolume : IronTheme.secondaryText)
+        }
+        let time = number(SetTrackingType.durationText(duration), unit: "set time",
+                          color: usesMetricColors ? IronTheme.metricTime : IronTheme.secondaryText)
+        if hasDistance {
+            let (value, symbol) = WatchNumber.distance(meters: distance, unit: unit)
+            let measurement = number(value, unit: symbol, color: usesMetricColors ? IronTheme.metricTime : IronTheme.secondaryText)
+            return hasDuration ? measurement + separator + time : measurement
+        }
+        if hasDuration { return time }
+        return number("\(reps)", unit: WatchNumber.noun(reps, "rep"),
+                      color: usesMetricColors ? IronTheme.metricSets : IronTheme.secondaryText)
     }
 }
 
@@ -427,16 +541,17 @@ struct SavedWorkoutsView: View {
     var body: some View {
         WatchContentList {
             Text("Saved Workouts").font(.headline.weight(.bold)).padding(.horizontal, 8)
-            Button { navigation.path.append(.editSaved(nil)) } label: { WatchActionLabel(title: "New Saved Workout", symbol: "plus") }
-                .watchGlassButton(prominent: true).frame(maxWidth: .infinity)
             if store.library.savedWorkouts.isEmpty {
                 Text("Create one here or sync from iPhone.").font(.footnote).foregroundStyle(IronTheme.secondaryText)
             }
             ForEach(store.library.savedWorkouts.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }) { workout in
                 NavigationLink(value: WatchRoute.savedDetail(workout.id)) {
-                    WatchWorkoutSummaryRow(title: workout.title, exercises: workout.exercises).watchPlatter()
+                    WatchLibraryWorkoutRow(title: workout.title, exercises: workout.exercises).watchPlatter()
                 }.buttonStyle(.plain)
             }
+            Button { navigation.path.append(.editSaved(nil)) } label: {
+                WatchActionLabel(title: "New Saved Workout", symbol: "plus")
+            }.foregroundStyle(IronTheme.accentText).watchGlassButton()
         }.navigationTitle("").watchVitalsInset()
     }
 }
@@ -448,28 +563,31 @@ private struct SavedWorkoutDetailView: View {
     let workoutID: UUID
     private var workout: WatchSavedWorkout? { store.library.savedWorkouts.first { $0.id == workoutID } }
     var body: some View {
-        WatchContentList {
-            if let workout {
-                Text(workout.title).font(.headline.weight(.bold))
-                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8)
-                Button { store.startWorkout(from: workout) } label: { WatchActionLabel(title: "Start Workout", symbol: "play.fill") }
-                    .watchGlassButton(prominent: true).frame(maxWidth: .infinity).disabled(store.workoutSnapshot != nil)
-                if store.workoutSnapshot != nil { Text("Finish your current workout to start another.").font(.footnote).foregroundStyle(IronTheme.secondaryText) }
-                (Text(WatchNumber.count(workout.exercises.flatMap(\.sets).count, "set")).foregroundColor(IronTheme.metricSets)
-                 + Text(" · " + WatchNumber.count(workout.exercises.count, "exercise")).foregroundColor(IronTheme.secondaryText))
-                    .font(.ironMetric(.footnote, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                Text(WatchNumber.joinedForWrapping([WatchWorkoutSummary.muscles(workout.exercises), lastDone(workout)]))
-                    .font(.footnote).foregroundStyle(IronTheme.secondaryText).fixedSize(horizontal: false, vertical: true)
-                WatchSectionTitle(title: "Exercises")
-                ForEach(workout.exercises.sorted { $0.order < $1.order }) { exercise in
-                    NavigationLink { RecordedExerciseView(exercise: exercise, unit: workout.weightUnit, isTemplate: true) } label: {
-                        RecordedExerciseRow(exercise: exercise, unit: workout.weightUnit, isTemplate: true).watchPlatter()
-                    }.buttonStyle(.plain)
+        GeometryReader { page in
+            WatchContentList {
+                if let workout {
+                    Text(workout.title).font(.headline.weight(.bold))
+                        .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8)
+                    Button { store.startWorkout(from: workout) } label: { WatchActionLabel(title: "Start Workout", symbol: "play.fill") }
+                        .watchGlassButton(prominent: true).frame(height: page.size.width < 180 ? 44 : 52).disabled(store.workoutSnapshot != nil)
+                    if store.workoutSnapshot != nil { Text("Finish your current workout to start another.").font(.footnote).foregroundStyle(IronTheme.secondaryText) }
+                    (Text(WatchNumber.count(workout.exercises.flatMap(\.sets).count, "set")).foregroundColor(IronTheme.metricSets)
+                     + Text(" · " + WatchNumber.count(workout.exercises.count, "exercise")).foregroundColor(IronTheme.secondaryText))
+                        .font(.ironMetric(.footnote, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                    Text(WatchNumber.joinedForWrapping([WatchWorkoutSummary.muscles(workout.exercises), lastDone(workout)]))
+                        .font(.footnote).foregroundStyle(IronTheme.secondaryText).fixedSize(horizontal: false, vertical: true)
+                    WatchSectionTitle(title: "Exercises")
+                    ForEach(workout.exercises.sorted { $0.order < $1.order }) { exercise in
+                        NavigationLink { RecordedExerciseView(exercise: exercise, unit: workout.weightUnit, isTemplate: true) } label: {
+                            RecordedExerciseRow(exercise: exercise, unit: workout.weightUnit, isTemplate: true).watchPlatter()
+                        }.buttonStyle(.plain)
+                    }
+                    Button { navigation.path.append(.editSaved(workout.id)) } label: { WatchActionLabel(title: "Edit Workout", symbol: "pencil") }
+                        .watchGlassButton().padding(.top, 4)
                 }
-                Button { navigation.path.append(.editSaved(workout.id)) } label: { WatchActionLabel(title: "Edit Workout", symbol: "pencil") }
-                    .watchGlassButton().padding(.top, 4)
             }
-        }.navigationTitle("").watchVitalsInset()
+        }
+        .navigationTitle("").watchVitalsInset()
         .onChange(of: workout == nil) { if workout == nil { dismiss() } }
     }
     private func lastDone(_ workout: WatchSavedWorkout) -> String {
@@ -493,13 +611,12 @@ private struct SavedWorkoutEditor: View {
         _draft = State(initialValue: value)
     }
     var body: some View {
-        List {
-            Section { saveButton }
-            Section("Edit Workout") {
-                TextField("Name", text: $draft.title).font(.body.weight(.semibold))
-                TextField("Notes", text: optionalText($draft.comment), axis: .vertical)
-            }
-            Section("Exercises") {
+        GeometryReader { page in
+            WatchContentList {
+                Text("Edit Workout").font(.headline.weight(.bold)).padding(.horizontal, 8)
+                WatchTextInputRow(title: "Name", placeholder: "Workout name", text: $draft.title)
+                WatchTextInputRow(title: "Note", placeholder: "Add Note", text: optionalText($draft.comment))
+                WatchSectionTitle(title: "Exercises")
                 ForEach(draft.exercises) { item in
                     NavigationLink {
                         SavedExerciseEditor(exercise: exerciseBinding(item), catalog: store.library.exercises, unit: draft.weightUnit,
@@ -507,7 +624,8 @@ private struct SavedWorkoutEditor: View {
                             canMoveDown: item.id != draft.exercises.last?.id,
                             supersetDestination: { AnyView(SupersetDraftEditor(exercises: $draft.exercises, anchorID: item.id)) },
                             onDelete: { draft.exercises.removeAll { $0.id == item.id }; normalizeDraft() })
-                    } label: { RecordedExerciseRow(exercise: item, unit: draft.weightUnit, isTemplate: true) }
+                    } label: { RecordedExerciseRow(exercise: item, unit: draft.weightUnit, isTemplate: true).watchPlatter() }
+                    .buttonStyle(.plain)
                 }
                 NavigationLink {
                     WatchCatalogPicker(catalog: store.library.exercises) { pick in
@@ -517,17 +635,17 @@ private struct SavedWorkoutEditor: View {
                             exerciseUuid: pick.id, imageURL: pick.imageURL))
                     }
                 } label: {
-                    Label("Add Exercise", systemImage: "plus").font(.body.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
-                }
-            }
-            Section {
+                    WatchActionLabel(title: "Add Exercise", symbol: "plus")
+                }.watchGlassButton()
                 Button(role: .cancel) { dismiss() } label: { WatchActionLabel(title: "Cancel") }
-                    .watchGlassButton().listRowBackground(EmptyView())
+                    .watchGlassButton()
                 if store.library.savedWorkouts.contains(where: { $0.id == draft.id }) {
-                    Button("Delete Workout", systemImage: "trash.fill", role: .destructive) { confirmingDelete = true }
-                        .font(.body.weight(.semibold))
+                    Button(role: .destructive) { confirmingDelete = true } label: {
+                        WatchActionLabel(title: "Delete Workout", symbol: "trash.fill")
+                            .foregroundStyle(IronTheme.destructiveText)
+                    }.watchGlassButton()
                 }
+                saveButton.frame(height: page.size.width < 180 ? 44 : 52)
             }
         }
         .navigationTitle("").watchVitalsInset()
@@ -541,7 +659,7 @@ private struct SavedWorkoutEditor: View {
             normalizeDraft(); draft.updatedAt = Date(); saving = true
             store.saveWorkout(draft) { saved in saving = false; if saved { dismiss() } }
         } label: { WatchActionLabel(title: saving ? "Saving…" : "Save Workout", symbol: "checkmark") }
-            .watchGlassButton(prominent: true).listRowBackground(EmptyView())
+            .watchGlassButton(prominent: true)
             .disabled(saving || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     private func optionalText(_ value: Binding<String?>) -> Binding<String> {
@@ -563,6 +681,29 @@ private struct SavedWorkoutEditor: View {
     }
 }
 
+/// A single dark row opens the system text input; only submission changes the binding.
+private struct WatchTextInputRow: View {
+    let title: String
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        TextFieldLink(prompt: Text(title)) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.footnote).foregroundStyle(IronTheme.secondaryText)
+                Text(text.isEmpty ? placeholder : text).font(.body.weight(.semibold))
+                    .foregroundStyle(text.isEmpty ? IronTheme.secondaryText : IronTheme.primaryText)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+            .watchPlatter()
+        } onSubmit: { text = $0 }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(text.isEmpty ? placeholder : text)
+    }
+}
+
 private struct SavedExerciseEditor: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var exercise: WatchWorkoutExercise
@@ -575,59 +716,60 @@ private struct SavedExerciseEditor: View {
     let onDelete: () -> Void
     @State private var confirmingDelete = false
     var body: some View {
-        List {
-            Section {
-                Text(exercise.name).font(.headline.weight(.bold)).fixedSize(horizontal: false, vertical: true)
-                Text(WatchWorkoutSummary.meta(name: exercise.name, muscle: exercise.muscleGroup))
-                    .font(.footnote).foregroundStyle(IronTheme.secondaryText)
-            }.listRowBackground(EmptyView())
-            Section("Sets") {
-                ForEach(exercise.sets) { item in
-                    NavigationLink {
-                        SavedSetEditor(set: setBinding(item), unit: unit, canDelete: exercise.sets.count > 1) {
-                            exercise.sets.removeAll { $0.id == item.id }
-                            for index in exercise.sets.indices { exercise.sets[index].order = index + 1 }
-                        }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Set \(item.order)").font(.ironMetric(.headline))
-                            Text(target(item)).font(.ironMetric(.body, weight: .semibold)).foregroundStyle(IronTheme.secondaryText)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }.frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
+        WatchContentList {
+            Text(exercise.name).font(.headline.weight(.bold)).fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 8)
+            Text(WatchWorkoutSummary.meta(name: exercise.name, muscle: exercise.muscleGroup))
+                .font(.footnote).foregroundStyle(IronTheme.secondaryText).padding(.horizontal, 8)
+            WatchSectionTitle(title: "Sets")
+            ForEach(exercise.sets) { item in
+                NavigationLink {
+                    SavedSetEditor(set: setBinding(item), unit: unit, canDelete: exercise.sets.count > 1) {
+                        exercise.sets.removeAll { $0.id == item.id }
+                        for index in exercise.sets.indices { exercise.sets[index].order = index + 1 }
                     }
-                }
-                Button("Add Set", systemImage: "plus") {
-                    let source = exercise.sets.last
-                    exercise.sets.append(WatchWorkoutSet(order: exercise.sets.count + 1, weight: source?.weight,
-                        reps: source?.minTargetReps != nil || source?.maxTargetReps != nil ? nil : source?.reps,
-                        tag: source?.tag, duration: source?.duration, distance: source?.distance,
-                        minTargetReps: source?.minTargetReps, maxTargetReps: source?.maxTargetReps))
-                }.font(.body.weight(.semibold))
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Set \(item.order)").font(.ironMetric(.headline))
+                        Text(target(item)).font(.ironMetric(.body, weight: .semibold)).foregroundStyle(IronTheme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }.frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading).watchPlatter()
+                }.buttonStyle(.plain)
             }
-            Section("Exercise Settings") {
-                NavigationLink {
-                    WatchRestTimerPicker(context: exercise.name, initialValue: exercise.restTimerDuration ?? WatchPreferences.defaultRestDuration) {
-                        exercise.restTimerDuration = $0
-                    }
-                } label: { WatchSettingsLabel(title: "Rest Timer", symbol: "timer", color: IronTheme.settingsCyan,
-                    value: WatchNumber.clock(exercise.restTimerDuration ?? WatchPreferences.defaultRestDuration), valueColor: IronTheme.metricTime) }
-                NavigationLink { supersetDestination() } label: { WatchSettingsLabel(title: "Superset", symbol: "link", color: IronTheme.accent,
-                    value: exercise.supersetID == nil ? "None" : "Linked") }
-                NavigationLink {
-                    WatchCatalogPicker(catalog: catalog, title: "Replace Exercise") { pick in
-                        exercise.name = pick.name; exercise.exerciseUuid = pick.id
-                        exercise.muscleGroup = pick.muscle; exercise.imageURL = pick.imageURL; exercise.imageData = nil
-                    }
-                } label: { WatchSettingsLabel(title: "Replace Exercise", symbol: "arrow.triangle.2.circlepath", color: IronTheme.settingsGray) }
-                VStack(spacing: 4) {
-                    Button { onMove(-1) } label: { WatchActionLabel(title: "Move Up", symbol: "arrow.up").frame(minHeight: 44) }.disabled(!canMoveUp)
-                    Button { onMove(1) } label: { WatchActionLabel(title: "Move Down", symbol: "arrow.down").frame(minHeight: 44) }.disabled(!canMoveDown)
-                }.watchGlassButton()
-                TextField("Plan Note", text: Binding(get: { exercise.routineNote ?? "" }, set: { exercise.routineNote = $0.isEmpty ? nil : $0 }), axis: .vertical)
-                Button(role: .destructive) { confirmingDelete = true } label: {
-                    WatchSettingsLabel(title: "Delete Exercise", symbol: "trash.fill", color: IronTheme.danger, destructive: true)
+            Button {
+                let source = exercise.sets.last
+                exercise.sets.append(WatchWorkoutSet(order: exercise.sets.count + 1, weight: source?.weight,
+                    reps: source?.minTargetReps != nil || source?.maxTargetReps != nil ? nil : source?.reps,
+                    tag: source?.tag, duration: source?.duration, distance: source?.distance,
+                    minTargetReps: source?.minTargetReps, maxTargetReps: source?.maxTargetReps))
+            } label: { WatchActionLabel(title: "Add Set", symbol: "plus") }
+            .watchGlassButton()
+            WatchSectionTitle(title: "Exercise Settings")
+            NavigationLink {
+                WatchRestTimerPicker(context: exercise.name, initialValue: exercise.restTimerDuration ?? WatchPreferences.defaultRestDuration) {
+                    exercise.restTimerDuration = $0
                 }
-            }.listRowBackground(EmptyView())
+            } label: { WatchSettingsLabel(title: "Rest Timer", symbol: "timer", color: IronTheme.settingsCyan,
+                value: WatchNumber.clock(exercise.restTimerDuration ?? WatchPreferences.defaultRestDuration)) }
+                .buttonStyle(.plain)
+            NavigationLink { supersetDestination() } label: { WatchSettingsLabel(title: "Superset", symbol: "link", color: IronTheme.accent,
+                value: exercise.supersetID == nil ? "None" : "Linked") }.buttonStyle(.plain)
+            NavigationLink {
+                WatchCatalogPicker(catalog: catalog, title: "Replace Exercise") { pick in
+                    exercise.name = pick.name; exercise.exerciseUuid = pick.id
+                    exercise.muscleGroup = pick.muscle; exercise.imageURL = pick.imageURL; exercise.imageData = nil
+                }
+            } label: { WatchSettingsLabel(title: "Replace Exercise", symbol: "arrow.triangle.2.circlepath", color: IronTheme.settingsGray) }
+                .buttonStyle(.plain)
+            VStack(spacing: 4) {
+                Button { onMove(-1) } label: { WatchActionLabel(title: "Move Up", symbol: "arrow.up").frame(minHeight: 44) }.disabled(!canMoveUp)
+                Button { onMove(1) } label: { WatchActionLabel(title: "Move Down", symbol: "arrow.down").frame(minHeight: 44) }.disabled(!canMoveDown)
+            }.watchGlassButton()
+            WatchTextInputRow(title: "Plan Note", placeholder: "Add Note", text: Binding(
+                get: { exercise.routineNote ?? "" }, set: { exercise.routineNote = $0.isEmpty ? nil : $0 }))
+            Button(role: .destructive) { confirmingDelete = true } label: {
+                WatchActionLabel(title: "Delete Exercise", symbol: "trash.fill").foregroundStyle(IronTheme.destructiveText)
+            }.watchGlassButton()
         }
         .navigationTitle("").watchVitalsInset()
         .confirmationDialog("Delete Exercise?", isPresented: $confirmingDelete) {
@@ -655,21 +797,24 @@ private struct SavedSetEditor: View {
     let onDelete: () -> Void
     @State private var confirmingDelete = false
     var body: some View {
-        List {
-            Section("Targets") {
-                field(.weight); field(.minimum); field(.maximum); field(.duration); field(.distance)
-            }
-            Section("Set Settings") {
-                Picker("Set Type", selection: Binding(get: { set.tag ?? "working" }, set: { set.tag = $0 == "working" ? nil : $0 })) {
-                    Text("Normal").tag("working"); Text("Warm-up").tag("warmUp")
-                    Text("Drop Set").tag("dropSet"); Text("Failure").tag("failure")
-                }.font(.body.weight(.semibold))
-                TextField("Notes", text: Binding(get: { set.comment ?? "" }, set: { set.comment = $0.isEmpty ? nil : $0 }), axis: .vertical)
-                Button("Delete Set", systemImage: "trash.fill", role: .destructive) { confirmingDelete = true }
-                    .font(.body.weight(.semibold)).disabled(!canDelete)
-            }
+        WatchContentList {
+            Text("Set \(set.order)").font(.headline.weight(.bold))
+                .foregroundStyle(IronTheme.primaryText)
+                .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8)
+            WatchSectionTitle(title: "Targets")
+            field(.weight); field(.minimum); field(.maximum); field(.duration); field(.distance)
+            WatchSectionTitle(title: "Set Type")
+            setTypeRow("working", title: "Normal")
+            setTypeRow("warmUp", title: "Warm-up")
+            setTypeRow("dropSet", title: "Drop Set")
+            WatchSectionTitle(title: "Set Settings")
+            WatchTextInputRow(title: "Note", placeholder: "Add Note", text: Binding(
+                get: { set.comment ?? "" }, set: { set.comment = $0.isEmpty ? nil : $0 }))
+            Button(role: .destructive) { confirmingDelete = true } label: {
+                WatchActionLabel(title: "Delete Set", symbol: "trash.fill").foregroundStyle(IronTheme.destructiveText)
+            }.watchGlassButton().disabled(!canDelete)
         }
-        .navigationTitle("Set \(set.order)").watchVitalsInset()
+        .navigationTitle("").watchVitalsInset()
         .confirmationDialog("Delete Set?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) { onDelete(); dismiss() }
             Button("Cancel", role: .cancel) { }
@@ -684,13 +829,27 @@ private struct SavedSetEditor: View {
                 Text(field.title).font(.body.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(field.value(in: set) > 0 ? WatchNumber.format(field.value(in: set)) : "--")
-                        .font(.ironMetric(.title3)).foregroundStyle(IronTheme.primaryText)
+                        .font(.ironMetric(.title3)).foregroundStyle(IronTheme.secondaryText)
                     Text(field == .weight ? unit.symbol : field.unit)
                         .font(.footnote).foregroundStyle(IronTheme.secondaryText)
                 }.fixedSize(horizontal: false, vertical: true)
             }.frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                .watchPlatter()
                 .accessibilityElement(children: .combine)
-        }
+        }.buttonStyle(.plain)
+    }
+    private func setTypeRow(_ tag: String, title: String) -> some View {
+        let selected = (set.tag ?? "working") == tag
+        return Button { set.tag = tag == "working" ? nil : tag } label: {
+            HStack(spacing: 8) {
+                Text(title).font(.body.weight(.semibold)).foregroundStyle(IronTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "checkmark").foregroundStyle(IronTheme.accentText)
+                    .opacity(selected ? 1 : 0).accessibilityHidden(true)
+            }.frame(minHeight: IronTheme.controlHeight - 12).watchPlatter()
+        }.buttonStyle(.plain)
+        .accessibilityValue(selected ? "Selected" : "")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -720,14 +879,26 @@ private struct SupersetDraftEditor: View {
     @State private var selected = Set<UUID>()
     var body: some View {
         WatchContentList {
+            Text("Superset").font(.headline.weight(.bold))
+                .foregroundStyle(IronTheme.primaryText)
+                .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8)
             Text("Alternate sets with " + (exercises.first { $0.id == anchorID }?.name ?? "Exercise"))
                 .font(.footnote).foregroundStyle(IronTheme.secondaryText).fixedSize(horizontal: false, vertical: true)
             ForEach(exercises.filter { $0.id != anchorID }) { exercise in
+                let isSelected = selected.contains(exercise.id)
                 Button { if !selected.insert(exercise.id).inserted { selected.remove(exercise.id) } } label: {
-                    WatchSupersetRow(exercise: exercise, selected: selected.contains(exercise.id))
-                }.buttonStyle(.plain)
+                    HStack(spacing: 7) {
+                        WatchExerciseThumbnail(imageURL: exercise.imageURL, imageData: exercise.imageData, size: 26)
+                        Text(exercise.name).font(.body.weight(.semibold)).foregroundStyle(IronTheme.primaryText)
+                            .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: "checkmark").foregroundStyle(IronTheme.accentText)
+                            .opacity(isSelected ? 1 : 0).accessibilityHidden(true)
+                    }.frame(minHeight: IronTheme.controlHeight).watchPlatter()
+                }.buttonStyle(.plain).accessibilityElement(children: .combine)
+                .accessibilityValue(isSelected ? "Selected" : "Not selected")
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
-        }.navigationTitle("Superset").watchVitalsInset()
+        }.watchVitalsInset(showsTrailingButton: true)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(action: saveSuperset) { Image(systemName: "checkmark") }.accessibilityLabel("Save Superset")
@@ -748,7 +919,6 @@ private struct SupersetDraftEditor: View {
 struct WatchCatalogPicker: View {
     @EnvironmentObject private var store: WorkoutSessionManagerStore
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.isLuminanceReduced) private var reducedLuminance
     let catalog: [WatchExercisePick]
     var title = "Add Exercise"
     let onPick: (WatchExercisePick) -> Void
@@ -763,28 +933,53 @@ struct WatchCatalogPicker: View {
         return matches.filter { $0.listed != false } + matches.filter { $0.listed == false }
     }
     var body: some View {
-        VStack(spacing: 2) {
-            if let snapshot = store.workoutSnapshot, !snapshot.isFinishedRecord {
-                WatchVitalsRow(manager: store.workoutSessionManager, snapshot: snapshot)
-                    .privacySensitive(false).unredacted()
-                    .scenePadding(.horizontal)
-            }
-            List {
-                if !filtered(recent).isEmpty {
-                    Section("Recent") { ForEach(filtered(recent)) { pick in pickerRow(pick) } }
+        WatchContentList {
+            Text(title).font(.headline.weight(.bold))
+                .foregroundStyle(IronTheme.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 8)
+            // TextFieldLink keeps one fill: a watchOS TextField draws its own box inside the platter.
+            HStack(spacing: 6) {
+                TextFieldLink(prompt: Text("Search or dictate")) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(IronTheme.secondaryText).accessibilityHidden(true)
+                        Text(query.isEmpty ? "Search or dictate" : query)
+                            .foregroundStyle(query.isEmpty ? IronTheme.secondaryText : IronTheme.primaryText)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                } onSubmit: { query = $0 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(query.isEmpty ? "Search exercises" : "Search: \(query)")
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(IronTheme.secondaryText)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
                 }
-                Section("All Exercises") { ForEach(allExercises) { pick in pickerRow(pick) } }
             }
-            .searchable(text: $query, prompt: "Search or dictate")
-            .opacity(reducedLuminance && store.workoutSnapshot?.isFinishedRecord == false ? 0.45 : 1)
+            .frame(minHeight: IronTheme.controlHeight).watchPlatter()
+            if !filtered(recent).isEmpty {
+                WatchSectionTitle(title: "Recent")
+                ForEach(filtered(recent)) { pick in pickerRow(pick) }
+            }
+            WatchSectionTitle(title: "All Exercises")
+            ForEach(allExercises) { pick in pickerRow(pick) }
         }
-        .navigationTitle(title)
+        .navigationTitle("").watchVitalsInset()
         .onAppear(perform: prepareCatalog)
         .onChange(of: store.library.generatedAt) { prepareCatalog() }
     }
     private func filtered(_ values: [WatchExercisePick]) -> [WatchExercisePick] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? values : values.filter { $0.name.localizedCaseInsensitiveContains(text) || ($0.muscle?.localizedCaseInsensitiveContains(text) ?? false) }
+        return text.isEmpty ? values : values.filter { pick in
+            pick.name.localizedCaseInsensitiveContains(text)
+                || (pick.muscle?.localizedCaseInsensitiveContains(text) ?? false)
+                || (pick.aliases?.contains { $0.localizedCaseInsensitiveContains(text) } ?? false)
+        }
     }
     private func pickerRow(_ pick: WatchExercisePick) -> some View {
         Button { onPick(pick); dismiss() } label: {
@@ -794,8 +989,8 @@ struct WatchCatalogPicker: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "plus").font(.body.weight(.semibold))
                     .foregroundStyle(IronTheme.accentText).accessibilityHidden(true)
-            }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        }
+            }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).watchPlatter()
+        }.buttonStyle(.plain)
         .accessibilityLabel("Add " + pick.name)
     }
     private func prepareCatalog() {
@@ -826,7 +1021,7 @@ struct WatchHistoryView: View {
             if store.library.history.isEmpty { Text("Completed workouts appear here.").font(.footnote).foregroundStyle(IronTheme.secondaryText) }
             ForEach(store.library.history, id: \.workoutID) { workout in
                 NavigationLink(value: WatchRoute.historyDetail(workout.workoutID)) {
-                    WatchWorkoutSummaryRow(title: workout.title ?? "Workout", exercises: workout.exercises, date: workout.startDate,
+                    WatchLibraryWorkoutRow(title: workout.title ?? "Workout", exercises: workout.exercises, date: workout.startDate,
                         duration: workout.recordedDuration, unit: workout.weightUnit ?? store.preferredWeightUnit).watchPlatter()
                 }.buttonStyle(.plain)
             }
@@ -840,40 +1035,61 @@ private struct WatchHistoryDetail: View {
     @State private var saved = false
     @State private var records = Set<UUID>()
     var body: some View {
-        WatchContentList {
-            Text(workout.title ?? "Workout").font(.headline.weight(.bold))
-                .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8)
-            Button { store.repeatWorkout(workout) } label: { WatchActionLabel(title: "Repeat Workout", symbol: "arrow.clockwise") }
-                .watchGlassButton(prominent: true).frame(maxWidth: .infinity).disabled(store.workoutSnapshot != nil)
-            if store.workoutSnapshot != nil { Text("Finish your current workout to repeat this one.").font(.footnote).foregroundStyle(IronTheme.secondaryText) }
-            Text(WatchNumber.dateAndTime(workout.startDate)).font(.footnote).foregroundStyle(IronTheme.secondaryText)
-            WatchSessionMetrics(snapshot: workout)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { recordingMetrics }
-                VStack(alignment: .leading, spacing: 2) { recordingMetrics }
-            }.font(.ironMetric(.footnote, weight: .semibold)).accessibilityElement(children: .combine)
-            WatchSectionTitle(title: "Exercises")
-            ForEach(workout.exercises) { exercise in
-                NavigationLink { RecordedExerciseView(exercise: exercise, unit: workout.weightUnit ?? .kilogram) } label: {
-                    RecordedExerciseRow(exercise: exercise, unit: workout.weightUnit ?? .kilogram,
-                        hasRecord: exercise.sets.contains { records.contains($0.id) }).watchPlatter()
-                }.buttonStyle(.plain)
+        GeometryReader { page in
+            WatchContentList {
+                Text(workout.title ?? "Workout").font(.headline.weight(.bold))
+                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8)
+                Button { store.repeatWorkout(workout) } label: { WatchActionLabel(title: "Repeat Workout", symbol: "arrow.clockwise") }
+                    .watchGlassButton(prominent: true).frame(height: page.size.width < 180 ? 44 : 52).disabled(store.workoutSnapshot != nil)
+                if store.workoutSnapshot != nil { Text("Finish your current workout to repeat this one.").font(.footnote).foregroundStyle(IronTheme.secondaryText) }
+                Text(WatchNumber.dateAndTime(workout.startDate)).font(.footnote).foregroundStyle(IronTheme.secondaryText)
+                sessionMetrics
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { recordingMetrics }
+                    VStack(alignment: .leading, spacing: 2) { recordingMetrics }
+                }.font(.ironMetric(.footnote, weight: .semibold)).accessibilityElement(children: .combine)
+                WatchSectionTitle(title: "Exercises")
+                ForEach(workout.exercises) { exercise in
+                    NavigationLink { RecordedExerciseView(exercise: exercise, unit: workout.weightUnit ?? .kilogram) } label: {
+                        RecordedExerciseRow(exercise: exercise, unit: workout.weightUnit ?? .kilogram,
+                            hasRecord: exercise.sets.contains { records.contains($0.id) }).watchPlatter()
+                    }.buttonStyle(.plain)
+                }
+                if let comment = workout.comment, !comment.isEmpty {
+                    WatchSectionTitle(title: "Notes"); Text(comment).font(.footnote).foregroundStyle(IronTheme.secondaryText)
+                }
+                Button {
+                    store.saveAsWorkout(workout) { saved = $0 }
+                } label: { WatchActionLabel(title: saved ? "Workout Saved" : "Save as Workout", symbol: saved ? "checkmark" : "bookmark") }
+                    .watchGlassButton().disabled(saved).padding(.top, 4)
             }
-            if let comment = workout.comment, !comment.isEmpty {
-                WatchSectionTitle(title: "Notes"); Text(comment).font(.footnote).foregroundStyle(IronTheme.secondaryText)
-            }
-            Button {
-                store.saveAsWorkout(workout) { saved = $0 }
-            } label: { WatchActionLabel(title: saved ? "Workout Saved" : "Save as Workout", symbol: saved ? "checkmark" : "bookmark") }
-                .watchGlassButton().disabled(saved).padding(.top, 4)
-        }.navigationTitle("").watchVitalsInset()
+        }
+        .navigationTitle("").watchVitalsInset()
         .onAppear { records = WatchWorkoutSummary.recordSetIDs(in: workout, history: store.library.history) }
     }
+    private var sessionMetrics: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 4) { duration; Text("·"); counts; Text("·"); totals }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) { duration; Text("·"); counts }
+                totals
+            }
+            VStack(alignment: .leading, spacing: 2) { duration; counts; totals }
+        }.font(.ironMetric(.footnote, weight: .semibold)).foregroundStyle(IronTheme.secondaryText)
+    }
+    private var duration: Text {
+        Text(WatchLibraryMetrics.duration(workout.recordedDuration)).foregroundColor(IronTheme.metricTime)
+    }
+    private var counts: Text {
+        Text("\(workout.completedSets.count)").foregroundColor(IronTheme.metricSets)
+        + Text("/" + WatchNumber.count(workout.allSets.count, "set")).foregroundColor(IronTheme.secondaryText)
+    }
+    private var totals: Text {
+        WatchLibraryMetrics.totals(workout.exercises, unit: workout.weightUnit ?? .kilogram, usesMetricColors: true)
+    }
     @ViewBuilder private var recordingMetrics: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "heart.fill").foregroundStyle(IronTheme.metricHeartRate).accessibilityHidden(true)
-            WatchMetricValue(value: "--", unit: "avg bpm", color: IronTheme.metricHeartRate)
-        }.accessibilityElement(children: .combine)
+        // Historical snapshots carry no heart-rate samples/average. Do not show
+        // a placeholder as if a heart-rate measurement had been recorded.
         HStack(spacing: 4) {
             Image(systemName: "flame.fill").foregroundStyle(IronTheme.metricEnergy).accessibilityHidden(true)
             WatchMetricValue(value: WatchNumber.whole(workout.activeEnergyKilocalories), unit: "kcal", color: IronTheme.metricEnergy)
@@ -897,7 +1113,6 @@ private struct RecordedExerciseRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                     if hasRecord {
                         Text("PR").font(.ironMetric(.footnote)).foregroundStyle(IronTheme.metricRecord)
-                            .padding(.horizontal, 6).padding(.vertical, 2).background(IronTheme.metricRecord.opacity(0.2), in: Capsule())
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -942,21 +1157,23 @@ private struct RecordedExerciseView: View {
     let unit: WatchWorkoutWeightUnit
     var isTemplate = false
     var body: some View {
-        List {
-            Section {
-                Text(exercise.name).font(.headline.weight(.bold)).fixedSize(horizontal: false, vertical: true)
-            }.listRowBackground(EmptyView())
-            if let comment = exercise.comment, !comment.isEmpty { Section("Notes") { Text(comment) } }
-            Section(isTemplate ? "Targets" : "Sets") {
-                ForEach(exercise.sets) { set in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Set \(set.order) · \(set.kindTitle)").font(.ironMetric(.headline))
-                        Text(result(set)).font(.ironMetric(.body, weight: .semibold))
-                        if let rpe = set.rpe { Text("RPE \(WatchNumber.format(rpe))").font(.ironMetric(.footnote)).foregroundStyle(IronTheme.metricEffort) }
-                        if let comment = set.comment, !comment.isEmpty { Text(comment).font(.footnote).foregroundStyle(IronTheme.secondaryText) }
-                    }.fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading).accessibilityElement(children: .combine)
-                }
+        WatchContentList {
+            Text(exercise.name).font(.headline.weight(.bold)).fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 8)
+            if let comment = exercise.comment, !comment.isEmpty {
+                WatchSectionTitle(title: "Notes")
+                Text(comment).foregroundStyle(IronTheme.secondaryText).watchPlatter()
+            }
+            WatchSectionTitle(title: isTemplate ? "Targets" : "Sets")
+            ForEach(exercise.sets) { set in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Set \(set.order) · \(set.kindTitle)").font(.ironMetric(.headline))
+                    Text(result(set)).font(.ironMetric(.body, weight: .semibold)).foregroundStyle(IronTheme.secondaryText)
+                    if let rpe = set.rpe { Text("RPE \(WatchNumber.format(rpe))").font(.ironMetric(.footnote)).foregroundStyle(IronTheme.secondaryText) }
+                    if let comment = set.comment, !comment.isEmpty { Text(comment).font(.footnote).foregroundStyle(IronTheme.secondaryText) }
+                }.fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                    .watchPlatter().accessibilityElement(children: .combine)
             }
         }
         .navigationTitle("").watchVitalsInset()
@@ -977,61 +1194,74 @@ struct WatchSettingsView: View {
     @AppStorage("workoutHaptics") private var workoutHaptics = true
     @AppStorage("logRPE") private var logRPE = true
     var body: some View {
-        List {
-            Section("Connection") {
+        WatchContentList {
+            Text("Settings").font(.headline.weight(.bold))
+                .foregroundStyle(IronTheme.primaryText)
+                .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8)
+            WatchSectionTitle(title: "Connection")
+            TimelineView(.periodic(from: Date(), by: 60)) { context in
                 WatchSettingsLabel(title: phone.isReachable ? "iPhone Connected" : "Not Connected", symbol: "iphone",
-                    color: phone.isReachable ? IronTheme.success : IronTheme.warning, value: syncCaption, metricValue: false)
-                Button { phone.requestLibrary(); phone.requestCurrentSnapshot(); phone.flushEventOutbox() } label: {
-                    WatchActionLabel(title: "Sync Now", symbol: "arrow.triangle.2.circlepath")
-                }.watchGlassButton()
+                    color: phone.isReachable ? IronTheme.success : IronTheme.warning,
+                    value: syncCaption(at: context.date), metricValue: false)
             }
-            Section("Workout") {
-                Picker("Weight Unit", selection: Binding(get: { store.preferredWeightUnit }, set: { store.setPreferredWeightUnit($0) })) {
-                    Text("Pounds · lb").tag(WatchWorkoutWeightUnit.pound)
-                    Text("Kilograms · kg").tag(WatchWorkoutWeightUnit.kilogram)
-                }
-                NavigationLink {
-                    WatchRestTimerPicker(context: "Default Rest", initialValue: defaultRest) {
-                        defaultRest = $0; WatchPreferences.defaultRestDuration = $0
-                    }
-                } label: {
-                    WatchSettingsLabel(title: "Default Rest", symbol: "timer", color: IronTheme.metricTime,
-                        value: WatchNumber.clock(defaultRest), valueColor: IronTheme.metricTime)
-                }
-                WatchSettingsLabel(title: "Log RPE", symbol: "chart.bar.fill", color: IronTheme.metricEffort,
-                    value: logRPE ? "On · Set on iPhone" : "Off · Set on iPhone", metricValue: false)
+            Button { phone.requestLibrary(); phone.requestCurrentSnapshot(); phone.flushEventOutbox() } label: {
+                WatchActionLabel(title: "Sync Now", symbol: "arrow.triangle.2.circlepath")
+            }.watchGlassButton()
+            let count = WatchWorkoutStore.shared.pendingEvents().count
+            if count > 0 {
+                Text("\(count) edits queued").font(.footnote).foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8)
             }
-            Section {
-                WatchSettingsLabel(title: "Health Recording", symbol: "heart.fill", color: IronTheme.metricHeartRate,
-                    value: "Heart rate and calories record during every workout", metricValue: false)
+            WatchSectionTitle(title: "Workout")
+            NavigationLink { WatchWeightUnitPicker() } label: {
+                WatchSettingsLabel(title: "Weight Unit", symbol: "scalemass", color: IronTheme.settingsGray,
+                    value: store.preferredWeightUnit == .pound ? "Pounds" : "Kilograms", metricValue: false)
+            }.buttonStyle(.plain)
+            NavigationLink {
+                WatchRestTimerPicker(context: "Default Rest", initialValue: defaultRest) {
+                    defaultRest = $0; WatchPreferences.defaultRestDuration = $0
+                }
+            } label: {
+                WatchSettingsLabel(title: "Default Rest", symbol: "timer", color: IronTheme.metricTime,
+                    value: WatchNumber.clock(defaultRest))
+            }.buttonStyle(.plain)
+            WatchSettingsLabel(title: "Log RPE", symbol: "chart.bar.fill", color: IronTheme.metricEffort,
+                value: logRPE ? "On · Set on iPhone" : "Off · Set on iPhone", metricValue: false)
+            WatchSectionTitle(title: "Health")
+            WatchSettingsLabel(title: "Health Recording", symbol: "heart.fill", color: IronTheme.metricHeartRate,
+                value: "Heart rate and calories record during every workout", metricValue: false)
+            if store.recordingError != nil {
                 WatchRecordingFailureRow()
             }
-            Section {
-                Toggle("Haptics", isOn: $workoutHaptics)
-                    .onChange(of: workoutHaptics) {
-                        NotificationManager.shared.syncRestNotification(store.workoutSnapshot, force: true)
-                    }
-                WatchSettingsLabel(title: "Sound Effects", symbol: "speaker.wave.2.fill", color: IronTheme.secondaryText,
-                    value: "Controlled by Watch Silent Mode", metricValue: false)
-            } header: { Text("Feedback") } footer: {
-                Text("System taps and tones follow your Watch settings. Use Silent Mode in Control Center to mute tones. Feedback preferences apply to this Watch.")
-            }
+            WatchSectionTitle(title: "Feedback")
+            Toggle("Haptics", isOn: $workoutHaptics)
+                .toggleStyle(.switch)
+                .font(.body.weight(.semibold)).foregroundStyle(IronTheme.primaryText)
+                .frame(minHeight: IronTheme.controlHeight - 12)
+                .onChange(of: workoutHaptics) {
+                    NotificationManager.shared.syncRestNotification(store.workoutSnapshot, force: true)
+                }.watchPlatter()
+            WatchSettingsLabel(title: "Sound Effects", symbol: "speaker.wave.2.fill", color: IronTheme.secondaryText,
+                value: "Controlled by Watch Silent Mode", metricValue: false)
+            Text("System taps and tones follow your Watch settings. Use Silent Mode in Control Center to mute tones. Feedback preferences apply to this Watch.")
+                .font(.footnote).foregroundStyle(IronTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8)
             if let snapshot = store.workoutSnapshot, !snapshot.isFinishedRecord {
-                Section { sessionSettings }
+                sessionSettings
             }
-            Section { Text(version).font(.footnote).foregroundStyle(IronTheme.secondaryText) }
+            Text(version).font(.footnote).foregroundStyle(IronTheme.secondaryText).padding(.horizontal, 8)
         }
-        .navigationTitle("Settings").watchVitalsInset()
+        .navigationTitle("").watchVitalsInset()
     }
     private var sessionSettings: some View {
         VStack(alignment: .leading, spacing: 4) {
             WatchSectionTitle(title: "Current Workout")
-            TextField("Workout Name", text: Binding(get: { store.workoutSnapshot?.title ?? "" }, set: { name in
+            WatchTextInputRow(title: "Workout Name", placeholder: "Workout name", text: Binding(get: { store.workoutSnapshot?.title ?? "" }, set: { name in
                 store.updateCurrent { $0.title = name.isEmpty ? nil : name }
-            })).watchPlatter()
-            TextField("Workout Notes", text: Binding(get: { store.workoutSnapshot?.comment ?? "" }, set: { note in
+            }))
+            WatchTextInputRow(title: "Workout Notes", placeholder: "Add Note", text: Binding(get: { store.workoutSnapshot?.comment ?? "" }, set: { note in
                 store.updateCurrent { $0.comment = note.isEmpty ? nil : note }
-            }), axis: .vertical).watchPlatter()
+            }))
             if let manager = store.workoutSessionManager, manager.state == .running || manager.state == .paused {
                 Button { store.toggleWorkoutPause() } label: {
                     WatchActionLabel(title: manager.state == .paused ? "Resume Workout" : "Pause Workout",
@@ -1043,16 +1273,58 @@ struct WatchSettingsView: View {
             }.watchGlassButton().disabled(savedCurrent)
         }
     }
-    private var syncCaption: String {
-        let count = WatchWorkoutStore.shared.pendingEvents().count
-        if count > 0 { return "\(count) edits queued" }
-        guard store.library.generatedAt.timeIntervalSince1970 > 0 else { return "Sync with iPhone" }
-        let formatter = RelativeDateTimeFormatter(); formatter.unitsStyle = .short
-        return "Synced " + formatter.localizedString(for: store.library.generatedAt, relativeTo: Date())
+    private func syncCaption(at date: Date) -> String {
+        let lastSync = store.library.generatedAt
+        guard lastSync.timeIntervalSince1970 > 0 else { return "Never synced" }
+        guard date.timeIntervalSince(lastSync) >= 60 else { return "Synced just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        formatter.dateTimeStyle = .numeric
+        return "Last synced " + formatter.localizedString(for: lastSync, relativeTo: date)
     }
     private var version: String {
         let info = Bundle.main.infoDictionary ?? [:]
         return "Light \(info["CFBundleShortVersionString"] as? String ?? "1.0") (\(info["CFBundleVersion"] as? String ?? ""))"
+    }
+}
+
+private struct WatchWeightUnitPicker: View {
+    @EnvironmentObject private var store: WorkoutSessionManagerStore
+    @Environment(\.dismiss) private var dismiss
+    @ScaledMetric(relativeTo: .headline) private var headingHeight: CGFloat = 22
+    private let units: [WatchWorkoutWeightUnit] = [.pound, .kilogram]
+
+    var body: some View {
+        GeometryReader { page in
+            let clearance: CGFloat = page.size.width < 180 ? 6 : 10
+            let titleHeight = min(headingHeight, max(0, page.size.height - 8 - clearance - 2 * IronTheme.controlHeight))
+            let rowHeight = max(0, (page.size.height - titleHeight - 8 - clearance) / 2)
+            VStack(spacing: 4) {
+                Text("Weight Unit").font(.headline.weight(.bold)).foregroundStyle(IronTheme.primaryText)
+                    .lineLimit(1).minimumScaleFactor(0.6)
+                    .frame(maxWidth: .infinity, minHeight: titleHeight, maxHeight: titleHeight, alignment: .leading)
+                    .padding(.horizontal, 8).accessibilityAddTraits(.isHeader)
+                ForEach(units, id: \.self) { unit in
+                    let selected = store.preferredWeightUnit == unit
+                    Button { store.setPreferredWeightUnit(unit); dismiss() } label: {
+                        HStack(spacing: 8) {
+                            Text(unit == .pound ? "Pounds" : "Kilograms")
+                                .font(.body.weight(.semibold)).foregroundStyle(IronTheme.primaryText)
+                                .lineLimit(1).minimumScaleFactor(0.6)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "checkmark").foregroundStyle(IronTheme.accentText)
+                                .opacity(selected ? 1 : 0).accessibilityHidden(true)
+                        }.frame(maxWidth: .infinity, maxHeight: .infinity).watchPlatter()
+                    }.buttonStyle(.plain).frame(height: rowHeight)
+                    .accessibilityValue(selected ? "Selected" : "")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 2).padding(.bottom, clearance)
+            .frame(width: page.size.width, height: page.size.height, alignment: .top)
+        }
+        .ignoresSafeArea(.container, edges: .bottom)
+        .navigationTitle("").watchVitalsInset()
     }
 }
 

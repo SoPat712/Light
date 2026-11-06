@@ -48,8 +48,7 @@ struct OneRepMaxChartView : View {
     private var chartData: ChartData {
         WorkoutExerciseChartDataGenerator(workoutExercises: workoutExercises,evaluator: WorkoutExerciseChartData.evaluator(
             for: .oneRM,
-            weightUnit: settingsStore.weightUnit,
-            maxRepetitionsForOneRepMax: settingsStore.maxRepetitionsOneRepMax)
+            weightUnit: settingsStore.weightUnit)
         ).lineChartData(label: WorkoutExerciseChartData.MeasurementType.oneRM.title)
     }
     

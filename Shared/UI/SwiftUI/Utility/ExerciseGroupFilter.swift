@@ -28,20 +28,21 @@ class ExerciseGroupFilter: ObservableObject {
     private var searchSubject = PassthroughSubject<String, Never>()
     private var cancellable: Cancellable?
     
-    init(exerciseGroups: [ExerciseGroup]) {
+    init(exerciseGroups: [ExerciseGroup], exerciseStore: ExerciseStore = .shared) {
         originalExerciseGroups = exerciseGroups
         self.exerciseGroups = exerciseGroups
         
         cancellable = searchSubject
             .debounce(for: .milliseconds(300), scheduler: DispatchQueue.global(qos: .userInteractive))
-            .map { query in
+            .combineLatest(exerciseStore.$lastPerformedDates)
+            .map { query, dates in
                 guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return exerciseGroups
                 }
                 // A single untitled group lets all picker/list consumers show
-                // flat search matches, then apply the shared recency snapshot.
+                // flat search matches, ranked with the shared recency snapshot.
                 return [ExerciseGroup(title: "", exercises: ExerciseStore.filter(
-                    exercises: exerciseGroups.flatMap(\.exercises), using: query
+                    exercises: exerciseGroups.flatMap(\.exercises), using: query, lastPerformedDates: dates
                 ))]
             }
             .receive(on: DispatchQueue.main)

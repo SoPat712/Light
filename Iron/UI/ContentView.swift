@@ -194,8 +194,6 @@ struct ContentView : View {
                 .productionEnvironment()
         } else if ProcessInfo.processInfo.arguments.contains("-ironInspectCustomizeHome") {
             CustomizeHomeSheet()
-        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectHomeSections") {
-            NavigationStack { HomeSectionsEditor() }
         } else if ProcessInfo.processInfo.arguments.contains("-ironInspectHistory") {
             HistoryView()
                 .productionEnvironment()
@@ -206,9 +204,10 @@ struct ContentView : View {
             StartWorkoutView()
                 .environment(\.managedObjectContext, Self.inspectionEmptyContext)
                 .productionEnvironment()
-        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectImportedData") {
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectImportedData")
+                    || ProcessInfo.processInfo.arguments.contains("-ironInspectHevyImport") {
             NavigationStack {
-                BackupAndExportView()
+                HevyImportView()
                     .environment(\.managedObjectContext, Self.inspectionImportedContext)
                     .productionEnvironment()
             }

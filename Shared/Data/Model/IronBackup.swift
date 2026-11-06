@@ -13,7 +13,7 @@ import os.log
 
 enum IronBackup {
     static let bodyMeasurementsStorageKey = "iron.bodyMeasurements.v1"
-    private static let currentVersion = 6
+    private static let currentVersion = 7
 
     enum RestoreValidationError: LocalizedError {
         case unsupportedVersion(Int)
@@ -58,8 +58,9 @@ enum IronBackup {
          Version 4: body measurements
          Version 5: set tracking types and saved-workout distance targets
          Version 6: exercise notes and saved-workout note links
+         Version 7: app settings
          */
-        var version: Int = 6 // var not let so it can be overwritten by decodable
+        var version: Int = 7 // var not let so it can be overwritten by decodable
         let date: Date
         let customExercises: [Exercise]
         let workoutPlans: [WorkoutPlan]
@@ -70,6 +71,8 @@ enum IronBackup {
         let trackingPreferences: SetTrackingPreferences?
         let exerciseNotes: ExerciseNotes?
         let routineNoteLinks: WorkoutRoutineNoteLinks?
+        /// Binary property list of portable defaults domains and allowlisted keys.
+        let appSettingsData: Data?
         
         // MARK: - Codable
         
@@ -83,6 +86,7 @@ enum IronBackup {
             case trackingPreferences
             case exerciseNotes
             case routineNoteLinks
+            case appSettingsData
         }
         
         init(
@@ -93,7 +97,8 @@ enum IronBackup {
             bodyMeasurementsData: Data?,
             trackingPreferences: SetTrackingPreferences?,
             exerciseNotes: ExerciseNotes?,
-            routineNoteLinks: WorkoutRoutineNoteLinks?
+            routineNoteLinks: WorkoutRoutineNoteLinks?,
+            appSettingsData: Data?
         ) {
             self.date = date
             self.customExercises = customExercises
@@ -103,6 +108,7 @@ enum IronBackup {
             self.trackingPreferences = trackingPreferences
             self.exerciseNotes = exerciseNotes
             self.routineNoteLinks = routineNoteLinks
+            self.appSettingsData = appSettingsData
         }
         
         init(from decoder: Decoder) throws {
@@ -117,6 +123,7 @@ enum IronBackup {
             trackingPreferences = try container.decodeIfPresent(SetTrackingPreferences.self, forKey: .trackingPreferences)
             exerciseNotes = try container.decodeIfPresent(ExerciseNotes.self, forKey: .exerciseNotes)
             routineNoteLinks = try container.decodeIfPresent(WorkoutRoutineNoteLinks.self, forKey: .routineNoteLinks)
+            appSettingsData = try? container.decodeIfPresent(Data.self, forKey: .appSettingsData)
         }
         
 //        public func encode(to encoder: Encoder) throws {
@@ -134,7 +141,8 @@ enum IronBackup {
         exerciseStore: ExerciseStore,
         userDefaults: UserDefaults = .appGroup,
         trackingDefaults: UserDefaults = .standard,
-        notesDefaults: UserDefaults = .standard
+        notesDefaults: UserDefaults = .standard,
+        settingsDefaults: UserDefaults = .standard
     ) throws -> Data
     {
         let workoutRequest: NSFetchRequest<Workout> = Workout.fetchRequest()
@@ -154,7 +162,8 @@ enum IronBackup {
             bodyMeasurementsData: userDefaults.data(forKey: bodyMeasurementsStorageKey),
             trackingPreferences: SetTrackingPreferences.load(defaults: trackingDefaults),
             exerciseNotes: ExerciseNotes.load(defaults: notesDefaults),
-            routineNoteLinks: WorkoutRoutineNoteLinks.load(defaults: notesDefaults)
+            routineNoteLinks: WorkoutRoutineNoteLinks.load(defaults: notesDefaults),
+            appSettingsData: try AppSettingsArchive.capture(standard: settingsDefaults, appGroup: userDefaults)
         )
         
         let encoder = JSONEncoder()
@@ -174,6 +183,7 @@ enum IronBackup {
         userDefaults: UserDefaults = .appGroup,
         trackingDefaults: UserDefaults = .standard,
         notesDefaults: UserDefaults = .standard,
+        settingsDefaults: UserDefaults = .standard,
         saveParent: ((NSManagedObjectContext) throws -> Void)? = nil
     ) throws {
         let previousCustomExercises = exerciseStore.customExercises
@@ -312,6 +322,9 @@ enum IronBackup {
             if restored != stored {
                 NotificationCenter.default.post(name: ExerciseNotes.didChangeNotification, object: notesDefaults)
             }
+        }
+        if workoutDataBackup.version >= 7, let data = workoutDataBackup.appSettingsData {
+            AppSettingsArchive.restore(data, standard: settingsDefaults, appGroup: userDefaults)
         }
         success = true
         os_log("Successfully restored backup data", log: .backup, type: .info)

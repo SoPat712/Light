@@ -58,7 +58,7 @@ struct OptionsView: View {
             let unit = snapshot.weightUnit ?? store.preferredWeightUnit
             // 40 mm and larger text use one wide column instead of smaller values.
             LazyVGrid(columns: [GridItem(.adaptive(minimum: metricTileWidth), spacing: 4)], spacing: 4) {
-                tile("Duration", value: WatchNumber.elapsed(snapshot, at: context.date, reduced: reducedLuminance), color: IronTheme.metricTime)
+                tile("Duration", value: WatchNumber.duration(max(0, (snapshot.endDate ?? context.date).timeIntervalSince(snapshot.startDate))), color: IronTheme.metricTime)
                 tile(snapshot.trackingMetricTitle, value: snapshot.trackingMetricValue(unit: unit),
                      unit: snapshot.trackingMetricUnit(unit: unit), color: trackingMetricColor(snapshot))
                 tile("Sets", value: "\(snapshot.completedSets.count)", unit: "of \(snapshot.allSets.count)", color: IronTheme.metricSets)
@@ -77,7 +77,7 @@ struct OptionsView: View {
     @ViewBuilder private func healthMetricTiles(_ snapshot: WatchWorkoutSnapshot) -> some View {
         #if DEBUG
         if store.isHealthTestWorkout {
-            tile("Avg Heart Rate", shortTitle: "Avg HR", value: "--", unit: "bpm", color: IronTheme.metricHeartRate)
+            tile("Avg Heart Rate", shortTitle: "Avg HR", value: "—", unit: "bpm", color: IronTheme.secondaryText)
             tile("Active Calories", shortTitle: "Calories", value: "--", unit: "kcal", color: IronTheme.metricEnergy)
         } else {
             recordedHealthMetricTiles(snapshot)
@@ -88,7 +88,7 @@ struct OptionsView: View {
     }
     @ViewBuilder private func recordedHealthMetricTiles(_ snapshot: WatchWorkoutSnapshot) -> some View {
         // Current BPM is not an average; keep this unknown until supplied.
-        tile("Avg Heart Rate", shortTitle: "Avg HR", value: "--", unit: "bpm", color: IronTheme.metricHeartRate)
+        tile("Avg Heart Rate", shortTitle: "Avg HR", value: "—", unit: "bpm", color: IronTheme.secondaryText)
         if let manager = store.workoutSessionManager, manager.uuid == snapshot.workoutID {
             WatchLiveEnergyTile(manager: manager)
         } else {
@@ -179,7 +179,7 @@ struct WatchSavedView: View {
                 if let snapshot {
                     Text(snapshot.title ?? "Workout").font(.body.weight(.semibold))
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(WatchNumber.clock(snapshot.recordedDuration)).font(.ironMetric(.title3, weight: .semibold))
+                    Text(WatchNumber.duration(snapshot.recordedDuration)).font(.ironMetric(.title3, weight: .semibold))
                         .foregroundStyle(IronTheme.metricTime)
                 }
                 Button(action: closeSummary) { WatchActionLabel(title: "Done") }.watchGlassButton(prominent: true)
@@ -216,16 +216,22 @@ struct WatchConfirmView: View {
     let action: Action
     @State private var submitting = false
     var body: some View {
-        ScrollView {
-            VStack(spacing: 6) {
-                Text(title).font(.headline.weight(.bold)).fixedSize(horizontal: false, vertical: true)
-                Text(message).font(.body).foregroundStyle(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true).padding(.bottom, 8)
-                Button(role: .destructive, action: confirm) {
-                    WatchActionLabel(title: buttonTitle)
-                }.watchGlassButton().disabled(submitting)
-                Button { dismiss() } label: { WatchActionLabel(title: "Cancel") }.watchGlassButton()
-            }.multilineTextAlignment(.center).frame(maxWidth: .infinity).scenePadding(.horizontal)
+        Group {
+            if case .discard = action {
+                discardPage
+            } else {
+                ScrollView {
+                    VStack(spacing: 6) {
+                        Text(title).font(.headline.weight(.bold)).fixedSize(horizontal: false, vertical: true)
+                        Text(message).font(.body).foregroundStyle(IronTheme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true).padding(.bottom, 8)
+                        Button(role: .destructive, action: confirm) {
+                            WatchActionLabel(title: buttonTitle)
+                        }.watchGlassButton(destructive: true).disabled(submitting)
+                        Button { dismiss() } label: { WatchActionLabel(title: "Cancel") }.watchGlassButton()
+                    }.multilineTextAlignment(.center).frame(maxWidth: .infinity).scenePadding(.horizontal)
+                }
+            }
         }.navigationTitle("").watchVitalsInset()
         .onChange(of: targetExists) {
             guard !targetExists else { return }
@@ -240,6 +246,33 @@ struct WatchConfirmView: View {
         }
         .onChange(of: store.persistenceFailure?.id) { if store.persistenceFailure != nil { submitting = false } }
     }
+    private var discardPage: some View {
+        GeometryReader { proxy in
+            let compact = proxy.size.width < 180
+            let buttonHeight: CGFloat = compact ? 44 : 52
+            let clearance: CGFloat = compact ? 6 : 10
+            let messageHeight = max(0, proxy.size.height - 22 - buttonHeight * 2 - 12 - clearance)
+            VStack(spacing: 4) {
+                Text(title).font(.headline.weight(.bold))
+                    .lineLimit(1).minimumScaleFactor(0.8).frame(height: 22)
+                    .accessibilityAddTraits(.isHeader)
+                Text(message).font(.footnote).foregroundStyle(IronTheme.secondaryText)
+                    .lineLimit(2).minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity).frame(height: messageHeight)
+                Button(role: .destructive, action: confirm) {
+                    WatchActionLabel(title: buttonTitle).frame(height: buttonHeight - 16)
+                }.watchGlassButton(destructive: true).frame(height: buttonHeight).disabled(submitting)
+                Button { dismiss() } label: {
+                    WatchActionLabel(title: "Cancel").frame(height: buttonHeight - 12)
+                }.watchGlassButton().frame(height: buttonHeight)
+            }
+            .multilineTextAlignment(.center)
+            .padding(.bottom, clearance)
+            .frame(width: max(0, proxy.size.width - IronTheme.workoutGutter * 2), height: proxy.size.height)
+            .padding(.horizontal, IronTheme.workoutGutter)
+        }
+        .ignoresSafeArea(.container, edges: .bottom)
+    }
     private var title: String {
         switch action { case .discard: return "Discard Workout?"; case .exercise: return "Delete Exercise?"; case .set: return "Delete Set?" }
     }
@@ -248,7 +281,7 @@ struct WatchConfirmView: View {
         switch action {
         case .discard:
             let count = store.workoutSnapshot?.completedSets.count ?? 0
-            return WatchNumber.count(count, "logged set") + " will be deleted. This can’t be undone."
+            return count == 0 ? "Discard this workout?" : "Delete " + WatchNumber.count(count, "logged set") + "?"
         case .exercise(let id):
             let exercise = store.workoutSnapshot?.exercises.first { $0.id == id }
             return "\(exercise?.name ?? "Exercise") and its " + WatchNumber.count(exercise?.sets.count ?? 0, "set") + " will be removed."

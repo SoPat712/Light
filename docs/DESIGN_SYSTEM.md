@@ -276,14 +276,15 @@ Minimum 44 × 44 pt, always. A visually smaller glyph gets a padded `contentShap
 | Buttons floating over content | `.ironGlassButtonStyle()` (secondary) and `.ironProminentGlassButtonStyle()` (the one primary action) |
 
 **Glass is allowed only on:** the active-workout tab accessory, the logger's collapsed summary
-pill, floating action buttons (Add Exercises), and tooltips (material).
+pill, floating action buttons (Add Exercises), the LightToast result capsule, Watch toolbar
+vitals and action buttons, and tooltips (material).
 Glass never sits on glass. Glass never replaces a List section.
 
 ## 7. Iconography
 
 SF Symbols only, using the semantic style and weight of the adjacent text. Never put every
 symbol in a colored tile. Icon wells (32 pt soft circles) are only for metric chips and record
-lists.
+lists. Settings is the exception: its rows use the icon-tile anatomy in §15.8.
 
 | Concept | Symbol |
 | --- | --- |
@@ -372,6 +373,13 @@ no longer carries set type. Accessibility sizes stack each set's values.
 A blocking progress overlay for long imports. Its phases are reading (files) and saving
 (workouts). Reuse the same pattern (glass card, `ProgressView`, phase text and counts) for any
 operation over about 1 s.
+
+### 8.8.2 `LightToast`: `Iron/UI/Components/LightToast.swift`
+A short, self-dismissing glass capsule drops from the top for results needing no decision
+(backup made, sync done, status checked). `LightToastCenter` presents one at a time in its own
+non-interactive window above sheets and full-screen covers; touches pass through. It announces
+the result to VoiceOver and respects the haptics preference. Errors needing reading or action
+keep their sheets or alerts.
 
 ### 8.9 Muscle map (MuscleMap package)
 `import MuscleMap`, then `BodyView(gender: .male, side:, style:)` with the style from §3.4.
@@ -640,27 +648,32 @@ buttons on the right.
 
 ### 15.2 Home (`Iron/UI/Feed/FeedView.swift`, `Iron/UI/Components/HomeWeekViews.swift`)
 Board: *Round 3 → Home*, revised 2026-11-02 to read like Fitness and Health, then made
-customizable. The user picks the This Week style, the weekly set target, and which sections
-show in what order (Customize Home, from the card's ••• menu or the button at the end of
-Home). Choices live in `UserDefaults` under `home.*` keys; no Core Data change. Default order:
+customizable like Fitness's Edit Summary. Home is a list of cards the user adds, removes and
+reorders in Customize Home (from a week card's ••• menu or the button at the end of Home);
+the weekly set target is set there too. Cards live in `UserDefaults` under `home.cards`
+(build 71's `home.weekStyle`, `home.sectionOrder` and `home.hiddenSections` carry over once);
+no Core Data change. Default cards, in order:
 1. Today's date as the navigation subtitle under "Home" (iOS 26 and later). No greeting.
-2. **This Week card** (opaque neutral `IronTheme.surface`; no colored glass haze): "This Week"
-   in `.title3` semibold, the date range and a ••• menu (Show As, Customize Home) at the
-   trailing edge, then one of four styles, then a full-width Resume or Start Workout button
-   (native large `.borderedProminent` capsule).
+2. **Week cards** (opaque neutral `IronTheme.surface`; no colored glass haze). Any of the four
+   can be on Home at once, in any order. The first one is titled "This Week" with the date
+   range, carries the Workouts/Sets/Volume row where its style has one, and ends with a
+   full-width Resume or Start Workout button (native large `.borderedProminent` capsule).
+   Later week cards are titled by name and show only their chart. With no week card, the
+   Start button stands alone at the top of Home. Each week card's ••• menu adds another week
+   card directly below it, removes it, or opens Customize Home.
    - **Rings** (default): Fitness-style rings for Volume (outer, `metricVolume`), Sets
      (`metricSets`) and Workouts (inner, accent) that close when this week matches last week;
      tracks use each metric's container color. Beside them, each metric as "11.4k / 26.6k lb".
      Below: a row of small daily volume rings scaled to the week's best day, and the best-day line.
    - **Pace**: running volume this week (solid 3 pt `metricVolume`) over last week's running
      line (dashed `tertiaryText`); the rest of the week is shaded; a translucent bar at today
-     marks the gap. Header "VOLUME SO FAR" with "7,600 lb behind last Monday". Then
-     Workouts, Sets and Time.
-   - **Muscles**: Workouts, Sets and Volume, then a grid of the six tracked groups (Legs,
-     Chest, Back, Shoulders, Arms, Core) by weekday. Dot area shows sets in `metricSets`;
-     today's column has a `tertiaryFill` lane; a trailing LAST column gives days since each
-     group was trained; one line names the most rested group.
-   - **Bars**: the original seven daily volume bars with the comparison line.
+     marks the gap. Header "VOLUME SO FAR" with "7,600 lb behind last Monday". As the first
+     card, then Workouts, Sets and Time.
+   - **Muscle Week**: a grid of the six tracked groups (Legs, Chest, Back, Shoulders, Arms,
+     Core) by weekday. Dot area shows sets in `metricSets`; today's column has a
+     `tertiaryFill` lane; a trailing LAST column gives days since each group was trained; one
+     line names the most rested group.
+   - **Daily Volume**: the original seven daily volume bars with the comparison line.
 3. **Last 4 Weeks** calendar: 34 pt day circles, trained days solid accent with white numbers,
    others `tertiaryFill` with `secondaryText`. A streak chip sits in the section header.
    Every date opens a Daily Recap, including rest days. The recap shows that day's workout,
@@ -676,7 +689,9 @@ Home). Choices live in `UserDefaults` under `home.*` keys; no Core Data change. 
    hierarchy. Recent dates use subheadline metadata. Body rows use native List spacing and
    reflow vertically at accessibility sizes; never add a second minimum row height. Pinned
    chart titles use headline and chart axes use footnote.
-7. A **Customize Home** button ends the list.
+7. A **Customize Home** button ends the list. The sheet is always in edit mode: "On Home"
+   lists the cards with delete and reorder controls, "Add to Home" lists the rest with a
+   `success` plus, then the weekly set target steppers and Restore Default Layout.
 
 ### 15.3 History (`Iron/UI/History/HistoryView.swift`)
 Board: *Round 3 → History*, revised 2026-10-26. A segmented control (Workouts · Insights).
@@ -760,8 +775,12 @@ Top to bottom:
      The raised card contains:
      - a header with "Set N" (it opens the set-type menu) and "Last time 200 × 5";
      - two tiles for weight and reps, each with a huge `ironMetric` TextField and 40 pt −/+
-       circular steppers (5 lb or 2.5 kg; 1 rep);
-     - a plates-per-side hint (barbell only; it opens the plate calculator) and an Add RPE pill;
+       circular steppers (2.5 in either lb or kg; 1 rep);
+     - a plate picture and load hint for barbells or saved machine setups, opening the plate
+       calculator; eligible machines without a setup show a "Plate Calculator" setup chip.
+       Cable/pin-stack equipment has no automatic setup chip. Counts above four draw three
+       representative plates with the real **×N** above them, in both hint and calculator;
+     - an Add RPE pill;
      - a full-width 52 pt **Log Set** capsule in accent with a checkmark.
    - **Upcoming:** a compact row in secondary colors. Previous results and editable
      weight/reps/duration fields share `compactCornerRadius` (10 pt). Previous stays a quiet
@@ -771,6 +790,10 @@ Top to bottom:
      neutral surfaces over the row color. Focus uses the accent fill and outline.
    - **Duration sets:** the compact row with an inline timer.
    - Rows swipe left to delete (§9.9).
+   - **Unfilled sets:** `LoggerAssist.suggestedValues` supplies read-only weight/reps defaults
+     while both values are zero. It inherits from the nearest same-type set above, then the
+     matching previous-session set or fallback; warm-ups and working sets stay separate.
+     Logging accepts the suggestion; merely showing it does not save it.
 7. **After logging a set**, the logger scrolls that set to the top, with the rest strip and the next set under it. Going back to an earlier set scrolls to that set instead. Tapping a weight or reps box selects its value so typing replaces it, and a number stays `secondaryText` only while it still matches what was filled in; a focused or changed number is `primaryText`.
 8. **Rest strip** under the set that started it: a `metricTimeContainer` rounded rectangle with
    `IronRestRing`, the countdown and "Rest of 2:30", then four 44 pt neutral circular buttons:
@@ -786,8 +809,16 @@ color); **How hard was it?** (`EffortRatingGraph`); `IronSessionStrip`; records 
 saved, waiting, imported, or not exported); notes and media; Save and Discard.
 
 ### 15.8 Settings
-A plain `Form`/`List` with native rows. "Import & Export" holds the Hevy CSV import, backups and
-exports. The Sounds & Haptics screen previews each cue.
+Native grouped `Form`/`List` sections with designed row anatomy. The owner rejected plain-text
+native rows. Use `SettingsRowIcon` on every settings control/action row, with a wrapping title
+and its control on the row: kg | lb segmented picker, estimated 1RM stepper, rest-length ruler,
+or sound-preview play button (sound waves while playing). `SettingsToggle` keeps the native
+switch beside its wrapping title. `SettingsActionLabel` adds a trailing action symbol,
+replaced by a spinner and "Preparing…" while working. `SettingsStatusBadge` pairs a status word
+with a green check or red exclamation; `SettingsConnectionHeader` combines the large connection
+icon, name, badge and primary button on Health and Watch pages. Keep one short footer per group.
+
+"Import & Export" holds the Hevy CSV import, backups and exports.
 The "Imported Data" section follows Import: Hevy count/date range, "Replace with New Export…",
 and destructive "Remove Imported Workouts". Both operations confirm the affected count and
 explain that workouts logged in Iron are kept. Replacement chooses one workout CSV first;
@@ -795,7 +826,7 @@ failure preserves the old history. Measurements have no import-source tag and ar
 
 ### 15.9 Watch, widgets and Live Activity
 - **Watch:** the exercise-first hierarchy in §21, native `List`/`Section` and glass controls,
-  prominent Log Set, and a shared pinned heart-rate/active-energy header. Same metric colors.
+  prominent Log Set, and the clock-safe vitals pill in §22.0. Same metric colors.
 - **Widget:** `containerBackground(.fill.tertiary, for: .widget)`, with no solid accent slabs.
 - **Live Activity:** the approved Set tile design in §20: exercise artwork, per-exercise blue
   completion cells and set position; compact surfaces omit the stopwatch. Expanded surfaces
@@ -993,18 +1024,19 @@ saved-workout drafts, history/repeat, units/sync, and finish/effort/discard. Kee
 navigation stack and reset to the active workout for Live Activity/user-activity launches.
 Do not reset a draft merely because the scene becomes active.
 
-During an active workout, **red BPM is pinned left and orange active kcal right**, above the
-scrolling content on Home, workout/exercise/set pages, deep settings, library and numeric
-sheets. Use a shared top safe-area inset; large text stacks the metrics. The header remains
-visible in Always On and explicitly unredacted. Missing/stale heart rate shows a dash; never
+During an active workout, heart rate and active kcal share the toolbar vitals pill (§22.0),
+with red heart and orange flame symbols, except on pages with a trailing
+button, where vitals are hidden to preserve the clock. The pill remains visible in Always On
+and explicitly unredacted. Missing/stale heart rate shows a dash; never
 manufacture a zero. Active energy remains Apple's native Traditional Strength Training estimate.
 Distinguish edit sync from Health recording, report failures and offer Retry for failures only.
 Never invent sensor readings for earlier edited start times.
 
 Watch numeric editors (owner correction, 2026-10-26): weight values snap to **0.5** in both
 lb and kg. Crown travel may accumulate fractionally internally, but only snapped detents are
-shown and committed; ± uses the same 0.5 step. Reps are integers. RPE uses 0.5, durations 5 s
-and session effort whole numbers. Do not parse localized display strings back into quantities.
+shown and committed; weight ± buttons use 2.5 in either unit. Reps are integers. RPE uses 0.5,
+durations 5 s and session effort whole numbers. Do not parse localized display strings back
+into quantities.
 
 Automatic recording (owner correction): a running native workout automatically starts or
 recovers its Watch HealthKit recording. Recovery always runs first to avoid a duplicate session.
@@ -1026,7 +1058,7 @@ These rules come from regressions on the owner's Watch. Every Watch UI change mu
 ### 22.0 Approved look first (owner, 2026-10-31; replaces the 2026-10-30 "native first" rule)
 A lane that took "native first" literally removed Log Set, gave vitals their own row and shrank every value. The owner rejected it: "you absolutely butchered the watch display". The look below is the design; don't restyle it. Reference screenshots: `~/.local/share/light/approved/`.
 - **Native parts, only here:** top-corner ✓ on rating pages (`ToolbarItem` with a plain `Button` + SF Symbol, so the system draws standard glass), and the system back button where a page has no vitals.
-- **Vitals row:** heart rate and calories sit on the system clock's line in a fixed width that always leaves room for the clock, because watchOS removes the clock when a toolbar item crowds it. They shrink first, then calories drop out. There is no KCAL caption; the flame carries that meaning.
+- **Vitals pill:** heart rate and calories share a 34 pt capsule in the toolbar, with width reserved for the clock and back control. It fits full readings, compact energy ("1.2k"), tighter readings, then heart rate alone; if none fits, it hides rather than crowding the clock. There is no KCAL caption; the flame carries that meaning. Pages with a trailing button hide vitals (`showsTrailingButton: true`).
 - **Running rest screen:** back button and vitals in the toolbar row. Below it, the ring and a column of `+15 · Skip · −15` `watchNeutralCapsule()` buttons (50 pt wide below 180 pt width, 60 pt otherwise), with the column on the right, or on the left when the Watch is worn on the right wrist, because the buttons belong on the side the other hand reaches from. The next set's full exercise name and weight × reps run across the bottom, on one line when they fit and two otherwise. The ring only holds REST and the time. At accessibility type sizes the screen keeps the stacked readout with a `−15 · Skip · +15` row (44 pt tall below 180 pt width, 52 pt otherwise).
 - **After Log Set:** RPE opens first when the set needs one, then slides to the rest screen on ✓ or after 5 s untouched. Rest's back button returns to RPE, which then waits for ✓. RPE opened by hand also waits for ✓. A set that already has an RPE skips this page, and new sets start unrated rather than copying an old rating. Only a manual action saves: ✓ saves the number shown and turning the wheel saves the new value. Opening RPE or letting the 5 s pass saves nothing, so the dimmed suggestion is never recorded on its own and that set stays unrated.
 - **Vitals live in the toolbar row** beside the back button (`watchVitalsInset`). Never a separate row of their own.
@@ -1037,9 +1069,12 @@ A lane that took "native first" literally removed Log Set, gave vitals their own
 - **Scrolling lists** (`WatchContentList`) are flat and full width, with no carousel scaling, even 4 pt spacing and bottom padding so the last row scrolls clear of the rounded corners.
 - **Crown:** every value control uses `watchCrownRotation`, never `digitalCrownRotation` directly. SwiftUI shows the green bar for any non-continuous rotation, and `.digitalCrownAccessory(.hidden)` doesn't affect it, so the helper uses continuous rotation and holds the value at its limits. A scrolling page with a tile that deselects uses `watchReturnsCrown(afterEditing:)`, so the wheel scrolls the page again as soon as the tile is released. Discrete scales use `sensitivity: .low`. The running rest countdown has no Crown binding; the rest-length picker does.
 - **Use the whole screen:** measure with `GeometryReader` + `.ignoresSafeArea(.container, edges: .bottom)` where the bottom row is a capsule, centered text or tiles above the page dots. "So far from the bottom" is a repeated owner complaint. Only square-cornered graphics, such as RPE bars, must clear the display corners.
-- **RPE and effort:** vitals + ✓ in the toolbar, then context line, number, rising graph, small description centered at the bottom. Auto-accept 5 s after the Crown stops only when RPE appeared by itself after Log Set; opened manually or for effort, only ✓ confirms.
+- **RPE and effort:** ✓ in the toolbar (vitals hidden), then context line, number, rising graph, small description centered at the bottom. Auto-accept 5 s after the Crown stops only when RPE appeared by itself after Log Set; opened manually or for effort, only ✓ confirms.
 - **Notes** are text only. Rows say "Add Note" (accent) or preview two lines of the note, and an empty plan note has no row. On the note page the whole box is the control: a tap opens the system text input with the note filled in, Done saves, Cancel changes nothing. No Edit, Dictate, Save or Cancel buttons; Clear shows only when there is a note.
 - **No visible "Test mode" text** on the Watch.
+- **Secondary/destructive actions:** `WatchSecondaryButtonStyle` uses native Liquid Glass on watchOS 26, with a neutral-fill fallback. `WatchDestructiveButtonStyle` gives destructive confirmation a full-width red glass capsule with intrinsic height; use `watchGlassButton(destructive: true)`.
+- **Controls entrance:** selecting the controls page animates metrics, then Pause/Exercise/Discard/Finish from the clock bar at 0.6 scale and zero opacity, using `IronMotion.snappy` with 40 ms stagger. It restarts on page selection, since TabView pre-renders; Reduce Motion uses a fade.
+- **Empty/completed workout actions:** Add Exercise and Finish have an explicit `IronTheme.controlHeight + 8` height (52 pt) so the prominent style cannot stretch in the unbounded layout.
 
 ### 22.1 Fill the screen; design boldly
 - The first screen of every Watch page uses the whole display: no empty bands and no floating controls.

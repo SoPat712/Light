@@ -17,6 +17,7 @@ struct TrainingSessionSnapshot: Identifiable {
     let id: NSManagedObjectID
     let date: Date
     let title: String?
+    let displayTitle: String
     let duration: TimeInterval
     let setCount: Int
     let repetitions: Int
@@ -37,6 +38,9 @@ struct TrainingHistorySnapshot {
     var trainedWeeks: Set<Date> = []
     var exerciseTotals: [UUID: TrainingExerciseTotals] = [:]
     var recordSetIDs: Set<NSManagedObjectID> = []
+    var exerciseBests: [UUID: ExerciseBests] = [:]
+    var recordEvents: [ExerciseBests.RecordEvent] = []
+    var lastRoutineCompletion: [NSManagedObjectID: Date] = [:]
 
     func streak(now: Date = Date(), calendar: Calendar = .current) -> Int {
         guard var week = calendar.dateInterval(of: .weekOfYear, for: now)?.start else { return 0 }
@@ -51,13 +55,27 @@ struct TrainingHistorySnapshot {
     }
 
     static func build(from workouts: [Workout], calendar: Calendar = .current,
-                      catalog: [UUID: Exercise] = [:]) -> Self {
+                      catalog: [UUID: Exercise] = [:],
+                      titleExercises: [Exercise]? = nil) -> Self {
         var result = Self()
+        let displayTitleExercises = titleExercises ?? Array(catalog.values)
+        var bestsSets: [ExerciseBests.SetResult] = []
         for workout in workouts where !workout.isCurrentWorkout {
             let exercises = (workout.workoutExercises?.array as? [WorkoutExercise] ?? []).compactMap { exercise -> TrainingExerciseSnapshot? in
                 let sets = (exercise.workoutSets?.array as? [WorkoutSet] ?? []).filter(\.isCompleted)
                 guard !sets.isEmpty else { return nil }
                 let preferred = exercise.trackingType(catalogExercise: exercise.exerciseUuid.flatMap { catalog[$0] })
+                if let uuid = exercise.exerciseUuid, let date = workout.start {
+                    bestsSets += sets.map { set in
+                        ExerciseBests.SetResult(
+                            id: set.objectID, exerciseID: uuid, workoutID: workout.objectID, date: date,
+                            weight: set.weightValue, repetitions: Int(set.repetitionsValue),
+                            trackingType: SetTrackingType.resolved(preferred, from: set.trackingData),
+                            duration: set.durationValue, distance: set.distanceValue,
+                            isCompleted: set.isCompleted, isWarmUp: set.tagValue == .warmUp
+                        )
+                    }
+                }
                 let volume = sets.reduce(0.0) { sum, set in
                     let type = SetTrackingType.resolved(preferred, from: set.trackingData)
                     return sum + type.volume(weight: set.weightValue, reps: Int(set.repetitionsValue))
@@ -67,7 +85,11 @@ struct TrainingHistorySnapshot {
             }
             guard !exercises.isEmpty else { continue }
             let date = workout.start ?? .distantPast
+            if let routine = workout.workoutRoutine {
+                result.lastRoutineCompletion[routine.objectID] = max(result.lastRoutineCompletion[routine.objectID] ?? .distantPast, date)
+            }
             let session = TrainingSessionSnapshot(id: workout.objectID, date: date, title: workout.title,
+                displayTitle: workout.displayTitle(in: displayTitleExercises),
                 duration: max(0, workout.duration ?? 0), setCount: exercises.reduce(0) { $0 + $1.setCount },
                 repetitions: exercises.reduce(0) { $0 + $1.repetitions }, volume: exercises.reduce(0) { $0 + $1.volume },
                 effort: workout.sessionEffortValue, exercises: exercises)
@@ -85,6 +107,8 @@ struct TrainingHistorySnapshot {
         }
         result.sessions.sort { $0.date > $1.date }
         result.recordSetIDs = TrainingRecordIndex.recordSetIDs(in: workouts.filter { !$0.isCurrentWorkout })
+        result.exerciseBests = Dictionary(grouping: bestsSets, by: \.exerciseID).mapValues { ExerciseBests(sets: $0) }
+        result.recordEvents = ExerciseBests.recordEvents(in: bestsSets, historyRecordSetIDs: result.recordSetIDs)
         return result
     }
 }
@@ -142,6 +166,7 @@ struct TrainingHistorySnapshot {
         // Capture the catalog on the main actor; the background context must
         // not read the observable exercise store while it is being updated.
         let catalog = ExerciseStore.shared.exercisesByUUID
+        let titleExercises = ExerciseStore.shared.exercises
         Task {
             do {
                 let value = try await context.perform {
@@ -150,7 +175,8 @@ struct TrainingHistorySnapshot {
                     request.predicate = NSPredicate(format: "isCurrentWorkout != YES")
                     request.sortDescriptors = [NSSortDescriptor(key: "start", ascending: false)]
                     request.relationshipKeyPathsForPrefetching = ["workoutExercises", "workoutExercises.workoutSets"]
-                    return TrainingHistorySnapshot.build(from: try context.fetch(request), catalog: catalog)
+                    return TrainingHistorySnapshot.build(from: try context.fetch(request), catalog: catalog,
+                                                         titleExercises: titleExercises)
                 }
                 snapshot = value
                 error = nil

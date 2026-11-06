@@ -1067,6 +1067,7 @@ extension WatchConnectionManager {
                 applyWatchCompletion(event, to: workout, state: "watch")
             }
             return DeferredWatchEventEffects { [weak self] in
+                healthManager.syncWorkoutEffort(workout: workout)
                 self?.retireSnapshotDelivery(workoutID: event.workoutID)
                 if wasCurrent {
                     self?.currentWatchWorkoutUuid = nil
@@ -2066,7 +2067,8 @@ extension WatchConnectionManager {
         let picks = ExerciseStore.shared.shownExercises.map {
             WatchExercisePick(id: $0.uuid, name: $0.title, muscle: $0.muscleGroup,
                               imageURL: $0.imageURL?.absoluteString,
-                              listed: ExerciseStore.shared.isBrowsable($0) ? nil : false)
+                              listed: ExerciseStore.shared.isBrowsable($0) ? nil : false,
+                              aliases: Array(Set($0.alias + [$0.originalTitle])).sorted())
         }
         let context = WorkoutDataStorage.shared.persistentContainer.newBackgroundContext()
         context.undoManager = nil

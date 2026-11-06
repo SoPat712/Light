@@ -10,11 +10,13 @@ import XCTest
 import CoreData
 import WorkoutDataKit
 import UIKit
+import Combine
 @testable import Iron
 
 class IronBackupTests: XCTestCase {
     var persistenContainer: NSPersistentContainer!
     var userDefaults: UserDefaults!
+    var settingsDefaults: UserDefaults!
     var exerciseStore: ExerciseStore!
     var customExercisesURL: URL!
 
@@ -29,6 +31,8 @@ class IronBackupTests: XCTestCase {
         // reset user defaults
         UserDefaults().removePersistentDomain(forName: "test")
         userDefaults = UserDefaults(suiteName: "test")
+        settingsDefaults = UserDefaults(suiteName: "test.appSettings.standard")
+        settingsDefaults.removePersistentDomain(forName: "test.appSettings.standard")
         
         // in memory persistent container
         persistenContainer = setUpInMemoryNSPersistentContainer()
@@ -41,6 +45,8 @@ class IronBackupTests: XCTestCase {
     override func tearDownWithError() throws {
         persistenContainer.viewContext.reset()
         persistenContainer = nil
+        settingsDefaults.removePersistentDomain(forName: "test.appSettings.standard")
+        settingsDefaults = nil
     }
     
     func testImportIronBackupV1() {
@@ -408,7 +414,7 @@ class IronBackupTests: XCTestCase {
             exerciseStore: exerciseStore, userDefaults: userDefaults,
             trackingDefaults: userDefaults, notesDefaults: userDefaults)
         let archive = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(archive["version"] as? Int, 6)
+        XCTAssertEqual(archive["version"] as? Int, 7)
         XCTAssertNotNil(archive["exerciseNotes"])
         XCTAssertNotNil(archive["routineNoteLinks"])
 
@@ -835,6 +841,231 @@ class IronBackupTests: XCTestCase {
             userDefaults: userDefaults
         )
         return (data, exercise)
+    }
+
+    func testVersionSevenSettingsRoundTripAcrossBothDefaultsDomains() throws {
+        let groupValues: [String: Any] = [
+            "weightUnit": WeightUnit.imperial.rawValue,
+            "ironAppearance": "dark",
+            "defaultRestTime": 125.5,
+            "defaultRestTimeDumbbellBased": 155.0,
+            "defaultRestTimeBarbellBased": 185.0,
+            "keepRestTimerRunning": false,
+            "maxRepetitionsOneRepMax": 8,
+            "autoBackup": true,
+            "watchCompanion": false,
+            "autoStartRestTimer": false,
+            "keepScreenAwakeDuringWorkout": true,
+            "showPlateCalculator": false,
+            "showWarmUpCalculator": false,
+            "logRPE": false,
+            "prefillPreviousValues": false,
+            "supersetAutoScroll": false,
+            "inlineSetTimer": false,
+            "workoutSounds": false,
+            "workoutHaptics": false,
+            "personalRecordAlerts": false,
+            "hiddenExerciseUuids": [UUID().uuidString]
+        ]
+        let standardValues: [String: Any] = [
+            "Iron.finishWorkout.syncWithHealth": false,
+            "home.cards": "bars,pinned,recent",
+            "home.weekStyle": "pace",
+            "home.sectionOrder": "recent,week",
+            "home.hiddenSections": "body",
+            "home.weeklySetTargetLow": 12,
+            "home.weeklySetTargetHigh": 24,
+            "exerciseDetail.metric": "Volume",
+            "exerciseDetail.range": "1Y",
+            "pinnedChartsKey": try JSONEncoder().encode([
+                PinnedChart(exerciseUuid: UUID(), measurementType: .oneRM)
+            ])
+        ]
+        for (key, value) in groupValues { userDefaults.set(value, forKey: key) }
+        for (key, value) in standardValues { settingsDefaults.set(value, forKey: key) }
+        var inventory = PlateInventory()
+        inventory.setEnabled(false, weight: 25, unit: .kilogram)
+        inventory.save(defaults: settingsDefaults)
+        let exercise = UUID().uuidString
+        let loadout = PlateLoadout(mode: .barbell(15), unit: .kilogram)
+        loadout.save(exerciseKey: exercise, defaults: settingsDefaults)
+        let data = try settingsBackupData()
+        let archive = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(archive["version"] as? Int, 7)
+        let blob = try XCTUnwrap((archive["appSettingsData"] as? String).flatMap { Data(base64Encoded: $0) })
+        XCTAssertTrue(blob.starts(with: Data("bplist00".utf8)))
+        let settings = try XCTUnwrap(PropertyListSerialization.propertyList(from: blob, format: nil) as? [String: [String: Any]])
+        let inventoryBlob = try XCTUnwrap(settings["standard"]?[PlateCalculatorStorageKeys.inventory] as? Data)
+        let inventoryPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: inventoryBlob) as? [String: Any])
+        XCTAssertNil(inventoryPayload["updatedAt"])
+        let loadoutsBlob = try XCTUnwrap(settings["standard"]?[PlateCalculatorStorageKeys.loadouts] as? Data)
+        let loadoutsPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: loadoutsBlob) as? [String: [String: Any]])
+        XCTAssertNil(loadoutsPayload[exercise]?["updatedAt"])
+
+        for key in groupValues.keys { userDefaults.removeObject(forKey: key) }
+        for key in standardValues.keys { settingsDefaults.removeObject(forKey: key) }
+        var changedInventory = PlateInventory()
+        changedInventory.setEnabled(false, weight: 20, unit: .kilogram)
+        changedInventory.save(defaults: settingsDefaults)
+        PlateLoadout(mode: .barbell(20), unit: .kilogram)
+            .save(exerciseKey: exercise, defaults: settingsDefaults)
+        let beforeInventory = PlateInventory.load(defaults: settingsDefaults)
+        let beforeLoadout = try XCTUnwrap(PlateLoadout.loadAll(defaults: settingsDefaults)[exercise])
+
+        try restoreSettingsBackup(data)
+
+        for (key, value) in groupValues {
+            XCTAssertEqual(userDefaults.object(forKey: key) as? NSObject, value as? NSObject, key)
+        }
+        for (key, value) in standardValues {
+            XCTAssertEqual(settingsDefaults.object(forKey: key) as? NSObject, value as? NSObject, key)
+        }
+        let restoredInventory = PlateInventory.load(defaults: settingsDefaults)
+        let restoredLoadout = try XCTUnwrap(PlateLoadout.loadAll(defaults: settingsDefaults)[exercise])
+        XCTAssertTrue(restoredInventory.hasSameContent(as: inventory))
+        XCTAssertGreaterThan(restoredInventory.updatedAt, beforeInventory.updatedAt)
+        XCTAssertEqual(restoredLoadout.mode, loadout.mode)
+        XCTAssertGreaterThan(restoredLoadout.updatedAt, beforeLoadout.updatedAt)
+    }
+
+    func testSettingsRestoreIgnoresUnknownKeysAndDomains() throws {
+        settingsDefaults.set("keep", forKey: "unknownSetting")
+        userDefaults.set(true, forKey: "healthTestMode")
+        let data = try settingsBackupData(values: [
+            "standard": ["unknownSetting": "overwrite", "home.cards": "recent"],
+            "appGroup": ["healthTestMode": false, "watchWorkoutUuid": UUID().uuidString],
+            "anotherDomain": ["home.cards": "bars"]
+        ])
+        try restoreSettingsBackup(data)
+        XCTAssertEqual(settingsDefaults.string(forKey: "unknownSetting"), "keep")
+        XCTAssertEqual(settingsDefaults.string(forKey: "home.cards"), "recent")
+        XCTAssertTrue(userDefaults.bool(forKey: "healthTestMode"))
+        XCTAssertNil(userDefaults.object(forKey: "watchWorkoutUuid"))
+        XCTAssertNil(userDefaults.object(forKey: "home.cards"))
+    }
+
+    func testSettingsRestoreSkipsWrongTypesAndRestoresOtherValues() throws {
+        userDefaults.set("light", forKey: "ironAppearance")
+        userDefaults.set(false, forKey: "logRPE")
+        userDefaults.set(7, forKey: "maxRepetitionsOneRepMax")
+        userDefaults.set(90.0, forKey: "defaultRestTime")
+        settingsDefaults.set("rings", forKey: "home.cards")
+        settingsDefaults.set(10, forKey: "home.weeklySetTargetLow")
+        let data = try settingsBackupData(values: [
+            "appGroup": ["ironAppearance": 42, "logRPE": 1,
+                         "maxRepetitionsOneRepMax": true, "defaultRestTime": true,
+                         "weightUnit": WeightUnit.metric.rawValue, "autoBackup": true],
+            "standard": ["home.cards": ["bars"], "home.weeklySetTargetLow": 12.5,
+                         "home.weeklySetTargetHigh": 25]
+        ])
+        try restoreSettingsBackup(data)
+        XCTAssertEqual(userDefaults.string(forKey: "ironAppearance"), "light")
+        XCTAssertFalse(userDefaults.bool(forKey: "logRPE"))
+        XCTAssertEqual(userDefaults.integer(forKey: "maxRepetitionsOneRepMax"), 7)
+        XCTAssertEqual(userDefaults.double(forKey: "defaultRestTime"), 90)
+        XCTAssertEqual(userDefaults.string(forKey: "weightUnit"), WeightUnit.metric.rawValue)
+        XCTAssertTrue(userDefaults.bool(forKey: "autoBackup"))
+        XCTAssertEqual(settingsDefaults.string(forKey: "home.cards"), "rings")
+        XCTAssertEqual(settingsDefaults.integer(forKey: "home.weeklySetTargetLow"), 10)
+        XCTAssertEqual(settingsDefaults.integer(forKey: "home.weeklySetTargetHigh"), 25)
+    }
+
+    func testVersionSixBackupLeavesSettingsUntouchedEvenWithSettingsPayload() throws {
+        let data = try settingsBackupData(values: [
+            "appGroup": ["ironAppearance": "dark"], "standard": ["home.cards": "bars"]
+        ])
+        var archive = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        archive["version"] = 6
+        userDefaults.set("light", forKey: "ironAppearance")
+        settingsDefaults.set("rings", forKey: "home.cards")
+        try restoreSettingsBackup(JSONSerialization.data(withJSONObject: archive))
+        XCTAssertEqual(userDefaults.string(forKey: "ironAppearance"), "light")
+        XCTAssertEqual(settingsDefaults.string(forKey: "home.cards"), "rings")
+
+        archive.removeValue(forKey: "appSettingsData")
+        try restoreSettingsBackup(JSONSerialization.data(withJSONObject: archive))
+        XCTAssertEqual(userDefaults.string(forKey: "ironAppearance"), "light")
+        XCTAssertEqual(settingsDefaults.string(forKey: "home.cards"), "rings")
+    }
+
+    func testSettingsExportExcludesNonAllowlistedDefaults() throws {
+        let excluded = ["activeWorkout", "restTimerStart", "restTimerDuration", "recentRestTimes",
+                        "healthTestMode", "didMigrateSettingsToAppGroup", "tipsSeen",
+                        "watchWorkoutEventLedger.v1", "plateCalculator.mergeWatermarks.v1", "unknownSetting"]
+        for key in excluded {
+            userDefaults.set("private", forKey: key)
+            settingsDefaults.set("private", forKey: key)
+        }
+        // Domain identity matters even when a name is allowlisted elsewhere.
+        settingsDefaults.set("metric", forKey: "weightUnit")
+        userDefaults.set("bars", forKey: "home.cards")
+        settingsDefaults.set("recent", forKey: "home.cards")
+        let data = try settingsBackupData()
+        let archive = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let blob = try XCTUnwrap((archive["appSettingsData"] as? String).flatMap { Data(base64Encoded: $0) })
+        let settings = try XCTUnwrap(PropertyListSerialization.propertyList(from: blob, format: nil) as? [String: [String: Any]])
+        for key in excluded {
+            XCTAssertNil(settings["standard"]?[key], key)
+            XCTAssertNil(settings["appGroup"]?[key], key)
+        }
+        XCTAssertNil(settings["standard"]?["weightUnit"])
+        XCTAssertNil(settings["appGroup"]?["home.cards"])
+        XCTAssertEqual(settings["standard"]?["home.cards"] as? String, "recent")
+    }
+
+    func testFailedParentSaveLeavesAppSettingsUntouched() throws {
+        let data = try settingsBackupData(values: [
+            "appGroup": ["ironAppearance": "dark"], "standard": ["home.cards": "bars"]
+        ])
+        userDefaults.set("light", forKey: "ironAppearance")
+        settingsDefaults.set("rings", forKey: "home.cards")
+        enum SaveFailure: Error { case expected }
+        XCTAssertThrowsError(try IronBackup.restoreBackupData(data: data,
+            managedObjectContext: persistenContainer.viewContext, exerciseStore: exerciseStore,
+            userDefaults: userDefaults, trackingDefaults: userDefaults, notesDefaults: userDefaults,
+            settingsDefaults: settingsDefaults, saveParent: { _ in throw SaveFailure.expected }))
+        XCTAssertEqual(userDefaults.string(forKey: "ironAppearance"), "light")
+        XCTAssertEqual(settingsDefaults.string(forKey: "home.cards"), "rings")
+    }
+
+    func testRestoredSettingsRefreshLiveStoreAndRequestWatchProjectionSync() throws {
+        let store = SettingsStore(userDefaults: userDefaults)
+        let refreshed = expectation(description: "Live settings refresh")
+        var liveUnit: WeightUnit?
+        let observation = store.objectWillChange.first().sink {
+            liveUnit = store.weightUnit
+            refreshed.fulfill()
+        }
+        let watchRefresh = expectation(description: "Existing Watch preference path rebuilds projections")
+        let queue = DispatchQueue(label: "test.appSettings.watchSync")
+        let sync = WatchPreferenceSyncManager(defaults: settingsDefaults, queue: queue,
+            transmit: { _ in true }, didChangeLocally: { changes in
+                if changes.contains(.tracking) { watchRefresh.fulfill() }
+            })
+        let data = try settingsBackupData(values: ["appGroup": ["weightUnit": WeightUnit.imperial.rawValue]])
+        try restoreSettingsBackup(data)
+        queue.sync { sync.flush() }
+        wait(for: [refreshed, watchRefresh], timeout: 2)
+        XCTAssertEqual(liveUnit, .imperial)
+        withExtendedLifetime(observation) {}
+        withExtendedLifetime(sync) {}
+    }
+
+    private func settingsBackupData(values: [String: [String: Any]]? = nil) throws -> Data {
+        let data = try IronBackup.createBackupData(managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults,
+            trackingDefaults: userDefaults, notesDefaults: userDefaults, settingsDefaults: settingsDefaults)
+        guard let values else { return data }
+        var archive = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        archive["appSettingsData"] = try PropertyListSerialization.data(
+            fromPropertyList: values, format: .binary, options: 0).base64EncodedString()
+        return try JSONSerialization.data(withJSONObject: archive)
+    }
+
+    private func restoreSettingsBackup(_ data: Data) throws {
+        try IronBackup.restoreBackupData(data: data, managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore, userDefaults: userDefaults,
+            trackingDefaults: userDefaults, notesDefaults: userDefaults, settingsDefaults: settingsDefaults)
     }
 
     private func modifiedBackupData(

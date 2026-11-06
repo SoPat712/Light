@@ -22,6 +22,10 @@ private enum ExerciseMediaPipeline {
     }()
 
     static func image(url: URL, animated: Bool, targetPixelSize: CGFloat) async -> UIImage? {
+        #if DEBUG
+        // Screenshot runs leave exercise art out, so every thumbnail shows the neutral figure.
+        if ProcessInfo.processInfo.arguments.contains("-ironHideExerciseArt") { return nil }
+        #endif
         let normalizedTarget = min(max(Int(targetPixelSize.rounded(.up)), 1), 1_200)
         let key = "\(url.absoluteString)|\(animated ? "animated" : "still")|\(normalizedTarget)" as NSString
         if let cached = decodedImages.object(forKey: key) {
@@ -169,19 +173,6 @@ private enum ExerciseMediaPipeline {
     }
 }
 
-private final class ExercisePDFFrameCache {
-    final class Entry {
-        let images: [UIImage]
-
-        init(images: [UIImage]) {
-            self.images = images
-        }
-    }
-
-    static let shared = ExercisePDFFrameCache()
-    let entries = NSCache<NSString, Entry>()
-}
-
 struct ExerciseRemoteMediaView: UIViewRepresentable {
     let url: URL
     var animated = false
@@ -261,13 +252,14 @@ struct ExerciseDetailView : View {
     @EnvironmentObject var exerciseStore: ExerciseStore
     @Environment(\.managedObjectContext) var managedObjectContext
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .title) private var scaledHeaderThumbnailSize: CGFloat = 88
     var exercise: Exercise
     
     @ObservedObject private var exerciseNotesCache = ExerciseNotes.cache
+    @ObservedObject private var historyStore = TrainingHistoryStore.shared
     @State private var showingNoteEditor = false
     @State private var showingEditExercise = false
     @State private var showingMedia = false
-    @State private var loadedRemoteMediaURL: URL?
     @State private var historyDestination: HistoryDestination?
 
     private enum HistoryDestination: Hashable {
@@ -300,135 +292,6 @@ struct ExerciseDetailView : View {
         exerciseStore.find(with: exercise.uuid) ?? exercise
     }
 
-    private var currentRemoteMediaURL: URL? {
-        currentExercise.animationURL ?? currentExercise.imageURL
-    }
-
-    private func pdfToImage(url: URL, fit: CGSize) -> UIImage? {
-        guard fit.width.isFinite,
-              fit.height.isFinite,
-              fit.width > 0,
-              fit.height > 0 else { return nil }
-        guard let document = CGPDFDocument(url as CFURL) else { return nil }
-        guard let page = document.page(at: 1) else { return nil }
-        
-        let pageRect = page.getBoxRect(.mediaBox)
-        guard pageRect.width > 0, pageRect.height > 0 else { return nil }
-        let scale = min(fit.width / pageRect.width, fit.height / pageRect.height)
-        let size = CGSize(width: pageRect.width * scale, height: pageRect.height * scale)
-        guard scale.isFinite,
-              scale > 0,
-              size.width.isFinite,
-              size.height.isFinite,
-              size.width > 0,
-              size.height > 0 else { return nil }
-        
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let img = renderer.image { ctx in
-            // flip
-            ctx.cgContext.translateBy(x: 0, y: size.height)
-            ctx.cgContext.scaleBy(x: 1, y: -1)
-            
-            // aspect fit
-            ctx.cgContext.scaleBy(x: scale, y: scale)
-            
-            // draw
-            ctx.cgContext.drawPDFPage(page)
-        }
-        
-        return img
-    }
-
-    private func exerciseImages(width: CGFloat, height: CGFloat) -> [UIImage] {
-        let cacheKey = "\(currentExercise.uuid.uuidString)|\(Int(width.rounded(.up)))x\(Int(height.rounded(.up)))" as NSString
-        if let cached = ExercisePDFFrameCache.shared.entries.object(forKey: cacheKey) {
-            return cached.images
-        }
-
-        let images = currentExercise.pdfPaths
-            .map { ExerciseStore.defaultBuiltInExercisesResourceURL.appendingPathComponent($0) }
-            .compactMap { pdfToImage(url: $0, fit: CGSize(width: width, height: height)) }
-            // The diagram always sits on a white media canvas. Dynamic
-            // `label` becomes white in dark mode and made the fallback
-            // illustration disappear whenever remote media was unavailable.
-            .compactMap { $0.tinted(with: UIColor(white: 0.18, alpha: 1)) }
-
-        ExercisePDFFrameCache.shared.entries.setObject(
-            ExercisePDFFrameCache.Entry(images: images),
-            forKey: cacheKey
-        )
-        return images
-    }
-    
-    /// The provider's diagram canvas is intentionally fixed white; the media
-    /// keeps a continuous corner and no decorative stroke so it reads as a hero
-    /// rather than another bordered card.
-    private var mediaHero: some View {
-        GeometryReader { geometry in
-            ZStack {
-                IronTheme.diagramCanvas
-
-                if currentRemoteMediaURL == nil || loadedRemoteMediaURL != currentRemoteMediaURL {
-                    if currentRemoteMediaURL == nil, !currentExercise.pdfPaths.isEmpty {
-                        AnimatedImageView(
-                            uiImages: exerciseImages(width: geometry.size.width, height: geometry.size.height),
-                            duration: 2,
-                            contentKey: currentExercise.uuid.uuidString
-                        )
-                        .padding(16)
-                    } else {
-                        Image(systemName: "figure.strengthtraining.traditional")
-                            .font(.system(size: 72, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if let animationURL = currentExercise.animationURL {
-                    ExerciseRemoteMediaView(
-                        url: animationURL,
-                        animated: true,
-                        targetPixelSize: min(geometry.size.width * UIScreen.main.scale, 1_200),
-                        onLoaded: { loadedRemoteMediaURL = animationURL }
-                    )
-                    // Match the thumbnail's conservative optical fit. Some
-                    // animation frames extend farther than their first frame,
-                    // especially on cable and machine exercises.
-                    .scaleEffect(0.69)
-                } else if let imageURL = currentExercise.imageURL {
-                    ExerciseRemoteMediaView(
-                        url: imageURL,
-                        animated: false,
-                        targetPixelSize: min(geometry.size.width * UIScreen.main.scale, 1_200),
-                        onLoaded: { loadedRemoteMediaURL = imageURL }
-                    )
-                    .scaleEffect(0.69)
-                }
-            }
-        }
-        .frame(height: 240)
-        .clipShape(RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
-        .overlay(alignment: .bottomTrailing) {
-            if currentRemoteMediaURL != nil {
-                Link(destination: URL(string: "https://gymvisual.com/")!) {
-                    Text(Exercise.mediaAttribution)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 6)
-                        .background(.ultraThinMaterial, in: Capsule(style: .continuous))
-                }
-                .tint(.secondary)
-                .padding(10)
-                .accessibilityLabel("Exercise media by Gym Visual")
-            }
-        }
-        .onChange(of: currentRemoteMediaURL) { _, newURL in
-            if loadedRemoteMediaURL != newURL {
-                loadedRemoteMediaURL = nil
-            }
-        }
-    }
-
     var body: some View {
         List {
             Section {
@@ -437,24 +300,38 @@ struct ExerciseDetailView : View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
 
-                ExerciseInlineProgressView(
-                    exercise: currentExercise,
-                    onOpenWorkout: { workout in
-                        historyDestination = .workout(workout)
-                    },
-                    onShowAllHistory: {
-                        historyDestination = .allSessions
-                    }
-                )
+                ExerciseInlineProgressView(exercise: currentExercise)
                     .id(currentExercise.uuid)
                     .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
 
+                if let bests = historyStore.snapshot.exerciseBests[currentExercise.uuid], !bests.isEmpty {
+                    ExerciseBestsCard(bests: bests, weightUnit: settingsStore.weightUnit) { workoutID in
+                        guard let workout = try? managedObjectContext.existingObject(with: workoutID) as? Workout else { return }
+                        historyDestination = .workout(workout)
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                }
+            }
+
+            ExerciseRecentHistorySection(
+                exercise: currentExercise,
+                onOpenWorkout: { workout in
+                    historyDestination = .workout(workout)
+                },
+                onShowAllHistory: {
+                    historyDestination = .allSessions
+                }
+            )
+            .id(currentExercise.uuid)
+
+            Section {
                 ExerciseTargetMuscleMap(
                     primary: primaryMapMuscles,
-                    secondary: secondaryMapMuscles,
-                    equipment: currentExercise.equipment.map(\.equipmentTitle)
+                    secondary: secondaryMapMuscles
                 )
                 .id(currentExercise.uuid)
                 .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
@@ -464,23 +341,24 @@ struct ExerciseDetailView : View {
 
             Section {
                 Button { showingNoteEditor = true } label: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("Exercise Note", systemImage: "pin")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(IronTheme.primaryText)
-                        Text(ExerciseNotes.note(for: currentExercise.uuid) ?? "Add a cue, setup, or reminder…")
-                            .font(.subheadline)
-                            .foregroundStyle(IronTheme.secondaryText)
-                            .lineLimit(4)
-                        Text(ExerciseNotes.note(for: currentExercise.uuid) == nil ? "Add Note" : "Edit Note")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(IronTheme.accent)
+                    Group {
+                        if let note = ExerciseNotes.note(for: currentExercise.uuid) {
+                            Text(note)
+                                .font(.subheadline)
+                                .lineLimit(4)
+                                .foregroundStyle(IronTheme.primaryText)
+                        } else {
+                            Label("Add Note", systemImage: "pin")
+                                .foregroundStyle(IronTheme.accent)
+                        }
                     }
                     .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityHint("Shown every time you use this exercise")
+                .accessibilityLabel(ExerciseNotes.note(for: currentExercise.uuid) == nil ? "Add Note" : "Exercise Note")
+                .accessibilityValue(ExerciseNotes.note(for: currentExercise.uuid) ?? "")
+                .accessibilityHint("Opens the note editor. Shown every time you use this exercise")
             } footer: {
                 Text("Shown in every workout that includes this exercise.")
             }
@@ -536,6 +414,7 @@ struct ExerciseDetailView : View {
             }
         }
         .listStyle(.insetGrouped)
+        .task { historyStore.observe(in: managedObjectContext) }
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
         }
@@ -566,21 +445,7 @@ struct ExerciseDetailView : View {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showingMedia) {
-            NavigationStack {
-                mediaHero
-                    .padding(IronTheme.horizontalPadding)
-                    .navigationTitle(currentExercise.title)
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Close", systemImage: "xmark") { showingMedia = false }
-                                .labelStyle(.iconOnly)
-                                .accessibilityLabel("Close exercise media")
-                        }
-                    }
-            }
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
+            ExerciseMediaSheet(exercise: currentExercise)
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -625,29 +490,21 @@ struct ExerciseDetailView : View {
     }
 
     private var exerciseHeader: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(currentExercise.title)
-                    .font(.title.bold())
-                    .accessibilityAddTraits(.isHeader)
-                    .foregroundStyle(IronTheme.primaryText)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(headerSubtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        let thumbnailSize = min(scaledHeaderThumbnailSize, 120)
+        let badgeScale = thumbnailSize / 88
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: 14))
 
+        return layout {
             Button { showingMedia = true } label: {
-                ExerciseDiagramThumbnail(exercise: currentExercise, size: 60)
+                ExerciseDiagramThumbnail(exercise: currentExercise, size: thumbnailSize)
                     .overlay(alignment: .bottomTrailing) {
-                        if currentExercise.animationURL != nil || (currentRemoteMediaURL == nil && currentExercise.pdfPaths.count > 1) {
+                        if currentExercise.hasPlayableDemonstration {
                             Image(systemName: "play.fill")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.system(size: 11 * badgeScale, weight: .bold))
                                 .foregroundStyle(IronTheme.onAccent)
-                                .frame(width: 22, height: 22)
+                                .frame(width: 28 * badgeScale, height: 28 * badgeScale)
                                 .background(IronTheme.accent, in: Circle())
                                 .overlay(Circle().stroke(IronTheme.background, lineWidth: 2))
                         }
@@ -655,13 +512,27 @@ struct ExerciseDetailView : View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("View demonstration of \(currentExercise.title)")
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(currentExercise.title)
+                    .font(.title.bold())
+                    .accessibilityAddTraits(.isHeader)
+                    .foregroundStyle(IronTheme.primaryText)
+                    // The page has no navigation title, so the name always shows in full.
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(headerSubtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(4)
     }
 
     private var headerSubtitle: String {
         [currentExercise.equipment.map(\.equipmentTitle).joined(separator: ", "),
-         currentExercise.primaryMuscle.map { $0.capitalized }.joined(separator: ", ")]
+         Exercise.displayName(forMuscleGroup: currentExercise.muscleGroup)]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
     }
@@ -702,6 +573,121 @@ struct ExerciseDetailView : View {
 
 }
 
+private struct ExerciseBestsCard: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let bests: ExerciseBests
+    let weightUnit: WeightUnit
+    let onOpenWorkout: (NSManagedObjectID) -> Void
+
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), alignment: .topLeading), count: dynamicTypeSize.isAccessibilitySize ? 1 : 2)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Bests")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(IronTheme.primaryText)
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
+                ForEach(ExerciseBests.Kind.allCases) { kind in
+                    if let best = bests[kind] {
+                        Button { onOpenWorkout(best.workoutID) } label: {
+                            tile(kind, best: best)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(accessibilityLabel(kind, best: best))
+                        .accessibilityHint("Opens the workout")
+                    } else {
+                        tile(kind, best: nil)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("\(kind.title), no completed result")
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
+    }
+
+    private func tile(_ kind: ExerciseBests.Kind, best: ExerciseBests.Best?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(kind.title)
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
+                if let best, isNew(best.date) {
+                    Text("New")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(IronTheme.metricRecord)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(IronTheme.metricRecordContainer, in: Capsule())
+                }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(best.map { value(kind, best: $0) } ?? "—")
+                    .font(.ironMetric(.title3, weight: .semibold))
+                    .foregroundStyle(IronTheme.primaryText)
+                if best != nil {
+                    Text(kind == .mostReps ? "reps" : weightUnit.unit.symbol)
+                        .font(.footnote)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+            }
+            if let best {
+                Text(detail(kind, best: best))
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .topLeading)
+        .contentShape(Rectangle())
+    }
+
+    private func isNew(_ date: Date) -> Bool {
+        let now = Date()
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
+        return date >= cutoff && date <= now
+    }
+
+    private func weight(_ kilograms: Double) -> String {
+        let display = WeightUnit.convert(weight: kilograms, from: .metric, to: weightUnit)
+        return weightUnit.displayNumberFormatter.string(from: NSNumber(value: display)) ?? "—"
+    }
+
+    private func value(_ kind: ExerciseBests.Kind, best: ExerciseBests.Best) -> String {
+        if kind == .mostReps { return "\(best.repetitions)" }
+        if kind == .sessionVolume {
+            return WorkoutPreviewFormatting.volume(WeightUnit.convert(weight: best.value, from: .metric, to: weightUnit))
+        }
+        return weight(best.value)
+    }
+
+    private func detail(_ kind: ExerciseBests.Kind, best: ExerciseBests.Best) -> String {
+        let date = best.date.formatted(.dateTime.month(.abbreviated).day())
+        switch kind {
+        case .heaviest: return "× \(best.repetitions) · \(date)"
+        case .estimatedOneRepMax: return "from \(weight(best.weight)) × \(best.repetitions) · \(date)"
+        case .mostReps: return "× \(weight(best.weight)) \(weightUnit.unit.symbol) · \(date)"
+        case .sessionVolume: return date
+        }
+    }
+
+    private func accessibilityLabel(_ kind: ExerciseBests.Kind, best: ExerciseBests.Best) -> String {
+        let unit = weightUnit == .metric ? "kilograms" : "pounds"
+        let result: String
+        switch kind {
+        case .heaviest: result = "\(weight(best.value)) \(unit) for \(best.repetitions) reps"
+        case .estimatedOneRepMax: result = "estimated one rep max \(weight(best.value)) \(unit), from \(weight(best.weight)) \(unit) for \(best.repetitions) reps"
+        case .mostReps: result = "\(best.repetitions) reps at \(weight(best.weight)) \(unit)"
+        case .sessionVolume: result = "\(weight(best.value)) \(unit) total volume"
+        }
+        return "\(kind.title), \(result), \(best.date.formatted(.dateTime.month(.wide).day()))\(isNew(best.date) ? ", new record" : "")"
+    }
+}
+
 /// T3 owns the hold gate in an app-local UIKit overlay. Its long press does not
 /// recognize until 0.25 s, so a pre-hold vertical drag can remain with the List;
 /// once recognized, the same recognizer supplies continuous scrub locations.
@@ -710,7 +696,6 @@ private struct ExerciseTargetMuscleMap: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let primary: [Muscle]
     let secondary: [Muscle]
-    let equipment: [String]
 
     @State private var selectedMuscle: Muscle?
     @State private var selectedSide: BodySide?
@@ -724,10 +709,9 @@ private struct ExerciseTargetMuscleMap: View {
     private var accessibilitySummary: String {
         let primaryNames = primary.map(\.displayName).joined(separator: ", ")
         let secondaryNames = secondary.map(\.displayName).joined(separator: ", ")
-        let targets = hasMuscles
+        return hasMuscles
             ? "Target muscles. Primary: \(primaryNames.isEmpty ? "None" : primaryNames). Secondary: \(secondaryNames.isEmpty ? "None" : secondaryNames)."
             : "No target muscles listed."
-        return targets + (equipment.isEmpty ? "" : " Equipment: \(equipment.joined(separator: ", ")).")
     }
 
     var body: some View {
@@ -759,17 +743,7 @@ private struct ExerciseTargetMuscleMap: View {
                     .foregroundStyle(IronTheme.secondaryText)
             }
 
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 12) {
-                    if hasMuscles { legends }
-                    Spacer(minLength: 0)
-                    equipmentChips
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    if hasMuscles { legends }
-                    equipmentChips
-                }
-            }
+            if hasMuscles { legends }
         }
         .padding(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -836,19 +810,6 @@ private struct ExerciseTargetMuscleMap: View {
             Text(title).font(.caption)
         }
         .foregroundStyle(IronTheme.secondaryText)
-    }
-
-    private var equipmentChips: some View {
-        ExerciseChipFlowLayout(spacing: 6) {
-            ForEach(equipment, id: \.self) { name in
-                Text(name)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(IronTheme.primaryText)
-                    .padding(.horizontal, 8)
-                    .frame(minHeight: 24)
-                    .background(IronTheme.tertiaryFill, in: Capsule())
-            }
-        }
     }
 
     private func bodyColumn(side: BodySide, title: String) -> some View {

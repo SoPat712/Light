@@ -2388,6 +2388,125 @@ final class DurableWorkoutHealthExportTests: XCTestCase {
         XCTAssertEqual(requested, [native.uuid!])
     }
 
+    func testSuccessfulPhoneExportSyncsEffortAfterPersistingExportedState() throws {
+        let workout = workout()
+        workout.sessionEffortValue = 8
+        try container.viewContext.save()
+        var events: [String] = []
+        let manager = HealthManager(workoutWriter: { _, completion in
+            events.append("workout")
+            completion(.success(.saved))
+        }, workoutEffortWriter: { request, completion in
+            events.append("effort")
+            XCTAssertEqual(request.uuid, workout.uuid)
+            XCTAssertEqual(request.rating, 8)
+            XCTAssertEqual(try? self.storedState(workout), "exported")
+            completion(.success(()))
+        })
+        let done = expectation(description: "Export and effort completed")
+        manager.syncWorkoutIfNeeded(workout: workout, exerciseStore: .shared) { result in
+            guard case .success(.saved) = result else { XCTFail("Workout export failed"); done.fulfill(); return }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 2)
+        XCTAssertEqual(events, ["workout", "effort"])
+    }
+
+    func testEffortEditsAndClearingDoNotScheduleAWorkoutExport() throws {
+        let workout = workout(state: "watch")
+        try container.viewContext.save()
+        var ratings: [Double?] = []
+        let manager = HealthManager(workoutWriter: { _, _ in XCTFail("Effort must not export an HKWorkout") },
+                                    workoutEffortWriter: { request, completion in
+            ratings.append(request.rating)
+            completion(.success(()))
+        })
+        for rating in [7, 9, nil] as [Double?] {
+            workout.sessionEffortValue = rating
+            try container.viewContext.save()
+            let done = expectation(description: "Effort edit completed")
+            manager.syncWorkoutEffort(workout: workout) { done.fulfill() }
+            wait(for: [done], timeout: 2)
+        }
+        XCTAssertEqual(ratings, [7, 9, nil])
+        XCTAssertEqual(try storedState(workout), "watch")
+    }
+
+    func testBackfillIncludesWatchEffortAndRepeatedPassDoesNotDuplicate() throws {
+        let phone = workout(state: "exported")
+        let watch = workout(state: "watch")
+        let imported = workout(source: "hevy")
+        let test = workout(state: "test")
+        for row in [phone, watch, imported, test] { row.sessionEffortValue = 7 }
+        try container.viewContext.save()
+        var phoneExports: [UUID] = []
+        var effortRequests: [UUID] = []
+        var savedEffort: [UUID: HealthManager.OwnedWorkoutEffortSample] = [:]
+        var effortSaveCount = 0
+        let manager = HealthManager(workoutWriter: { request, completion in
+            phoneExports.append(request.uuid)
+            completion(.success(.alreadyPresent))
+        }, workoutEffortWriter: { request, completion in
+            effortRequests.append(request.uuid)
+            let action = HealthManager.workoutEffortAction(
+                eligibility: .eligible, exportState: nil, testMode: false, canShare: true, rating: request.rating,
+                healthWorkoutStart: phone.start, healthWorkoutEnd: phone.end,
+                ownedSamples: savedEffort[request.uuid].map { [$0] } ?? []
+            )
+            if case .save(let rating, _) = action {
+                effortSaveCount += 1
+                savedEffort[request.uuid] = .init(id: UUID(), rating: rating, start: phone.start!, end: phone.end!)
+            }
+            completion(.success(()))
+        })
+        for _ in 0..<2 {
+            let done = expectation(description: "Effort backfill completed")
+            manager.updateHealthWorkouts(managedObjectContext: container.viewContext, exerciseStore: .shared) { result in
+                guard case .success = result else { XCTFail("Backfill failed"); done.fulfill(); return }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 2)
+        }
+        XCTAssertEqual(phoneExports, [phone.uuid!, phone.uuid!])
+        XCTAssertEqual(effortRequests.count, 4)
+        XCTAssertEqual(Set(effortRequests), Set([phone.uuid!, watch.uuid!]))
+        XCTAssertEqual(effortSaveCount, 2, "One effort sample per workout across repeated backfills")
+    }
+
+    func testLateWatchRatingSyncsOnlyAfterTheFinishMutationIsSaved() throws {
+        let workout = workout(state: "watch")
+        try container.viewContext.save()
+        var effortWrites = 0
+        let manager = HealthManager(workoutWriter: { _, _ in XCTFail("Watch owns its HKWorkout") },
+                                    workoutEffortWriter: { request, completion in
+            effortWrites += 1
+            XCTAssertEqual(request.rating, 9)
+            XCTAssertEqual(try? self.storedState(workout), "watch")
+            completion(.success(()))
+        })
+        let event = WatchWorkoutEvent(workoutID: workout.uuid!, sequence: 2, kind: .workoutFinished,
+            startDate: workout.start, endDate: workout.end, sessionEffort: 9,
+            fieldChanges: WatchWorkoutFieldChanges())
+        XCTAssertThrowsError(try WatchConnectionManager.commitWatchEventMutation(in: container.viewContext,
+            save: { throw Failure.save }, mutation: {
+                try WatchConnectionManager.shared.applyWatchEventModelMutation(event, to: workout,
+                    in: self.container.viewContext, healthManager: manager)
+            }, didPersist: {}))
+        XCTAssertEqual(effortWrites, 0)
+        XCTAssertNil(workout.sessionEffortValue)
+
+        try WatchConnectionManager.commitWatchEventMutation(in: container.viewContext,
+            save: { try self.container.viewContext.save() }, mutation: {
+                try WatchConnectionManager.shared.applyWatchEventModelMutation(event, to: workout,
+                    in: self.container.viewContext, healthManager: manager)
+            }, didPersist: {})
+        let done = expectation(description: "Deferred Watch effort drained")
+        manager.syncWorkoutIfNeeded(workout: workout, exerciseStore: .shared) { _ in done.fulfill() }
+        wait(for: [done], timeout: 2)
+        XCTAssertEqual(workout.sessionEffortValue, 9)
+        XCTAssertEqual(effortWrites, 2, "Deferred finish and idempotent manual reconciliation both sync effort")
+    }
+
     #if DEBUG
     func testBothPhoneStartTransactionsPersistTestProvenanceBeforeSideEffects() throws {
         SettingsStore.shared.healthTestMode = true
@@ -2678,8 +2797,9 @@ final class ExerciseRecencyTests: XCTestCase {
         XCTAssertEqual(ExerciseRecency.ordered(input, dates: dates),
                        [barbell, alias, dumbbell, unseenZ, unrelated, unseenA])
         let matches = ExerciseStore.filter(exercises: input, using: "bench")
+        // Search ranks equal matches alphabetically, so unseen ties no longer keep input order.
         XCTAssertEqual(ExerciseRecency.ordered(matches, dates: dates),
-                       [barbell, alias, dumbbell, unseenZ, unseenA])
+                       [barbell, alias, dumbbell, unseenA, unseenZ])
     }
 
     @MainActor

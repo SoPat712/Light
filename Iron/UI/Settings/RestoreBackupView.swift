@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 import WorkoutDataKit
 
 struct RestoreBackupView: View {
@@ -30,43 +31,57 @@ struct RestoreBackupView: View {
 
     @State private var activeModal: BackupModal?
     @State private var modalAfterDismiss: BackupModal?
+    @ObservedObject private var dataActions = SettingsDataActionCoordinator.shared
     @State private var isRestoring = false
+    @State private var restoringURL: URL?
+    @State private var pickedBackupURL: URL?
+    @State private var isPreparingFile = false
+    @State private var preparationFeedback = 0
+    @State private var successFeedback = 0
+    @State private var errorFeedback = 0
+    @State private var isShowingFileImporter = false
+
+    private static let backupFileTypes: [UTType] = [UTType("com.kabouzeid.ironbackup"), .json].compactMap { $0 }
 
     var body: some View {
         List {
             Section {
+                Button { isShowingFileImporter = true } label: {
+                    SettingsActionLabel("Choose Backup File", systemImage: "folder.fill", tint: IronTheme.accent,
+                                        trailingSymbol: "doc.badge.arrow.up",
+                                        isPreparing: isPreparingFile || (isRestoring && restoringURL == pickedBackupURL))
+                }
+                .accessibilityLabel(isPreparingFile || (isRestoring && restoringURL == pickedBackupURL)
+                                    ? "Preparing Choose Backup File"
+                                    : "Choose Backup File, A .ironbackup file from Files or AirDrop")
+            } header: {
+                Text("From Files")
+            } footer: {
+                Text("Moving to a new Light app: in the old app, Share Full Backup and save it to Files, then choose it here.")
+            }
+
+            Section {
                 switch backupStore.loadState {
                 case .idle, .loading:
-                    HStack {
-                        ProgressView()
-                        Text("Checking iCloud Drive…")
-                            .foregroundStyle(.secondary)
+                    LabeledContent("Status") {
+                        HStack(spacing: 8) {
+                            Text("Checking iCloud Drive…")
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityHidden(true)
+                        }
                     }
 
-                case .unavailable(let message):
-                    ContentUnavailableView {
-                        Label("iCloud Drive Unavailable", systemImage: "icloud.slash.fill")
-                    } description: {
-                        Text(message)
-                    } actions: {
-                        Button("Try Again", action: backupStore.fetchBackups)
-                            .buttonStyle(.borderedProminent)
-                            .buttonBorderShape(.capsule)
-                            .controlSize(.large)
-                            .fixedSize(horizontal: false, vertical: true)
+                case .unavailable:
+                    LabeledContent("Status") {
+                        Text("iCloud Drive Unavailable")
+                            .foregroundStyle(IronTheme.danger)
                     }
-                    .frame(maxWidth: .infinity)
-                    .listRowBackground(Color.clear)
+                    Button("Try Again", action: backupStore.fetchBackups)
 
                 case .loaded:
                     if backupStore.backups.isEmpty {
-                        ContentUnavailableView {
-                            Label("No iCloud Backups", systemImage: "icloud.fill")
-                        } description: {
-                            Text("Create your first private backup, then return here whenever you need to restore it.")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .listRowBackground(Color.clear)
+                        LabeledContent("Status", value: "No iCloud Backups")
                     } else {
                         ForEach(backupStore.backups.indices, id: \.self) { index in
                             backupRow(backupStore.backups[index])
@@ -76,17 +91,47 @@ struct RestoreBackupView: View {
             } header: {
                 Text("iCloud Backups")
             } footer: {
-                Text("A restore replaces completed workouts, saved workouts, custom exercises, body measurements, and set tracking targets. Other settings and any workout in progress stay unchanged.")
+                if case .unavailable(let message) = backupStore.loadState {
+                    Text(message.replacingOccurrences(of: "Iron", with: "Light"))
+                } else {
+                    Text("Restoring replaces saved data and settings while keeping any workout in progress.")
+                }
             }
         }
+        .disabled(dataActions.isBusy || isPreparingFile)
+        .labeledContentStyle(SettingsValueStyle())
         .listStyle(.insetGrouped)
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
         }
-        .navigationTitle("Restore Backup")
+        .navigationTitle("Restore Light Backup")
         .navigationBarTitleDisplayMode(.inline)
         .ironScreen()
+        .sensoryFeedback(.impact(weight: .light), trigger: preparationFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
+        .sensoryFeedback(.success, trigger: successFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
+        .sensoryFeedback(.error, trigger: errorFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
         .onAppear(perform: backupStore.fetchBackups)
+        .fileImporter(isPresented: $isShowingFileImporter, allowedContentTypes: Self.backupFileTypes) { result in
+            if case .failure(let error) = result, (error as NSError).code == NSUserCancelledError { return }
+            isPreparingFile = true
+            Task { @MainActor in
+                let modal: BackupModal
+                do {
+                    let url = try result.get()
+                    let copy = try await Task.detached(priority: .userInitiated) {
+                        try Self.localCopy(of: url)
+                    }.value
+                    pickedBackupURL = copy
+                    modal = BackupModal(kind: .restoreConfirmation(copy))
+                } catch {
+                    errorFeedback += 1
+                    modal = BackupModal(kind: .restoreResult(.failure(error)))
+                }
+                isPreparingFile = false
+                // Let the picker finish dismissing before presenting the confirmation.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { activeModal = modal }
+            }
+        }
         .allowsHitTesting(!isRestoring)
         .overlay {
             if isRestoring {
@@ -173,14 +218,35 @@ struct RestoreBackupView: View {
         Button {
             activeModal = BackupModal(kind: .restoreConfirmation(backup.url))
         } label: {
-            SettingsSubpageLabel(
-                BackupFileStore.BackupFile.dateFormatter.string(from: backup.creationDate),
-                detail: "\(backup.deviceName) · \(BackupFileStore.BackupFile.byteCountFormatter.string(fromByteCount: Int64(backup.fileSize)))",
-                systemImage: "archivebox.fill",
-                tint: IronTheme.metricVolume
-            )
+            HStack(spacing: 12) {
+                SettingsRowIcon(systemImage: "archivebox.fill", tint: IronTheme.metricVolume)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isRestoring && restoringURL == backup.url
+                         ? "Preparing…"
+                         : BackupFileStore.BackupFile.dateFormatter.string(from: backup.creationDate))
+                        .font(.body)
+                        .foregroundStyle(isRestoring && restoringURL == backup.url ? IronTheme.secondaryText : IronTheme.primaryText)
+                    if !(isRestoring && restoringURL == backup.url) {
+                        Text("\(backup.deviceName) · \(BackupFileStore.BackupFile.byteCountFormatter.string(fromByteCount: Int64(backup.fileSize)))")
+                            .font(.subheadline)
+                            .foregroundStyle(IronTheme.secondaryText)
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                if isRestoring && restoringURL == backup.url {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(IronTheme.secondaryText)
+                        .accessibilityHidden(true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .accessibilityLabel(isRestoring && restoringURL == backup.url
+                            ? "Preparing Restore Backup, \(BackupFileStore.BackupFile.dateFormatter.string(from: backup.creationDate))"
+                            : "\(BackupFileStore.BackupFile.dateFormatter.string(from: backup.creationDate)), \(backup.deviceName), \(BackupFileStore.BackupFile.byteCountFormatter.string(fromByteCount: Int64(backup.fileSize)))")
         .swipeActions(edge: .trailing) {
             Button("Delete", systemImage: "trash", role: .destructive) {
                 activeModal = BackupModal(kind: .deleteConfirmation(backup.url))
@@ -196,23 +262,55 @@ struct RestoreBackupView: View {
         }
     }
 
+    /// A picked file is security-scoped, and the restore reads it later, so copy it while access lasts.
+    private nonisolated static func localCopy(of url: URL) throws -> URL {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("ironbackup")
+        try FileManager.default.copyItem(at: url, to: destination)
+        return destination
+    }
+
     private func restoreBackup(at url: URL) {
-        guard !isRestoring else { return }
+        guard !isRestoring, dataActions.begin(.restore) else { return }
+        preparationFeedback += 1
+        restoringURL = url
         isRestoring = true
         activeModal = nil
 
-        // Let the confirmation sheet finish dismissing and render the progress
-        // surface before the Core Data replacement starts on its required queue.
+        // Dismiss the confirmation and render progress before starting the replacement.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            RestoreActionSheet.restore(
-                context: managedObjectContext,
-                exerciseStore: exerciseStore,
-                data: { try Data(contentsOf: url) }
-            ) { result in
-                isRestoring = false
-                activeModal = BackupModal(kind: .restoreResult(result))
+            Task { @MainActor in
+                do {
+                    let data = try await Task.detached(priority: .userInitiated) {
+                        try Data(contentsOf: url)
+                    }.value
+                    // IronBackup.restoreBackupData owns a main-queue child context and
+                    // publishes shared stores. Its decoding/transaction must stay on main
+                    // until that API can support background preparation outside Settings.
+                    RestoreActionSheet.restore(
+                        context: managedObjectContext,
+                        exerciseStore: exerciseStore,
+                        data: { data },
+                        completion: finishRestoring
+                    )
+                } catch {
+                    finishRestoring(.failure(error))
+                }
             }
         }
+    }
+
+    private func finishRestoring(_ result: RestoreActionSheet.RestoreResult) {
+        dataActions.finish()
+        isRestoring = false
+        restoringURL = nil
+        switch result {
+        case .success: successFeedback += 1
+        case .failure: errorFeedback += 1
+        }
+        activeModal = BackupModal(kind: .restoreResult(result))
     }
 
     private func deleteBackup(at url: URL) {
@@ -242,7 +340,7 @@ enum RestoreActionSheet {
     typealias RestoreResult = Result<Void, Error>
 
     static let confirmationTitle = "Restore this backup?"
-    static let confirmationMessage = "Completed workouts, saved workouts, custom exercises, and saved body measurements will be replaced with the backup. Settings and any workout in progress stay unchanged. This cannot be undone."
+    static let confirmationMessage = "Completed workouts, saved workouts, custom exercises, saved body measurements, and the settings saved with the backup will be replaced. Any workout in progress stays unchanged. This cannot be undone."
 
     static func restore(
         context: NSManagedObjectContext,

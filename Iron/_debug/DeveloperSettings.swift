@@ -241,27 +241,32 @@ private enum PPLSampleProgram {
     private struct CatalogLookup {
         var titles = [String: Exercise]()
         var aliases = [String: Exercise]()
+        var displayTitles = [String: Exercise]()
 
         init(_ exercises: [Exercise]) {
             // Preserve catalog precedence when multiple entries share a name.
             for exercise in exercises.reversed() {
-                titles[ExerciseCatalogMetadata.nameKey(exercise.title)] = exercise
+                titles[ExerciseCatalogMetadata.nameKey(exercise.originalTitle)] = exercise
                 for alias in exercise.alias {
                     aliases[ExerciseCatalogMetadata.nameKey(alias)] = exercise
                 }
+                displayTitles[ExerciseCatalogMetadata.nameKey(exercise.title)] = exercise
             }
         }
     }
 
     private static func match(_ movement: Movement, in catalog: CatalogLookup) -> Exercise? {
         let names = movement.names.map(ExerciseCatalogMetadata.nameKey)
-        // Prefer exact bundled titles, then reviewed catalog aliases. Only reuse
-        // a custom exercise if none of the supplied built-in variants exists.
+        // Preserve source-title and reviewed-alias priority before trying new
+        // display titles. Only reuse a custom exercise after built-in variants.
         for name in names {
             if let exercise = catalog.titles[name] { return exercise }
         }
         for name in names {
             if let exercise = catalog.aliases[name] { return exercise }
+        }
+        for name in names {
+            if let exercise = catalog.displayTitles[name] { return exercise }
         }
         return nil
     }
@@ -518,7 +523,7 @@ enum IronImportedDataSmokeCheck {
             let initial = try HevyCSV.importData(csv(), into: context, exerciseStore: store, bodyMetricsStore: measurements)
             try require(initial.importedWorkouts == 1 && initial.importedSets == 1, "Import workout and set")
             let imported = try importedWorkout()
-            imported.title = "Renamed in Iron"
+            imported.title = "Renamed in Light"
             let native = Workout.create(context: context)
             native.title = "Native workout"
             native.start = Date(timeIntervalSince1970: 1_790_000_000)

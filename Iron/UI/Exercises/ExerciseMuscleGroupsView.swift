@@ -7,10 +7,11 @@
 //
 
 import SwiftUI
+import UIKit
+import Combine
 import WorkoutDataKit
 
 struct ExerciseMuscleGroupsView : View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject var exerciseStore: ExerciseStore
 
@@ -18,204 +19,316 @@ struct ExerciseMuscleGroupsView : View {
     @State private var selectedMuscleGroup: String? = nil
     @State private var selectedEquipment: String? = nil
     @State private var showingCreateExercise = false
-    @State private var showingHiddenExercises = false
-    @State private var showingCustomExercises = false
-    @State private var showingAllExercises = false
-
-    private var muscleGroups: [String] {
-        Array(Set(exerciseStore.shownExercises.map { $0.muscleGroup })).sorted()
-    }
-
-    private var equipment: [String] {
-        var counts: [String: Int] = [:]
-        exerciseStore.shownExercises.forEach { exercise in
-            exercise.equipment.forEach { counts[$0, default: 0] += 1 }
-        }
-        return counts.keys.sorted { (counts[$0] ?? 0) > (counts[$1] ?? 0) }
-    }
-
-    private var matchingExercises: [Exercise] {
-        let matches = ExerciseStore.filter(exercises: exerciseStore.shownExercises, using: search)
-            .filter { selectedMuscleGroup == nil || $0.muscleGroup == selectedMuscleGroup }
-            .filter { selectedEquipment == nil || $0.equipment.contains(selectedEquipment!) }
-            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        return exerciseStore.orderedByRecency(matches)
-    }
+    @StateObject private var catalogSearch = ExerciseCatalogSearch()
 
     private var hasActiveFilter: Bool {
         selectedMuscleGroup != nil || selectedEquipment != nil
     }
 
     var body: some View {
-        let matchingExercises = matchingExercises
-        let filteredExercises = exerciseStore.listed(matchingExercises, showingAll: showingAllExercises || !search.isEmpty)
-        let moreCount = matchingExercises.count - filteredExercises.count
-        List {
-            if filteredExercises.isEmpty {
-                emptyExerciseState
-            } else {
-                Section {
-                    ForEach(filteredExercises) { exercise in
-                        NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
-                            ExerciseLibraryRow(exercise: exercise)
-                        }
-                    }
-                    if moreCount > 0 {
-                        Button("Show \(moreCount.formatted()) More Exercises") { showingAllExercises = true }
-                            .foregroundStyle(IronTheme.accent)
-                    }
-                } header: {
-                    if hasActiveFilter {
-                        HStack {
-                            activeFilterSummaryView
-                            Spacer()
-                            Button("Clear") {
-                                selectedEquipment = nil
-                                selectedMuscleGroup = nil
-                            }
-                            .textCase(nil)
-                            .frame(minHeight: IronTheme.controlHeight)
-                        }
-                    }
-                } footer: {
-                    Text("^[\(filteredExercises.count) exercise](inflect: true)")
-                        .font(.footnote)
-                        .foregroundStyle(IronTheme.secondaryText)
-                }
+        indexedExerciseList
+        .listStyle(.insetGrouped)
+        .modifier(ExerciseLibraryChrome())
+        .onAppear { refreshCatalog() }
+        .onReceive(exerciseStore.objectWillChange) { _ in
+            // Read the published history after storage, even if this render replaces the subscription.
+            DispatchQueue.main.async { refreshCatalog() }
+        }
+        .onChange(of: [selectedMuscleGroup, selectedEquipment]) { _ in
+            catalogSearch.applyFilters(muscleGroup: selectedMuscleGroup, equipment: selectedEquipment)
+            if SettingsStore.shared.workoutHaptics {
+                UISelectionFeedbackGenerator().selectionChanged()
             }
         }
-        .listStyle(.insetGrouped)
-        .sensoryFeedback(.selection, trigger: [selectedMuscleGroup, selectedEquipment]) { _, _ in SettingsStore.shared.workoutHaptics }
-        .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: search)
+        .task(id: catalogSearch.request(for: search)) {
+            await catalogSearch.search(search)
+        }
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
         }
         .navigationTitle("Exercises")
-        .navigationBarTitleDisplayMode(.large)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Picker("Muscle", selection: $selectedMuscleGroup) {
-                        Text("All Muscles").tag(String?.none)
-                        ForEach(muscleGroups, id: \.self) { group in
-                            Text(group.capitalized).tag(String?.some(group))
-                        }
-                    }
-                } label: {
-                    Image(systemName: "figure.arms.open")
-                        .foregroundStyle(selectedMuscleGroup == nil ? IronTheme.primaryText : IronTheme.accent)
-                }
-                .accessibilityLabel("Filter by muscle group")
-                .accessibilityValue(selectedMuscleGroup?.capitalized ?? "All muscles")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Picker("Equipment", selection: $selectedEquipment) {
-                        Text("All Equipment").tag(String?.none)
-                        ForEach(equipment, id: \.self) { item in
-                            Text(item.equipmentTitle).tag(String?.some(item))
-                        }
-                    }
-                } label: {
-                    Image(systemName: "dumbbell")
-                        .foregroundStyle(selectedEquipment == nil ? IronTheme.primaryText : IronTheme.accent)
-                }
-                .accessibilityLabel("Filter by equipment")
-                .accessibilityValue(selectedEquipment?.equipmentTitle ?? "All equipment")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("Create Exercise", systemImage: "plus") {
-                        showingCreateExercise = true
-                    }
-
-                    Section("Library") {
-                        Button("Hidden (\(exerciseStore.hiddenExercises.count))", systemImage: "eye.slash") {
-                            showingHiddenExercises = true
-                        }
-                        Button("Custom (\(exerciseStore.customExercises.count))", systemImage: "square.grid.2x2") {
-                            showingCustomExercises = true
-                        }
-                    }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    showingCreateExercise = true
                 } label: {
                     Image(systemName: "plus")
                 }
-                .accessibilityLabel("Create exercise or manage library")
+                .accessibilityLabel("Create Exercise")
             }
         }
-        .searchable(text: $search, prompt: "Search exercises")
+        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search exercises")
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
         .sheet(isPresented: $showingCreateExercise) {
-            CreateCustomExerciseSheet(onDismiss: { showingCreateExercise = false })
+            let sheet = CreateCustomExerciseSheet(onDismiss: { showingCreateExercise = false })
                 .environmentObject(exerciseStore)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+            if #available(iOS 16, *) {
+                sheet
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            } else {
+                sheet
+            }
         }
-        .navigationDestination(isPresented: $showingHiddenExercises) {
-            HiddenExercisesView()
+    }
+
+    private func refreshCatalog() {
+        catalogSearch.refresh(exercises: exerciseStore.shownExercises, store: exerciseStore,
+                              muscleGroup: selectedMuscleGroup, equipment: selectedEquipment)
+    }
+
+    @ViewBuilder
+    private var indexedExerciseList: some View {
+        if #available(iOS 26, *) {
+            exerciseList
+                .listSectionIndexVisibility(.visible)
+        } else {
+            exerciseList
         }
-        .navigationDestination(isPresented: $showingCustomExercises) {
-            CustomExercisesView()
+    }
+
+    private var exerciseList: some View {
+        let candidates = catalogSearch.candidates
+        let results = catalogSearch.listing(for: search, showingAll: true).exercises
+        return List {
+            if search.isEmpty {
+                filterRow
+                if let candidates {
+                    if candidates.exercises.isEmpty {
+                        emptyExerciseState
+                    } else {
+                        if !candidates.recent.isEmpty {
+                            Section("Recent") {
+                                exerciseRows(candidates.recent)
+                            }
+                        }
+                        ForEach(candidates.sections, id: \.letter) { section in
+                            letterSection(section.letter, exercises: section.exercises)
+                        }
+                    }
+                }
+            } else {
+                Section {
+                    if results.isEmpty && catalogSearch.isSearching(search) {
+                        ProgressView("Searching Exercises…")
+                    } else if results.isEmpty {
+                        emptyExerciseState
+                    } else {
+                        exerciseRows(results)
+                    }
+                } header: {
+                    // A separate, headerless filter section reserved a large gap
+                    // before search results. Keep the filters in this header instead.
+                    filterControls
+                        .textCase(nil)
+                        .padding(.bottom, 8)
+                }
+            }
+
+            Section {
+                NavigationLink(destination: CustomExercisesView()) {
+                    libraryRowLabel("Custom Exercises", count: catalogSearch.catalog?.customCount ?? 0)
+                }
+                NavigationLink(destination: HiddenExercisesView()) {
+                    libraryRowLabel("Hidden Exercises", count: catalogSearch.catalog?.hiddenCount ?? 0)
+                }
+            } header: {
+                Text("Library")
+            } footer: {
+                exerciseCountFooter(search.isEmpty ? candidates?.exercises.count ?? 0 : results.count)
+            }
         }
+    }
+
+    @ViewBuilder
+    private func letterSection(_ letter: String, exercises: [Exercise]) -> some View {
+        let section = Section(letter) {
+            exerciseRows(exercises)
+        }
+
+        if #available(iOS 26, *) {
+            section.sectionIndexLabel(letter)
+        } else {
+            section
+        }
+    }
+
+    private func exerciseRows(_ exercises: [Exercise]) -> some View {
+        ForEach(exercises) { exercise in
+            NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
+                ExerciseLibraryRow(exercise: exercise)
+            }
+        }
+    }
+
+    private func exerciseCountFooter(_ count: Int) -> some View {
+        Text("^[\(count) exercise](inflect: true)")
+            .font(.ironMetric(.footnote, weight: .semibold))
+            .foregroundStyle(IronTheme.secondaryText)
+    }
+
+    private func libraryRowLabel(_ title: String, count: Int) -> some View {
+        HStack {
+            Text(title)
+                .foregroundStyle(IronTheme.primaryText)
+            Spacer()
+            Text(count.formatted())
+                .font(.ironMetric(.body, weight: .semibold))
+                .foregroundStyle(IronTheme.secondaryText)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue("^[\(count) exercise](inflect: true)")
+    }
+
+    private var filterRow: some View {
+        filterControls
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+    }
+
+    private var filterControls: some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 8) {
+                    muscleFilterMenu
+                    equipmentFilterMenu
+                }
+            } else {
+                HStack(spacing: 8) {
+                    muscleFilterMenu
+                    equipmentFilterMenu
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var muscleFilterMenu: some View {
+        Menu {
+            Picker("Muscle", selection: $selectedMuscleGroup) {
+                Text("All Muscles").tag(String?.none)
+                ForEach(catalogSearch.catalog?.muscleGroups ?? [], id: \.self) { group in
+                    Text(group.capitalized).tag(String?.some(group))
+                }
+            }
+        } label: {
+            filterLabel(selectedMuscleGroup?.capitalized ?? "All Muscles")
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .controlSize(.small)
+        .tint(selectedMuscleGroup == nil ? IronTheme.secondaryText : IronTheme.accent)
+        .frame(minHeight: IronTheme.controlHeight)
+        .accessibilityLabel("Filter by muscle group")
+        .accessibilityValue(selectedMuscleGroup?.capitalized ?? "All muscles")
+    }
+
+    private var equipmentFilterMenu: some View {
+        Menu {
+            Picker("Equipment", selection: $selectedEquipment) {
+                Text("All Equipment").tag(String?.none)
+                ForEach(catalogSearch.catalog?.equipment ?? [], id: \.self) { item in
+                    Text(item.equipmentTitle).tag(String?.some(item))
+                }
+            }
+        } label: {
+            filterLabel(selectedEquipment?.equipmentTitle ?? "All Equipment")
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .controlSize(.small)
+        .tint(selectedEquipment == nil ? IronTheme.secondaryText : IronTheme.accent)
+        .frame(minHeight: IronTheme.controlHeight)
+        .accessibilityLabel("Filter by equipment")
+        .accessibilityValue(selectedEquipment?.equipmentTitle ?? "All equipment")
+    }
+
+    private func filterLabel(_ title: String) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+            Image(systemName: "chevron.down")
+                .font(.caption.weight(.semibold))
+        }
+        .font(.subheadline)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
     private var emptyExerciseState: some View {
         let hasSearch = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        if hasSearch {
-            ContentUnavailableView.search(text: search)
-        } else if hasActiveFilter {
-            ContentUnavailableView {
-                Label("No matching exercises", systemImage: "line.3.horizontal.decrease")
-            } description: {
-                Text("Try a different muscle group or equipment.")
-            } actions: {
-                Button("Clear Filters") {
-                    selectedEquipment = nil
-                    selectedMuscleGroup = nil
+        if #available(iOS 17, *) {
+            if hasSearch {
+                ContentUnavailableView.search(text: search)
+            } else {
+                ContentUnavailableView {
+                    emptyExerciseLabel
+                } description: {
+                    emptyExerciseDescription
+                } actions: {
+                    if hasActiveFilter {
+                        Button("Clear Filters") {
+                            selectedEquipment = nil
+                            selectedMuscleGroup = nil
+                        }
+                    }
                 }
             }
         } else {
-            ContentUnavailableView {
-                Label("No exercises available", systemImage: "eye.slash")
-            } description: {
-                Text("All exercises are hidden. Restore one from the library menu.")
+            VStack(spacing: 8) {
+                if hasSearch {
+                    Text("No results for \"\(search)\"")
+                        .font(.headline)
+                } else {
+                    emptyExerciseLabel
+                        .font(.headline)
+                    emptyExerciseDescription
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                    if hasActiveFilter {
+                        Button("Clear Filters") {
+                            selectedEquipment = nil
+                            selectedMuscleGroup = nil
+                        }
+                    }
+                }
             }
+            .frame(maxWidth: .infinity)
+            .multilineTextAlignment(.center)
+            .padding(.vertical, 16)
+            .accessibilityElement(children: .combine)
         }
-    }
-
-    private var activeFilterSummary: String {
-        [selectedMuscleGroup?.capitalized, selectedEquipment?.equipmentTitle]
-            .compactMap { $0 }
-            .joined(separator: " · ")
     }
 
     @ViewBuilder
-    private var activeFilterSummaryView: some View {
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 4) {
-                    activeFilterTags
-                }
-            } else {
-                HStack(spacing: 6) {
-                    activeFilterTags
-                }
-            }
+    private var emptyExerciseLabel: some View {
+        if hasActiveFilter {
+            Label("No matching exercises", systemImage: "line.3.horizontal.decrease")
+        } else {
+            Label("No exercises available", systemImage: "eye.slash")
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Active filters: \(activeFilterSummary)")
     }
 
     @ViewBuilder
-    private var activeFilterTags: some View {
-        if let selectedMuscleGroup {
-            ExerciseLibraryTag(title: selectedMuscleGroup.capitalized)
+    private var emptyExerciseDescription: some View {
+        if hasActiveFilter {
+            Text("Try a different muscle group or equipment.")
+        } else {
+            Text("All exercises are hidden. Restore one from Hidden Exercises in the Library section.")
         }
-        if let selectedEquipment {
-            ExerciseLibraryTag(title: selectedEquipment.equipmentTitle)
+    }
+}
+
+private struct ExerciseLibraryChrome: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 17, *) {
+            content
+                .contentMargins(.top, 0, for: .scrollContent)
+                .toolbarTitleDisplayMode(.inlineLarge)
+        } else {
+            content.navigationBarTitleDisplayMode(.large)
         }
     }
 }
@@ -226,9 +339,10 @@ private struct HiddenExercisesView: View {
     @State private var search = ""
 
     private var filteredExercises: [Exercise] {
-        let matches = ExerciseStore.filter(exercises: exerciseStore.hiddenExercises, using: search)
+        let candidates = exerciseStore.hiddenExercises
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        return exerciseStore.orderedByRecency(matches)
+        return ExerciseStore.filter(exercises: exerciseStore.orderedByRecency(candidates), using: search,
+                                    lastPerformedDates: exerciseStore.lastPerformedDates)
     }
 
     var body: some View {
@@ -261,8 +375,10 @@ private struct HiddenExercisesView: View {
             ExerciseLibraryRow(exercise: exercise)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button("Restore", systemImage: "eye") {
+            Button {
                 exerciseStore.show(exercise: exercise)
+            } label: {
+                Label("Restore", systemImage: "eye")
             }
             .tint(.accentColor)
         }
@@ -270,14 +386,34 @@ private struct HiddenExercisesView: View {
 
     @ViewBuilder
     private var emptyState: some View {
-        if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            ContentUnavailableView.search(text: search)
-        } else {
-            ContentUnavailableView {
-                Label("No hidden exercises", systemImage: "eye")
-            } description: {
-                Text("Exercises you hide from the library will appear here.")
+        let hasSearch = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if #available(iOS 17, *) {
+            if hasSearch {
+                ContentUnavailableView.search(text: search)
+            } else {
+                ContentUnavailableView {
+                    Label("No hidden exercises", systemImage: "eye")
+                } description: {
+                    Text("Exercises you hide from the library will appear here.")
+                }
             }
+        } else {
+            VStack(spacing: 8) {
+                if hasSearch {
+                    Text("No results for \"\(search)\"")
+                        .font(.headline)
+                } else {
+                    Label("No hidden exercises", systemImage: "eye")
+                        .font(.headline)
+                    Text("Exercises you hide from the library will appear here.")
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .multilineTextAlignment(.center)
+            .padding(.vertical, 16)
+            .accessibilityElement(children: .combine)
         }
     }
 }

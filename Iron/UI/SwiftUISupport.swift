@@ -14,6 +14,90 @@ import WorkoutDataKit
 
 // Palette and motion live in IronStyle; metric fonts live in IronMetricFont.
 
+/// Consistent compact durations and calendar-aware dates for workout lists.
+enum LightFormat {
+    private struct FormatterKey: Hashable {
+        let locale: Locale
+        let calendar: Calendar
+        let template: String
+    }
+
+    private static let formatterLock = NSLock()
+    private static var dateFormatters: [FormatterKey: DateFormatter] = [:]
+    private static var intervalFormatters: [FormatterKey: DateIntervalFormatter] = [:]
+
+    static func duration(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0m" }
+        guard seconds >= 60 else { return "<1m" }
+        if seconds < 3_600 { return "\(Int(seconds / 60))m" }
+
+        // Formatting the whole hours also avoids overflowing Int for large finite intervals.
+        let hours = String(format: "%.0f", (seconds / 3_600).rounded(.down))
+        let minutes = Int(seconds.truncatingRemainder(dividingBy: 3_600) / 60)
+        return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
+    }
+
+    static func listDate(
+        _ date: Date?, now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current
+    ) -> String {
+        guard let date = date else { return "Unknown date" }
+        if calendar.isDate(date, inSameDayAs: now) { return "Today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday"
+        }
+
+        let template = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+            ? "EEE, MMM d" : "MMM d, yyyy"
+        let key = FormatterKey(locale: locale, calendar: calendar, template: template)
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        let formatter: DateFormatter
+        if let cached = dateFormatters[key] {
+            formatter = cached
+        } else {
+            formatter = DateFormatter()
+            formatter.locale = locale
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.setLocalizedDateFormatFromTemplate(template)
+            dateFormatters[key] = formatter
+        }
+        return formatter.string(from: date)
+    }
+
+    static func weekTitle(
+        start: Date, now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current
+    ) -> String {
+        if let thisWeek = calendar.dateInterval(of: .weekOfYear, for: now) {
+            if calendar.isDate(start, inSameDayAs: thisWeek.start) { return "This Week" }
+            if let lastWeek = calendar.date(byAdding: .weekOfYear, value: -1, to: thisWeek.start),
+               calendar.isDate(start, inSameDayAs: lastWeek) {
+                return "Last Week"
+            }
+        }
+
+        let end = calendar.date(byAdding: .day, value: 6, to: start) ?? start
+        let template = calendar.component(.year, from: end) == calendar.component(.year, from: now)
+            ? "MMMd" : "yMMMd"
+        let key = FormatterKey(locale: locale, calendar: calendar, template: template)
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        let formatter: DateIntervalFormatter
+        if let cached = intervalFormatters[key] {
+            formatter = cached
+        } else {
+            formatter = DateIntervalFormatter()
+            formatter.locale = locale
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.dateTemplate = template
+            intervalFormatters[key] = formatter
+        }
+        return formatter.string(from: start, to: end)
+    }
+}
+
 /// The same number/unit hierarchy for summary columns, data rows and chart headlines.
 /// A single Text keeps the unit baseline aligned and lets it wrap at accessibility sizes.
 struct IronMetricValue: View {
@@ -48,12 +132,12 @@ struct IronWorkoutMetricLine: View {
     let unit: String
 
     var body: some View {
-        (Text(duration).foregroundColor(IronTheme.metricTime)
+        (Text(duration).foregroundColor(IronTheme.primaryText)
          + Text(" · ").foregroundColor(IronTheme.secondaryText)
-         + Text("\(sets)").foregroundColor(IronTheme.metricSets)
+         + Text("\(sets)").foregroundColor(IronTheme.primaryText)
          + Text(sets == 1 ? " set" : " sets").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText)
          + Text(" · ").foregroundColor(IronTheme.secondaryText)
-         + Text(volume).foregroundColor(IronTheme.metricVolume)
+         + Text(volume).foregroundColor(IronTheme.primaryText)
          + Text(" \(unit)").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText))
             .font(.ironMetric(.subheadline, weight: .semibold))
             .fixedSize(horizontal: false, vertical: true)

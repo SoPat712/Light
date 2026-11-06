@@ -14,6 +14,128 @@ import HealthKit
 import Combine
 @testable import Iron
 
+final class WorkoutSuggestionTests: XCTestCase {
+    private var calendar: Calendar {
+        var value = Calendar(identifier: .gregorian)
+        value.timeZone = TimeZone(secondsFromGMT: 0)!
+        return value
+    }
+
+    private var now: Date {
+        calendar.date(from: DateComponents(year: 2026, month: 11, day: 5, hour: 12))!
+    }
+
+    private func daysAgo(_ days: Int) -> Date {
+        calendar.date(byAdding: .day, value: -days, to: now)!
+    }
+
+    private func workout(_ title: String, groups: [String], exercises: Int = 3,
+                         lastCompleted: Date? = nil) -> WorkoutSuggestion.Candidate<String> {
+        .init(id: title, title: title, exerciseCount: exercises, muscleGroups: groups, lastCompleted: lastCompleted)
+    }
+
+    private func pick(_ workouts: [WorkoutSuggestion.Candidate<String>],
+                      lastTrained: [String: Date]) -> WorkoutSuggestion.Ranked<String>? {
+        WorkoutSuggestion.pick(workouts, lastTrained: lastTrained, now: now, calendar: calendar)
+    }
+
+    func testPicksTheWorkoutWhoseLeastRestedMuscleHasRestedLongest() {
+        let push = workout("Push", groups: ["chest", "shoulders"])
+        let pull = workout("Pull", groups: ["back", "arms"])
+        let result = pick([push, pull], lastTrained: [
+            "chest": daysAgo(8), "shoulders": daysAgo(2),
+            "back": daysAgo(4), "arms": daysAgo(3)
+        ])
+        XCTAssertEqual(result?.workout.id, "Pull")
+        XCTAssertEqual(result?.score, 3)
+    }
+
+    func testRecoveringMuscleLosesEvenWhenOtherMusclesHaveRestedLonger() {
+        let result = pick([
+            workout("Pull", groups: ["back", "arms"]),
+            workout("Legs", groups: ["legs"])
+        ], lastTrained: ["back": daysAgo(30), "arms": now, "legs": daysAgo(1)])
+        XCTAssertEqual(result?.workout.id, "Legs")
+    }
+
+    func testNeverTrainedBeatsTrained() {
+        let result = pick([
+            workout("Pull", groups: ["back", "arms"]),
+            workout("Legs", groups: ["legs"])
+        ], lastTrained: ["back": daysAgo(30), "arms": daysAgo(30)])
+        XCTAssertEqual(result?.workout.id, "Legs")
+        XCTAssertNil(result?.muscles.first?.days)
+    }
+
+    func testNewMuscleDoesNotHideARecoveringMuscle() {
+        let result = pick([
+            workout("Pull", groups: ["back", "arms"]),
+            workout("Legs", groups: ["legs"])
+        ], lastTrained: ["arms": now, "legs": daysAgo(1)])
+        XCTAssertEqual(result?.workout.id, "Legs")
+    }
+
+    func testScoreTiesPreferTheWorkoutCompletedLongestAgo() {
+        let result = pick([
+            workout("A Recent", groups: ["back"], lastCompleted: daysAgo(1)),
+            workout("Z Older", groups: ["back"], lastCompleted: daysAgo(6))
+        ], lastTrained: ["back": daysAgo(4)])
+        XCTAssertEqual(result?.workout.id, "Z Older")
+    }
+
+    func testScoreTiesPreferNeverCompletedBeforeAnyCompletedWorkout() {
+        let result = pick([
+            workout("A Older", groups: ["back"], lastCompleted: daysAgo(100)),
+            workout("Z Never", groups: ["back"])
+        ], lastTrained: ["back": daysAgo(4)])
+        XCTAssertEqual(result?.workout.id, "Z Never")
+    }
+
+    func testRemainingTiesSortByTitle() {
+        let completionDates: [Date?] = [nil, daysAgo(6)]
+        for date in completionDates {
+            let result = pick([
+                workout("Z Pull", groups: ["back"], lastCompleted: date),
+                workout("A Pull", groups: ["back"], lastCompleted: date)
+            ], lastTrained: ["back": daysAgo(4)])
+            XCTAssertEqual(result?.workout.id, "A Pull")
+        }
+    }
+
+    func testEmptyWorkoutsAreSkipped() {
+        let empty = workout("Empty", groups: [], exercises: 0)
+        let legs = workout("Legs", groups: ["legs"])
+        XCTAssertEqual(pick([empty, legs], lastTrained: ["legs": now])?.workout.id, "Legs")
+        XCTAssertNil(pick([empty], lastTrained: [:]))
+    }
+
+    func testNoSavedWorkoutsReturnsNil() {
+        XCTAssertNil(pick([], lastTrained: [:]))
+    }
+
+    func testRestLabels() {
+        XCTAssertEqual(WorkoutSuggestion.restLabel(days: 0), "today")
+        XCTAssertEqual(WorkoutSuggestion.restLabel(days: 1), "1d")
+        XCTAssertEqual(WorkoutSuggestion.restLabel(days: 4), "4d")
+        XCTAssertEqual(WorkoutSuggestion.restLabel(days: nil), "new")
+    }
+
+    func testRestUsesCalendarDaysRatherThanElapsedTwentyFourHourPeriods() throws {
+        let lateYesterday = try XCTUnwrap(calendar.date(from:
+            DateComponents(year: 2026, month: 11, day: 4, hour: 23)))
+        let result = pick([workout("Pull", groups: ["back"])], lastTrained: ["back": lateYesterday])
+        XCTAssertEqual(result?.muscles.first?.days, 1)
+    }
+
+    func testRestTagsDeduplicateAndSortLeastRestedFirstWithNewLast() {
+        let result = pick([workout("Pull", groups: ["back", "arms", "shoulders", "back"])],
+                          lastTrained: ["back": daysAgo(4), "arms": daysAgo(1)])
+        XCTAssertEqual(result?.muscles.map(\.group), ["arms", "back", "shoulders"])
+        XCTAssertEqual(result?.muscles.map(\.label), ["1d", "4d", "new"])
+        XCTAssertEqual(result?.muscles.map(\.needsRecovery), [true, false, false])
+    }
+}
+
 class GeneralTests: XCTestCase {
     
     override func setUp() {
@@ -24,6 +146,61 @@ class GeneralTests: XCTestCase {
     override func tearDown() {
         // Put teardown code here. This method is called after the invocation of each test method in the class.
         super.tearDown()
+    }
+
+    func testLightFormatDuration() {
+        let cases: [(TimeInterval, String)] = [
+            (0, "<1m"), (59, "<1m"), (60, "1m"), (2_880, "48m"),
+            (3_600, "1h"), (4_200, "1h 10m"), (-5, "0m"), (.nan, "0m"),
+            (.infinity, "0m"), (-.infinity, "0m"), (3_599.9, "59m"), (3_900, "1h 5m")
+        ]
+        for (seconds, expected) in cases {
+            XCTAssertEqual(LightFormat.duration(seconds), expected, "Duration: \(seconds)")
+        }
+    }
+
+    func testLightFormatListDate() throws {
+        let calendar = lightFormatCalendar
+        let now = try lightFormatDate(2026, 11, 5, calendar: calendar)
+        func formatted(_ date: Date?) -> String {
+            LightFormat.listDate(date, now: now, calendar: calendar, locale: Locale(identifier: "en_US"))
+        }
+
+        XCTAssertEqual(formatted(nil), "Unknown date")
+        XCTAssertEqual(formatted(now.addingTimeInterval(3_600)), "Today")
+        XCTAssertEqual(formatted(try lightFormatDate(2026, 11, 4, calendar: calendar)), "Yesterday")
+        XCTAssertEqual(formatted(try lightFormatDate(2026, 11, 2, calendar: calendar)), "Mon, Nov 2")
+        XCTAssertEqual(formatted(try lightFormatDate(2025, 11, 2, calendar: calendar)), "Nov 2, 2025")
+    }
+
+    func testLightFormatWeekTitle() throws {
+        let calendar = lightFormatCalendar
+        let now = try lightFormatDate(2026, 11, 5, calendar: calendar)
+        func formatted(_ year: Int, _ month: Int, _ day: Int) throws -> String {
+            let start = try lightFormatDate(year, month, day, calendar: calendar)
+            let title = LightFormat.weekTitle(
+                start: start, now: now, calendar: calendar, locale: Locale(identifier: "en_US")
+            )
+            // Foundation can use thin or narrow no-break spaces around the range dash.
+            return title.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        }
+
+        XCTAssertEqual(try formatted(2026, 11, 1), "This Week")
+        XCTAssertEqual(try formatted(2026, 10, 25), "Last Week")
+        XCTAssertEqual(try formatted(2026, 10, 11), "Oct 11 – 17")
+        XCTAssertEqual(try formatted(2026, 9, 27), "Sep 27 – Oct 3")
+        XCTAssertEqual(try formatted(2025, 10, 12), "Oct 12 – 18, 2025")
+    }
+
+    private var lightFormatCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.firstWeekday = 1
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    private func lightFormatDate(_ year: Int, _ month: Int, _ day: Int, calendar: Calendar) throws -> Date {
+        try XCTUnwrap(calendar.date(from: DateComponents(year: year, month: month, day: day, hour: 12)))
     }
     
     private func loadExercises() -> [Exercise] {
@@ -1271,6 +1448,91 @@ final class HealthSampleReconciliationTests: XCTestCase {
     }
 }
 
+final class WorkoutEffortDecisionTests: XCTestCase {
+    private let workoutStart = Date(timeIntervalSince1970: 1_000)
+    private let workoutEnd = Date(timeIntervalSince1970: 2_000)
+    private let firstID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    private let secondID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+
+    private func sample(_ id: UUID, rating: Double = 7, start: Date? = nil) -> HealthManager.OwnedWorkoutEffortSample {
+        .init(id: id, rating: rating, start: start ?? workoutStart, end: workoutEnd)
+    }
+
+    private func action(
+        rating: Double? = 7, samples: [HealthManager.OwnedWorkoutEffortSample] = [],
+        eligibility: Workout.HealthExportEligibility = .eligible, state: String? = "exported",
+        testMode: Bool = false, canShare: Bool = true, hasHealthWorkout: Bool = true
+    ) -> HealthManager.WorkoutEffortAction {
+        HealthManager.workoutEffortAction(
+            eligibility: eligibility, exportState: state, testMode: testMode, canShare: canShare,
+            rating: rating, healthWorkoutStart: hasHealthWorkout ? workoutStart : nil,
+            healthWorkoutEnd: hasHealthWorkout ? workoutEnd : nil, ownedSamples: samples
+        )
+    }
+
+    func testRatedPhoneAndWatchWorkoutsWriteMissingEffort() {
+        for state in [nil, "pending", "exported", "watch"] as [String?] {
+            for rating in [1.0, 7.5, 10.0] {
+                XCTAssertEqual(action(rating: rating, state: state), .save(rating: rating, deleting: []))
+            }
+        }
+    }
+
+    func testImportedInvalidAndTestWorkoutsCannotWriteOrDelete() {
+        let existing = [sample(firstID)]
+        for rating in [nil, 8] as [Double?] {
+            XCTAssertEqual(action(rating: rating, samples: existing, eligibility: .imported), .none)
+            XCTAssertEqual(action(rating: rating, samples: existing, eligibility: .invalidWorkout), .none)
+            XCTAssertEqual(action(rating: rating, samples: existing, state: "test"), .none)
+            XCTAssertEqual(action(rating: rating, samples: existing, testMode: true), .none)
+        }
+    }
+
+    func testNoPermissionOrNoHKWorkoutSkipsAllMutations() {
+        let existing = [sample(firstID)]
+        for rating in [nil, 8] as [Double?] {
+            XCTAssertEqual(action(rating: rating, samples: existing, canShare: false), .none)
+            XCTAssertEqual(action(rating: rating, samples: existing, hasHealthWorkout: false), .none)
+        }
+    }
+
+    func testUnratedOrInvalidRatingNeverCreatesASample() {
+        for rating in [nil, 0, -1, 11, Double.nan, Double.infinity] as [Double?] {
+            XCTAssertEqual(action(rating: rating), .none)
+        }
+    }
+
+    func testChangingRatingReplacesEveryPriorOwnedSample() {
+        XCTAssertEqual(action(rating: 9, samples: [sample(secondID), sample(firstID)]),
+                       .save(rating: 9, deleting: [firstID, secondID]))
+    }
+
+    func testClearingRatingDeletesOnlyTheSuppliedOwnedSamples() {
+        // The Health adapter queries by external UUID AND this app's source;
+        // another app's effort samples are never supplied to this plan.
+        XCTAssertEqual(action(rating: nil, samples: [sample(firstID)]), .delete([firstID]))
+    }
+
+    func testRepeatedBackfillReusesTheSavedSampleWithoutAnotherSave() {
+        XCTAssertEqual(action(), .save(rating: 7, deleting: []))
+        let existing = [sample(firstID)]
+        for _ in 0..<3 {
+            XCTAssertEqual(action(samples: existing), .reuse(firstID, deleting: []))
+        }
+    }
+
+    func testDuplicateCleanupRetainsOneStableMatchingSample() {
+        let existing = [sample(secondID), sample(firstID)]
+        XCTAssertEqual(action(samples: existing), .reuse(firstID, deleting: [secondID]))
+        XCTAssertEqual(action(samples: Array(existing.reversed())), .reuse(firstID, deleting: [secondID]))
+    }
+
+    func testRepairedWorkoutIntervalReplacesStaleEffort() {
+        XCTAssertEqual(action(samples: [sample(firstID, start: workoutStart.addingTimeInterval(-1))]),
+                       .save(rating: 7, deleting: [firstID]))
+    }
+}
+
 final class TrainingHistorySnapshotTests: XCTestCase {
     func testSnapshotCountsCompletedSetsGroupsDaysAndDeduplicatesExerciseSessions() throws {
         let container = setUpInMemoryNSPersistentContainer()
@@ -1439,11 +1701,11 @@ final class HealthTestModeTests: XCTestCase {
         let settings = SettingsStore(userDefaults: defaults)
         defer { defaults.removePersistentDomain(forName: suite) }
         #if DEBUG
+        XCTAssertFalse(settings.healthTestMode)
+        defaults.healthTestMode = true
         XCTAssertTrue(settings.healthTestMode)
         settings.healthTestMode = false
         XCTAssertFalse(defaults.healthTestMode)
-        defaults.healthTestMode = true
-        XCTAssertTrue(settings.healthTestMode)
         #else
         defaults.set(true, forKey: UserDefaults.SettingsKeys.healthTestMode.rawValue)
         XCTAssertFalse(settings.healthTestMode)
@@ -1470,6 +1732,20 @@ final class HealthTestModeTests: XCTestCase {
     }
 
     #if DEBUG
+    func testRealUseResetClearsStoredTestModeOnce() throws {
+        let suite = "IronHealthTestModeReset.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        defaults.healthTestMode = true
+        SettingsStore.resetHealthTestModeForRealUseIfNeeded(defaults: defaults)
+        XCTAssertFalse(defaults.healthTestMode)
+
+        defaults.healthTestMode = true
+        SettingsStore.resetHealthTestModeForRealUseIfNeeded(defaults: defaults)
+        XCTAssertTrue(defaults.healthTestMode)
+    }
+
     func testEnablingPreferencePublishesSynchronouslyBeforeItCanBeSwitchedOff() throws {
         let suite = "IronHealthTestNotification.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

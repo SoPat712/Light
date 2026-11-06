@@ -423,6 +423,8 @@ struct WatchExercisePick: Codable, Identifiable, Equatable {
     var imageURL: String?
     /// False leaves it out of the plain list; search still finds it. Older payloads omit it.
     var listed: Bool? = nil
+    /// Source names remain searchable after catalog display changes. Older peers omit it.
+    var aliases: [String]? = nil
 }
 
 struct WatchWorkoutExercise: Codable, Identifiable, Equatable {

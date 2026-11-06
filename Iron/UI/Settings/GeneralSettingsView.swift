@@ -16,6 +16,14 @@ struct GeneralSettingsView: View {
 
     private enum RestPreference {
         case standard, dumbbell, barbell
+
+        var systemImage: String {
+            switch self {
+            case .standard: return "hourglass"
+            case .dumbbell: return "dumbbell.fill"
+            case .barbell: return "figure.strengthtraining.traditional"
+            }
+        }
     }
 
     var body: some View {
@@ -26,6 +34,7 @@ struct GeneralSettingsView: View {
             duringWorkoutSection
         }
         .formStyle(.grouped)
+        .labeledContentStyle(SettingsValueStyle())
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
         }
@@ -36,78 +45,68 @@ struct GeneralSettingsView: View {
 
     private var restSection: some View {
         Section {
-            Toggle(isOn: $settingsStore.autoStartRestTimer) {
-                SettingsSubpageLabel("Start Timer After Each Set", systemImage: "timer", tint: IronTheme.metricTime)
-            }
+            SettingsToggle("Auto-Start Rest Timer", systemImage: "timer", tint: IronTheme.metricTime,
+                           isOn: $settingsStore.autoStartRestTimer)
             restRow("Default", preference: .standard, selection: $settingsStore.defaultRestTime)
             restRow("Dumbbell Exercises", preference: .dumbbell, selection: $settingsStore.defaultRestTimeDumbbellBased)
             restRow("Barbell Exercises", preference: .barbell, selection: $settingsStore.defaultRestTimeBarbellBased)
-            Toggle(isOn: Binding(
+            SettingsToggle("Count Past Zero", systemImage: "clock.arrow.circlepath", tint: IronTheme.metricTime, isOn: Binding(
                 get: { settingsStore.keepRestTimerRunning },
                 set: { newValue in
                     settingsStore.keepRestTimerRunning = newValue
                     RestTimerStore.shared.notifyKeepRestTimerRunningChanged()
                 }
-            )) {
-                SettingsSubpageLabel("Count Past Zero", systemImage: "clock.arrow.circlepath", tint: IronTheme.metricTime)
-            }
+            ))
         } header: {
             Text("Rest Timer")
         } footer: {
-            Text("Matching equipment uses its own rest length; other exercises use Default. Count Past Zero shows overtime in red.")
+            Text("Dumbbell and barbell exercises use their own rest; everything else uses Default. Count Past Zero shows overtime in red.")
         }
     }
 
     private var loggingSection: some View {
         Section {
-            Toggle(isOn: $settingsStore.logRPE) {
-                SettingsSubpageLabel("Log RPE", systemImage: "gauge.with.dots.needle.50percent", tint: IronTheme.metricEffort)
-            }
-            Toggle(isOn: $settingsStore.prefillPreviousValues) {
-                SettingsSubpageLabel("Carry Over Last Values", systemImage: "arrow.clockwise", tint: IronTheme.accent)
-            }
-            Toggle(isOn: $settingsStore.inlineSetTimer) {
-                SettingsSubpageLabel("Stopwatch for Timed Sets", systemImage: "stopwatch", tint: IronTheme.metricTime)
-            }
+            SettingsToggle("Log RPE", systemImage: "gauge.with.dots.needle.50percent", tint: IronTheme.metricEffort,
+                           isOn: $settingsStore.logRPE)
+            SettingsToggle("Carry Over Last Values", systemImage: "arrow.clockwise", tint: IronTheme.accent,
+                           isOn: $settingsStore.prefillPreviousValues)
+            SettingsToggle("Stopwatch for Timed Sets", systemImage: "stopwatch", tint: IronTheme.metricTime,
+                           isOn: $settingsStore.inlineSetTimer)
         } header: {
             Text("Logging")
         } footer: {
-            Text("RPE (rated perceived exertion) adds a column to each set; Carry Over fills new sets with your previous session’s weight and reps. Timed sets use a tap-to-run stopwatch in place of the duration picker.")
+            Text("RPE records effort; Carry Over fills in your last weight and reps. Timed sets can use a tap-to-run stopwatch.")
         }
     }
 
     private var calculatorsSection: some View {
         Section {
-            Toggle(isOn: $settingsStore.showPlateCalculator) {
-                SettingsSubpageLabel("Plate Calculator", systemImage: "plusminus", tint: IronTheme.metricVolume)
-            }
+            SettingsToggle("Plate Calculator", systemImage: "plusminus", tint: IronTheme.metricVolume,
+                           isOn: $settingsStore.showPlateCalculator)
             NavigationLink {
                 AvailablePlatesSettingsView(unit: settingsStore.weightUnit)
             } label: {
-                SettingsSubpageLabel("Available Plates", systemImage: "circle.grid.2x2.fill", tint: IronTheme.metricVolume)
+                SettingsRowLabel("Available Plates", systemImage: "circle.grid.2x2.fill", tint: IronTheme.metricVolume)
             }
-            Toggle(isOn: $settingsStore.showWarmUpCalculator) {
-                SettingsSubpageLabel("Warm-up Calculator", systemImage: "flame.fill", tint: IronTheme.metricSets)
-            }
+            SettingsToggle("Warm-Up Calculator", systemImage: "flame.fill", tint: IronTheme.metricSets,
+                           isOn: $settingsStore.showWarmUpCalculator)
         } header: {
             Text("Calculators")
         } footer: {
-            Text("Calculate plates for bars, machines or plates-only exercises, and build warm-up sets below your working weight.")
+            Text("Calculate loads with your available plates and build warm-up sets below your working weight.")
         }
     }
 
     private var duringWorkoutSection: some View {
         Section {
-            Toggle(isOn: $settingsStore.supersetAutoScroll) {
-                SettingsSubpageLabel("Advance Through Supersets", systemImage: "link", tint: IronTheme.accent)
-            }
-            Toggle(isOn: $settingsStore.keepScreenAwakeDuringWorkout) {
-                SettingsSubpageLabel("Keep Screen Awake", systemImage: "sun.max.fill", tint: IronTheme.metricRecord)
-            }
+            SettingsToggle("Advance Through Supersets", systemImage: "link", tint: IronTheme.accent,
+                           isOn: $settingsStore.supersetAutoScroll)
+            SettingsToggle("Keep Screen Awake", systemImage: "sun.max.fill", tint: IronTheme.metricRecord,
+                           isOn: $settingsStore.keepScreenAwakeDuringWorkout)
         } header: {
             Text("During a Workout")
         } footer: {
-            Text("Advance to the next superset exercise after each completed set. Keeping iPhone awake during workouts prevents locking and uses more battery.")
+            Text("Advance after each superset set; keeping iPhone awake during workouts uses more battery.")
         }
     }
 
@@ -121,12 +120,13 @@ struct GeneralSettingsView: View {
             HStack(spacing: 12) {
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: 4) {
-                        restLabel(title, preference: preference)
+                        SettingsRowLabel(title, systemImage: preference.systemImage, tint: IronTheme.metricTime)
                         restValue(selection.wrappedValue)
                     }
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    restLabel(title, preference: preference)
+                    SettingsRowLabel(title, systemImage: preference.systemImage, tint: IronTheme.metricTime)
                     restValue(selection.wrappedValue)
                 }
                 Image(systemName: expandedRest == preference ? "chevron.up" : "chevron.down")
@@ -134,10 +134,11 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(IronTheme.secondaryText)
                     .accessibilityHidden(true)
             }
-            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+            // The List supplies the row height; matching the switch rows keeps one rhythm.
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.automatic)
         .accessibilityLabel(title)
         .accessibilityValue(restTitle(selection.wrappedValue))
         .accessibilityHint(expandedRest == preference ? "Collapse rest length control" : "Expand rest length control")
@@ -150,7 +151,7 @@ struct GeneralSettingsView: View {
         }
 
         if expandedRest == preference {
-            // Match the previous picker's full range and persist only committed choices.
+            // The ruler scrubs locally and persists only after the selection is committed.
             RestLengthRuler(
                 value: Binding(get: { selection.wrappedValue }, set: { _ in }),
                 range: 30...600,
@@ -161,17 +162,9 @@ struct GeneralSettingsView: View {
         }
     }
 
-    private func restLabel(_ title: String, preference: RestPreference) -> some View {
-        SettingsSubpageLabel(
-            title,
-            systemImage: preference == .standard ? "timer" : "dumbbell.fill",
-            tint: IronTheme.metricTime
-        )
-    }
-
     private func restValue(_ duration: TimeInterval) -> some View {
         Text(restTitle(duration))
-            .font(.ironMetric(.title3))
+            .font(.ironMetric(.body, weight: .semibold))
             .foregroundStyle(IronTheme.metricTime)
             .fixedSize()
     }
@@ -185,18 +178,30 @@ struct GeneralSettingsView: View {
 struct AvailablePlatesSettingsView: View {
     let unit: WeightUnit
     @State private var inventory = PlateInventory.load()
+    @State private var selectionFeedback = 0
 
     var body: some View {
         Form {
             Section {
-                PlateInventoryRows(unit: unit, inventory: $inventory)
+                ForEach(PlateInventory.availablePlates(for: unit.plateLoadUnit), id: \.self) { weight in
+                    let weightTitle = Text(weight.formatted()).font(.ironMetric(.body, weight: .semibold))
+                    let unitTitle = Text(unit.unit.symbol).font(.footnote).foregroundColor(IronTheme.secondaryText)
+                    SettingsToggle(Text("\(weightTitle) \(unitTitle)"), isOn: Binding(
+                        get: { inventory.isEnabled(weight, unit: unit.plateLoadUnit) },
+                        set: {
+                            guard inventory.isEnabled(weight, unit: unit.plateLoadUnit) != $0 else { return }
+                            inventory.setEnabled($0, weight: weight, unit: unit.plateLoadUnit)
+                            selectionFeedback += 1
+                        }
+                    ))
+                    .accessibilityLabel("\(weight.formatted()) \(unit.unit.symbol) plates")
+                }
             } header: {
                 Text("Available Plates · \(unit.unit.symbol)")
             } footer: {
-                Text("Enable the plates at your gym. The calculator uses this inventory for every exercise on this device. Plate counts are unlimited.")
-                if inventory.enabledPlates(for: unit.plateLoadUnit).isEmpty {
-                    Text("No plates enabled. Only the bar or machine starting weight can be loaded.")
-                }
+                Text(inventory.enabledPlates(for: unit.plateLoadUnit).isEmpty
+                     ? "No plates enabled; only the bar or machine starting weight can be loaded."
+                     : "Enabled plates are available in unlimited quantities for every exercise on this device.")
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -207,11 +212,10 @@ struct AvailablePlatesSettingsView: View {
         .ironScreen()
         .onAppear { inventory = .load() }
         .onChange(of: inventory) { inventory.save() }
+        .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
     }
 }
 
-/// Units affect history, charts, and exports, so they belong beside the other
-/// app-wide preferences rather than inside the workout options.
 struct UnitsSettingsView: View {
     @EnvironmentObject var settingsStore: SettingsStore
     @State private var selectionFeedback = 0
@@ -219,50 +223,24 @@ struct UnitsSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Weight", selection: Binding(
-                    get: { settingsStore.weightUnit },
-                    set: {
-                        guard settingsStore.weightUnit != $0 else { return }
-                        settingsStore.weightUnit = $0
-                        selectionFeedback += 1
+                HStack(spacing: 12) {
+                    SettingsRowLabel("Weight", systemImage: "scalemass.fill", tint: IronTheme.metricSets)
+                    Picker("Weight", selection: Binding(
+                        get: { settingsStore.weightUnit },
+                        set: {
+                            guard settingsStore.weightUnit != $0 else { return }
+                            settingsStore.weightUnit = $0
+                            selectionFeedback += 1
+                        }
+                    )) {
+                        Text("kg").tag(WeightUnit.metric).accessibilityLabel("Kilograms")
+                        Text("lb").tag(WeightUnit.imperial).accessibilityLabel("Pounds")
                     }
-                )) {
-                    ForEach(WeightUnit.allCases, id: \.self) { unit in
-                        SettingsSubpageLabel(unit.title, systemImage: "scalemass.fill", tint: IronTheme.metricSets)
-                            .tag(unit)
-                    }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
                 }
-                .pickerStyle(.inline)
-                .labelsHidden()
-            } header: {
-                Text("Weight")
             } footer: {
-                Text(settingsStore.weightUnit == .metric
-                     ? "Kilograms, with metric barbell plates and 2.5 kg increments."
-                     : "Pounds, with imperial barbell plates and 5 lb increments.")
-            }
-
-            Section {
-                Picker(selection: Binding(
-                    get: { settingsStore.maxRepetitionsOneRepMax },
-                    set: {
-                        guard settingsStore.maxRepetitionsOneRepMax != $0 else { return }
-                        settingsStore.maxRepetitionsOneRepMax = $0
-                        selectionFeedback += 1
-                    }
-                )) {
-                    ForEach(Array(maxRepetitionsOneRepMaxValues), id: \.self) { value in
-                        Text("^[\(value) rep](inflect: true)")
-                            .font(.ironMetric(.body, weight: .semibold))
-                            .tag(value)
-                    }
-                } label: {
-                    SettingsSubpageLabel("Max Repetitions", systemImage: "chart.xyaxis.line", tint: IronTheme.accent)
-                }
-            } header: {
-                Text("One Rep Max")
-            } footer: {
-                Text("Sets above this rep count are ignored when estimating your one rep max. Higher limits are less accurate.")
+                Text("Used for workout weights, charts, plates, and exports.")
             }
         }
         .formStyle(.grouped)
@@ -278,54 +256,46 @@ struct UnitsSettingsView: View {
 
 struct SoundsSettingsView: View {
     @EnvironmentObject var settingsStore: SettingsStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var playing: IronSoundPlayer.Sound?
+    @State private var playToken = 0
+    @State private var previewed: IronSoundPlayer.Sound = .tick
+    @State private var hapticTrigger = 0
 
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: $settingsStore.workoutSounds) {
-                    SettingsSubpageLabel("Sound Effects", systemImage: "speaker.wave.2.fill", tint: IronTheme.metricEffort)
-                }
-                Toggle(isOn: $settingsStore.workoutHaptics) {
-                    SettingsSubpageLabel("Haptics", systemImage: "hand.tap.fill", tint: IronTheme.metricEffort)
-                }
+                SettingsToggle("Sound Effects", systemImage: "speaker.wave.2.fill", tint: IronTheme.metricEffort,
+                               isOn: $settingsStore.workoutSounds)
+                SettingsToggle("Haptics", systemImage: "hand.tap.fill", tint: IronTheme.metricEffort,
+                               isOn: $settingsStore.workoutHaptics)
+                SettingsToggle("Personal Record Alerts", systemImage: "trophy.fill", tint: IronTheme.metricRecord,
+                               isOn: $settingsStore.personalRecordAlerts)
             } header: {
                 Text("Feedback")
             } footer: {
-                Text("Feedback for sets, controls, and rest timers. Sound effects follow your ringer switch and mix with your music.")
+                Text("During workouts, sounds follow your ringer switch and mix with music.")
             }
-
-            Section {
-                Toggle(isOn: $settingsStore.personalRecordAlerts) {
-                    SettingsSubpageLabel("Personal Record Alerts", systemImage: "trophy.fill", tint: IronTheme.metricRecord)
-                }
-            } footer: {
-                Text("Announce a record in the log as soon as a completed set beats your best for that exercise.")
-            }
-
             Section {
                 ForEach(IronSoundPlayer.Sound.allCases) { sound in
-                    Button {
-                        IronSoundPlayer.shared.play(sound, preview: true)
-                    } label: {
+                    Button { preview(sound) } label: {
                         HStack(spacing: 12) {
-                            SettingsSubpageLabel(sound.title, systemImage: "speaker.wave.2.fill", tint: IronTheme.metricEffort)
-                            Image(systemName: "play.circle.fill")
-                                .font(.title3)
-                                .foregroundStyle(IronTheme.accent)
-                                .accessibilityHidden(true)
+                            SettingsRowLabel(sound.title, systemImage: sound.settingsSymbol, tint: sound.settingsTint)
+                            previewIndicator(isPlaying: playing == sound)
                         }
-                        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Play \(sound.title) sound")
-                    .disabled(!settingsStore.workoutSounds)
+                    .accessibilityLabel("Play \(sound.title)")
+                    .disabled(!settingsStore.workoutSounds && !settingsStore.workoutHaptics)
                 }
             } header: {
-                Text("Preview")
+                Text("Try Them")
             } footer: {
-                Text("Turn on Sound Effects and your ringer to preview.")
+                Text("Previews play even when your ringer is off.")
             }
+        }
+        .sensoryFeedback(trigger: hapticTrigger) { _, _ in
+            settingsStore.workoutHaptics ? previewed.previewFeedback : nil
         }
         .formStyle(.grouped)
         .safeAreaInset(edge: .bottom) {
@@ -335,14 +305,71 @@ struct SoundsSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .ironScreen()
     }
+
+    /// A filled play button that turns into animated sound waves while the preview plays.
+    private func previewIndicator(isPlaying: Bool) -> some View {
+        Image(systemName: isPlaying ? "speaker.wave.3.fill" : "play.fill")
+            .font(.footnote.weight(.bold))
+            .foregroundStyle(IronTheme.onAccent)
+            .symbolEffect(.variableColor.iterative, isActive: isPlaying && !reduceMotion)
+            .contentTransition(.symbolEffect(.replace))
+            .frame(width: 32, height: 32)
+            .background(IronTheme.accent, in: Circle())
+            .accessibilityHidden(true)
+    }
+
+    private func preview(_ sound: IronSoundPlayer.Sound) {
+        IronSoundPlayer.shared.play(sound, preview: true)
+        previewed = sound
+        hapticTrigger += 1
+        playToken += 1
+        let token = playToken
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) { playing = sound }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            guard playToken == token else { return }
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) { playing = nil }
+        }
+    }
 }
 
-/// Shared by Settings subpages; the approved root keeps its private tile implementation.
-struct SettingsSubpageIconTile: View {
+private extension IronSoundPlayer.Sound {
+    var settingsSymbol: String {
+        switch self {
+        case .setComplete: return "checkmark"
+        case .setRecord: return "trophy.fill"
+        case .tick: return "hand.tap.fill"
+        case .restComplete: return "timer"
+        case .workoutFinish: return "flag.checkered"
+        }
+    }
+
+    var settingsTint: Color {
+        switch self {
+        case .setComplete: return IronTheme.accent
+        case .setRecord: return IronTheme.metricRecord
+        case .tick: return IronTheme.metricEffort
+        case .restComplete: return IronTheme.metricTime
+        case .workoutFinish: return IronTheme.metricVolume
+        }
+    }
+
+    /// The phone haptic that accompanies each cue, mirroring the Watch's choices.
+    var previewFeedback: SensoryFeedback {
+        switch self {
+        case .setComplete, .workoutFinish: return .success
+        case .setRecord: return .increase
+        case .tick: return .selection
+        case .restComplete: return .impact(weight: .heavy)
+        }
+    }
+}
+
+/// The colored symbol tile from the main Settings list. Every Settings row carries one,
+/// so each setting reads as a thing you can change rather than a line of text.
+struct SettingsRowIcon: View {
     @ScaledMetric(relativeTo: .body) private var size: CGFloat = 30
     let systemImage: String
     var tint: Color = IronTheme.accent
-    var glyph: Color = IronTheme.onAccent
 
     var body: some View {
         RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
@@ -354,46 +381,213 @@ struct SettingsSubpageIconTile: View {
             .overlay {
                 Image(systemName: systemImage)
                     .font(.system(size: size * 0.55, weight: .semibold))
-                    .foregroundStyle(glyph)
+                    .foregroundStyle(IronTheme.onAccent)
             }
             .frame(width: size, height: size)
             .accessibilityHidden(true)
     }
 }
 
-struct SettingsSubpageLabel: View {
-    let title: String
-    var detail: String?
+/// Icon tile and title, for navigation rows and rows with a trailing control.
+struct SettingsRowLabel: View {
+    @Environment(\.isEnabled) private var isEnabled
+    let title: Text
     let systemImage: String
     var tint: Color = IronTheme.accent
-    var glyph: Color = IronTheme.onAccent
 
-    init(_ title: String, detail: String? = nil, systemImage: String, tint: Color = IronTheme.accent, glyph: Color = IronTheme.onAccent) {
+    init(_ title: String, systemImage: String, tint: Color = IronTheme.accent) {
+        self.init(Text(title), systemImage: systemImage, tint: tint)
+    }
+
+    init(_ title: Text, systemImage: String, tint: Color = IronTheme.accent) {
         self.title = title
-        self.detail = detail
         self.systemImage = systemImage
         self.tint = tint
-        self.glyph = glyph
     }
 
     var body: some View {
         HStack(spacing: 12) {
-            SettingsSubpageIconTile(systemImage: systemImage, tint: tint, glyph: glyph)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.body)
-                    .foregroundStyle(IronTheme.primaryText)
-                if let detail {
-                    Text(detail)
-                        .font(.subheadline)
-                        .foregroundStyle(IronTheme.secondaryText)
+            SettingsRowIcon(systemImage: systemImage, tint: tint)
+                .opacity(isEnabled ? 1 : 0.5)
+            title
+                .foregroundStyle(isEnabled ? IronTheme.primaryText : IronTheme.secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// A native switch with room for its title to wrap beside it.
+struct SettingsToggle: View {
+    @Environment(\.isEnabled) private var isEnabled
+    private let title: Text
+    private let systemImage: String?
+    private let tint: Color
+    @Binding private var isOn: Bool
+
+    init(_ title: String, systemImage: String? = nil, tint: Color = IronTheme.accent, isOn: Binding<Bool>) {
+        self.init(Text(title), systemImage: systemImage, tint: tint, isOn: isOn)
+    }
+
+    // Plate labels retain their metric numerals and secondary units.
+    init(_ title: Text, systemImage: String? = nil, tint: Color = IronTheme.accent, isOn: Binding<Bool>) {
+        self.title = title
+        self.systemImage = systemImage
+        self.tint = tint
+        self._isOn = isOn
+    }
+
+    var body: some View {
+        // At large text a Toggle with a text-only label moves its switch below the title.
+        // A bare switch beside the title can't stack; VoiceOver still gets one native switch.
+        HStack(spacing: 12) {
+            if let systemImage {
+                SettingsRowLabel(title, systemImage: systemImage, tint: tint)
+            } else {
+                title
+                    .foregroundStyle(isEnabled ? IronTheme.primaryText : IronTheme.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Toggle(isOn: $isOn) { title }
+                .labelsHidden()
+        }
+        .accessibilityRepresentation {
+            Toggle(isOn: $isOn) { title }
+        }
+    }
+}
+
+/// An action row: icon tile, title, and a trailing symbol for what the tap does, which
+/// becomes a spinner while the action works. Keeps the native row highlight.
+struct SettingsActionLabel: View {
+    @Environment(\.isEnabled) private var isEnabled
+    let title: String
+    var systemImage: String?
+    var tint: Color
+    var trailingSymbol: String?
+    var isPreparing = false
+
+    init(_ title: String, systemImage: String? = nil, tint: Color = IronTheme.accent,
+         trailingSymbol: String? = nil, isPreparing: Bool = false) {
+        self.title = title
+        self.systemImage = systemImage
+        self.tint = tint
+        self.trailingSymbol = trailingSymbol
+        self.isPreparing = isPreparing
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let systemImage {
+                SettingsRowLabel(isPreparing ? "Preparing…" : title, systemImage: systemImage, tint: tint)
+            } else {
+                Text(isPreparing ? "Preparing…" : title)
+                    .foregroundStyle((isPreparing || !isEnabled) ? IronTheme.secondaryText : IronTheme.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            if isPreparing {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(IronTheme.secondaryText)
+                    .accessibilityHidden(true)
+            } else if let trailingSymbol {
+                Image(systemName: trailingSymbol)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(isEnabled ? IronTheme.accent : IronTheme.secondaryText)
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+}
+
+/// A colored symbol and word for a connection's state: green check or red exclamation.
+struct SettingsStatusBadge: View {
+    let text: String
+    let isGood: Bool
+
+    var body: some View {
+        let tint = isGood ? IronTheme.success : IronTheme.danger
+        // Not a Label: inside List rows the list restyles Labels into its icon column.
+        HStack(spacing: 5) {
+            Image(systemName: isGood ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            Text(text)
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(tint)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(tint.opacity(0.14), in: Capsule())
+        .fixedSize()
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// The top of a connection page (Apple Health, Apple Watch): a large icon, the name,
+/// a status badge, and the one action that matters now as a real button.
+struct SettingsConnectionHeader<Action: View>: View {
+    @ScaledMetric(relativeTo: .title) private var iconSize: CGFloat = 56
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let status: String
+    let isGood: Bool
+    @ViewBuilder let action: () -> Action
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 14) {
+                RoundedRectangle(cornerRadius: iconSize * 0.24, style: .continuous)
+                    .fill(tint)
+                    .overlay {
+                        Image(systemName: systemImage)
+                            .font(.system(size: iconSize * 0.5, weight: .semibold))
+                            .foregroundStyle(IronTheme.onAccent)
+                    }
+                    .frame(width: iconSize, height: iconSize)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(title)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(IronTheme.primaryText)
+                    SettingsStatusBadge(text: status, isGood: isGood)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .accessibilityElement(children: .combine)
+            action()
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+/// Keep native label/value semantics while allowing both columns to wrap at large text sizes.
+struct SettingsValueStyle: LabeledContentStyle {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    @ViewBuilder
+    func makeBody(configuration: Configuration) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                configuration.label
+                configuration.content.foregroundStyle(IronTheme.secondaryText)
             }
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                configuration.label.fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                configuration.content
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
-        .contentShape(Rectangle())
     }
 }
 

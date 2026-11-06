@@ -78,6 +78,10 @@ struct WorkoutExerciseDetailView: View {
 
     var body: some View {
         List {
+            exerciseHeader
+                .listRowInsets(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             exerciseSection
             previousSessionsSection
         }
@@ -86,8 +90,8 @@ struct WorkoutExerciseDetailView: View {
         .sensoryFeedback(.error, trigger: persistenceError) { _, error in error != nil && settingsStore.workoutHaptics }
         .contentMargins(.horizontal, 10, for: .scrollContent)
         .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
-        .navigationTitle(exercise?.title ?? "Exercise Log")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if exercise != nil {
@@ -195,54 +199,58 @@ struct WorkoutExerciseDetailView: View {
     @ViewBuilder
     private var exerciseSection: some View {
         Section {
-            exerciseHeader
-                .listRowInsets(EdgeInsets(top: 14, leading: 10, bottom: 8, trailing: 10))
             sessionSummary
                 .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 12, trailing: 10))
             setRows
         } header: {
             Text("Overview")
-        } footer: {
-            Text(sessionContextText)
         }
         .listRowSeparator(.hidden)
     }
 
-    @ViewBuilder
     private var exerciseHeader: some View {
-        if let exercise {
-            Button { showExerciseInfo = true } label: {
-                HStack(alignment: .top, spacing: 10) {
+        Button { showExerciseInfo = true } label: {
+            HStack(alignment: .top, spacing: 10) {
+                if let exercise {
                     ExerciseDiagramThumbnail(exercise: exercise, size: 42)
                         .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(exercise.title)
-                            .font(.headline)
-                            .foregroundStyle(IronTheme.primaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(exerciseContextText)
-                            .font(.subheadline)
-                            .foregroundStyle(IronTheme.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    if workoutSets.contains(where: { $0.isPersonalRecord == true }) {
-                        Image(systemName: "trophy.fill")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(IronTheme.metricRecord)
-                            .accessibilityLabel("Personal record")
-                    }
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(exercise?.title ?? "Exercise Log")
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(IronTheme.primaryText)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(exerciseContextText)
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(sessionContextText)
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if workoutSets.contains(where: { $0.isPersonalRecord == true }) {
+                    Image(systemName: "trophy.fill")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(IronTheme.metricRecord)
+                        .accessibilityLabel("Personal record")
+                }
+                if exercise != nil {
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(IronTheme.tertiaryText)
                         .accessibilityHidden(true)
                 }
-                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .combine)
+            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(exercise == nil)
+        .accessibilityElement(children: .combine)
     }
 
     private var sessionSummary: some View {
@@ -321,12 +329,6 @@ struct WorkoutExerciseDetailView: View {
     private var setRows: some View {
         let trackingType = workoutSets.first?.trackingType ?? workoutExercise.setTrackingType
 
-        Text(isCurrentWorkout ? "Log Sets" : "Session Sets")
-            .font(.headline)
-            .foregroundStyle(IronTheme.primaryText)
-            .accessibilityAddTraits(.isHeader)
-            .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10))
-
         if isCurrentWorkout {
             Button {
                 showingRestTimerEditor = true
@@ -340,12 +342,11 @@ struct WorkoutExerciseDetailView: View {
             .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 4, trailing: 10))
         }
 
-        TextField("Notes for This Workout", text: commentBinding, axis: .vertical)
-            .accessibilityHint("Saved with this session only")
-            .font(.body)
-            .lineLimit(1...4)
-            .frame(minHeight: IronTheme.controlHeight)
-            .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 8, trailing: 10))
+        Text(isCurrentWorkout ? "Log Sets" : "Session Sets")
+            .font(.headline)
+            .foregroundStyle(IronTheme.primaryText)
+            .accessibilityAddTraits(.isHeader)
+            .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10))
 
         if !workoutSets.isEmpty, !dynamicTypeSize.isAccessibilitySize {
             setColumnHeaders(trackingType: trackingType)
@@ -376,6 +377,23 @@ struct WorkoutExerciseDetailView: View {
         .buttonStyle(.plain)
         .foregroundStyle(IronTheme.accent)
         .listRowInsets(EdgeInsets(top: 8, leading: 10, bottom: 12, trailing: 10))
+
+        sessionNotesField
+            .font(.body)
+            .frame(minHeight: IronTheme.controlHeight)
+            .accessibilityLabel("Notes for This Workout")
+            .accessibilityHint("Saved with this session only")
+            .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 8, trailing: 10))
+    }
+
+    @ViewBuilder
+    private var sessionNotesField: some View {
+        if #available(iOS 16, *) {
+            TextField("Notes for This Workout", text: commentBinding, axis: .vertical)
+                .lineLimit(1...4)
+        } else {
+            TextField("Notes for This Workout", text: commentBinding)
+        }
     }
 
     private func setColumnHeaders(trackingType: SetTrackingType) -> some View {
@@ -1231,8 +1249,7 @@ private struct HistoryWorkoutSetRow: View {
             from: .metric,
             to: settingsStore.weightUnit
         )
-        let formatter = focusedField == .weight ? weightFormatter : settingsStore.weightUnit.displayNumberFormatter
-        return formatter.string(from: NSNumber(value: displayValue)) ?? "0"
+        return weightFormatter.string(from: NSNumber(value: displayValue)) ?? "0"
     }
 
     private var formattedRepetitions: String {
@@ -1245,31 +1262,12 @@ private struct HistoryWorkoutSetRow: View {
     }
 
     private func sanitizedDecimalInput(_ proposedValue: String) -> String {
-        let decimalSeparator = weightFormatter.decimalSeparator
-            ?? Locale.current.decimalSeparator
-            ?? "."
-        let maximumFractionDigits = settingsStore.weightUnit.maximumFractionDigits
-        var result = ""
-        var hasDecimalSeparator = false
-        var fractionDigitCount = 0
-
-        for character in proposedValue {
-            if let digit = character.wholeNumberValue {
-                if hasDecimalSeparator {
-                    guard fractionDigitCount < maximumFractionDigits else { continue }
-                    fractionDigitCount += 1
-                }
-                result.append(contentsOf: String(digit))
-            } else if (character == "." || character == "," || String(character) == decimalSeparator),
-                      maximumFractionDigits > 0,
-                      !hasDecimalSeparator {
-                if result.isEmpty {
-                    result = "0"
-                }
-                result.append(contentsOf: decimalSeparator)
-                hasDecimalSeparator = true
-            }
-        }
+        let result = WeightUnit.sanitizedDecimalInput(
+            proposedValue,
+            maximumFractionDigits: settingsStore.weightUnit.maximumFractionDigits,
+            decimalSeparator: weightFormatter.decimalSeparator ?? Locale.current.decimalSeparator ?? ".",
+            groupingSeparator: weightFormatter.groupingSeparator ?? Locale.current.groupingSeparator ?? ","
+        )
 
         if let value = weightFormatter.number(from: result)?.doubleValue {
             let maximumDisplayWeight = WeightUnit.convert(

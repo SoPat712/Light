@@ -27,9 +27,8 @@ class ViewOneRepMaxIntentHandler: NSObject, ViewOneRepMaxIntentHandling {
             return
         }
 
-        let maxRepetitionsOneRepMax = SettingsStore.shared.maxRepetitionsOneRepMax
         let oneRepMaxSets = sets.compactMap { workoutSet -> (WorkoutSet, Double)? in
-            guard let oneRepMax = workoutSet.estimatedOneRepMax(maxReps: maxRepetitionsOneRepMax) else { return nil }
+            guard let oneRepMax = workoutSet.estimatedOneRepMax() else { return nil }
             return (workoutSet, oneRepMax)
         }
         guard let oneRepMaxSet = oneRepMaxSets.max(by: { $0.1 < $1.1 }) else {

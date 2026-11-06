@@ -9,7 +9,16 @@
 import Foundation
 
 extension FileManager {
-    static var appGroupIdentifier = "group.com.kabouzeid.Iron"
+    static let appGroupIdentifier: String = {
+        guard let identifier = Bundle.main.object(forInfoDictionaryKey: "LightAppGroupIdentifier") as? String,
+              !identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !identifier.contains("$(") else {
+            // The old-ID app must retain both its defaults suite and its exact
+            // DEBUG fallback directory, where its on-device history lives.
+            return "group.com.kabouzeid.Iron"
+        }
+        return identifier
+    }()
     
     var appGroupContainerURL: URL {
         Self.cachedAppGroupContainerURL

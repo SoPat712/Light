@@ -19,6 +19,9 @@ struct RestTimerView: View {
     @State private var actionFeedback = 0
 
     private var isRunning: Bool { restTimerStore.restTimerRemainingTime != nil }
+    private var restTimerTint: Color {
+        restTimerStore.isPaused ? IronTheme.warning : IronTheme.metricTime
+    }
 
     var body: some View {
         ScrollView {
@@ -27,7 +30,7 @@ struct RestTimerView: View {
                     TimelineView(.periodic(from: .now, by: 1)) { _ in
                         Text(timeTitle(max(0, restTimerStore.restTimerRemainingTime ?? 0)))
                             .font(.ironMetric(.title3))
-                            .foregroundStyle(restTimerStore.isPaused ? IronTheme.warning : IronTheme.metricTime)
+                            .foregroundStyle(restTimerTint)
                             .contentTransition(reduceMotion ? .opacity : .numericText(countsDown: true))
                             .accessibilityLabel(restTimerStore.isPaused ? "Rest timer paused" : "Rest remaining")
                     }
@@ -43,7 +46,8 @@ struct RestTimerView: View {
                         timerActionButton(
                             restTimerStore.isPaused ? "Resume" : "Pause",
                             systemImage: restTimerStore.isPaused ? "play.fill" : "pause.fill",
-                            label: restTimerStore.isPaused ? "Resume rest timer" : "Pause rest timer"
+                            label: restTimerStore.isPaused ? "Resume rest timer" : "Pause rest timer",
+                            tint: restTimerTint
                         ) {
                             restTimerStore.isPaused ? restTimerStore.resume() : restTimerStore.pause()
                             WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
@@ -81,6 +85,7 @@ struct RestTimerView: View {
             }
         }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isRunning)
+        .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: restTimerStore.isPaused)
         .sensoryFeedback(.error, trigger: clampFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
         .sensoryFeedback(.selection, trigger: actionFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
     }
@@ -89,6 +94,7 @@ struct RestTimerView: View {
         _ title: String,
         systemImage: String? = nil,
         label: String,
+        tint: Color = IronTheme.primaryText,
         destructive: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
@@ -100,7 +106,7 @@ struct RestTimerView: View {
                 if let systemImage { Image(systemName: systemImage) } else { Text(title) }
             }
             .font(.ironMetric(.subheadline, weight: .semibold))
-            .foregroundStyle(destructive ? IronTheme.danger : IronTheme.primaryText)
+            .foregroundStyle(destructive ? IronTheme.danger : tint)
             .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
             .background(IronTheme.tertiaryFill, in: Capsule())
         }

@@ -92,10 +92,9 @@ public class WorkoutSet: NSManagedObject, Codable {
     
     // MARK: Derived properties
     
-    public func estimatedOneRepMax(maxReps: Int) -> Double? {
-        guard repetitionsValue > 0 && repetitionsValue <= maxReps else { return nil }
-        assert(repetitionsValue < 37) // formula doesn't work for 37+ reps
-        return weightValue * (36 / (37 - Double(repetitionsValue))) // Brzycki 1RM formula
+    public func estimatedOneRepMax() -> Double? {
+        guard repetitionsValue > 0 else { return nil }
+        return repetitionsValue == 1 ? weightValue : weightValue * (1 + Double(repetitionsValue) / 30) // Epley
     }
 
     public var isPersonalRecord: Bool? {

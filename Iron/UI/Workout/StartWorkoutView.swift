@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import Combine
 import Charts
 import CoreData
 import WorkoutDataKit
@@ -465,6 +466,84 @@ private struct WorkoutPlanEditorHost: View {
     }
 }
 
+/// Value-only ranking; callers supply Home's muscle-history values and saved-plan metadata.
+enum WorkoutSuggestion {
+    struct Candidate<ID: Hashable> {
+        let id: ID
+        let title: String
+        let exerciseCount: Int
+        let muscleGroups: [String]
+        let lastCompleted: Date?
+    }
+
+    struct MuscleRest: Equatable {
+        let group: String
+        let days: Int?
+
+        var label: String { WorkoutSuggestion.restLabel(days: days) }
+        var needsRecovery: Bool { days.map { $0 < 2 } ?? false }
+        var title: String { HomeWeekSummary.displayName(group) }
+        var speech: String {
+            guard let days else { return "\(title) never trained" }
+            return days == 0 ? "\(title) trained today" : "\(title) rested \(days) \(days == 1 ? "day" : "days")"
+        }
+    }
+
+    struct Ranked<ID: Hashable> {
+        let workout: Candidate<ID>
+        /// Least rested first; unknown history sorts after trained groups.
+        let muscles: [MuscleRest]
+        var score: Int { muscles.first?.days ?? Int.max }
+    }
+
+    static func restLabel(days: Int?) -> String {
+        guard let days else { return "new" }
+        return days <= 0 ? "today" : "\(days)d"
+    }
+
+    static func ranked<ID: Hashable>(
+        _ workouts: [Candidate<ID>], lastTrained: [String: Date], now: Date,
+        calendar: Calendar = .current
+    ) -> [Ranked<ID>] {
+        let today = calendar.startOfDay(for: now)
+        return workouts.filter { $0.exerciseCount > 0 }.map { workout in
+            let muscles = Set(workout.muscleGroups).map { group in
+                MuscleRest(group: group, days: lastTrained[group].map {
+                    max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: $0), to: today).day ?? 0)
+                })
+            }.sorted {
+                let left = $0.days ?? Int.max, right = $1.days ?? Int.max
+                return left == right ? $0.group < $1.group : left < right
+            }
+            return Ranked(workout: workout, muscles: muscles)
+        }.sorted {
+            if $0.score != $1.score { return $0.score > $1.score }
+            switch ($0.workout.lastCompleted, $1.workout.lastCompleted) {
+            case (nil, .some): return true
+            case (.some, nil): return false
+            case let (.some(left), .some(right)) where left != right: return left < right
+            default: return $0.workout.title < $1.workout.title
+            }
+        }
+    }
+
+    static func pick<ID: Hashable>(
+        _ workouts: [Candidate<ID>], lastTrained: [String: Date], now: Date,
+        calendar: Calendar = .current
+    ) -> Ranked<ID>? {
+        ranked(workouts, lastTrained: lastTrained, now: now, calendar: calendar).first
+    }
+}
+
+private struct SuggestedWorkoutExercise: Identifiable {
+    let id: NSManagedObjectID
+    let title: String
+    let setCount: Int
+    let repetitions: Int?
+    let weight: Double?
+    let duration: TimeInterval?
+}
+
 struct StartWorkoutView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -472,6 +551,7 @@ struct StartWorkoutView: View {
     @EnvironmentObject private var exerciseStore: ExerciseStore
     @EnvironmentObject private var sceneState: SceneState
     @ObservedObject private var watchConnection = WatchConnectionManager.shared
+    @ObservedObject private var historyStore = TrainingHistoryStore.shared
 
     @FetchRequest(fetchRequest: StartWorkoutView.fetchRequest) private var workoutPlans
     @FetchRequest(fetchRequest: Workout.currentWorkoutFetchRequest) private var currentWorkouts
@@ -488,6 +568,8 @@ struct StartWorkoutView: View {
     @State private var showingRepeatBlocked = false
     @State private var selectedRecentWorkout: Workout?
     @State private var deletedWorkoutCount = 0
+    @State private var rankedSuggestions: [WorkoutSuggestion.Ranked<NSManagedObjectID>] = []
+    @State private var suggestedExercises: [SuggestedWorkoutExercise] = []
 
     static var fetchRequest: NSFetchRequest<WorkoutPlan> {
         let request: NSFetchRequest<WorkoutPlan> = WorkoutPlan.fetchRequest()
@@ -502,8 +584,8 @@ struct StartWorkoutView: View {
         return request
     }
 
-    private var recentWorkouts: [Workout] {
-        Array(workoutHistory.lazy.filter { $0.hasCompletedSets ?? false }.prefix(5))
+    private var lastWorkout: Workout? {
+        workoutHistory.first { $0.hasCompletedSets ?? false }
     }
 
     /// `WorkoutPlan` is retained as a persistence container for backwards
@@ -519,32 +601,53 @@ struct StartWorkoutView: View {
     var body: some View {
         NavigationStack {
             List {
+                if currentWorkouts.isEmpty, watchConnection.watchWorkoutAwaitingOpen == nil,
+                   let suggestion = rankedSuggestions.first {
+                    Section {
+                        MostRestedWorkoutCard(suggestion: suggestion, exercises: suggestedExercises) {
+                            startSuggestedWorkout(suggestion.workout.id)
+                        }
+                    }
+                    .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
+                    .listRowBackground(IronTheme.surface.clipShape(
+                        RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous)
+                    ))
+                }
+
                 Section {
                     quickStartCard
                         .ironStaggeredEntrance(index: 0)
                 }
                 .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
 
-                recentWorkoutsSection
-
                 Section {
                     if plans.isEmpty {
-                        ContentUnavailableView {
-                            Label("No saved workouts", systemImage: "dumbbell.fill")
-                        } description: {
-                            Text("Save a workout for push/pull/legs, upper/lower, or any split you train.")
-                        } actions: {
+                        VStack(spacing: 12) {
+                            Text("No Saved Workouts")
+                                .font(.headline)
+                                .foregroundStyle(IronTheme.primaryText)
+                            Text("Save the workouts you repeat, like Push, Pull and Legs.")
+                                .font(.subheadline)
+                                .foregroundStyle(IronTheme.secondaryText)
+                                .multilineTextAlignment(.center)
                             Button(action: newPlan) {
-                                Label("New Workout", systemImage: "plus")
+                                Label("New Saved Workout", systemImage: "plus")
                             }
                             .buttonStyle(.borderedProminent)
                             .buttonBorderShape(.capsule)
                             .controlSize(.large)
                             .labelStyle(.titleAndIcon)
                             .fixedSize(horizontal: false, vertical: true)
+                            Button("Import Saved Workout") {
+                                isShowingWorkoutImporter = true
+                            }
+                            .buttonStyle(.borderless)
                         }
                         .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
                         .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 24, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                     } else {
                         ForEach(Array(plans.enumerated()), id: \.element.objectID) { index, plan in
                             SavedWorkoutRow(
@@ -559,45 +662,35 @@ struct StartWorkoutView: View {
                                 onExport: { exportWorkout(plan) },
                                 canStartWorkout: currentWorkouts.isEmpty,
                                 isActiveWorkout: activeRoutineObjectID == plan.objectID,
+                                leastRestedMuscle: rankedSuggestions.first { $0.workout.id == plan.objectID }?.muscles.first,
                                 onWorkoutStarted: onOpenCurrentWorkout,
                                 onFailure: { persistenceError = $0.localizedDescription }
                             )
-                            .ironStaggeredEntrance(index: index + recentWorkouts.count + 1)
+                            .ironStaggeredEntrance(index: index + 1)
                             .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+                        }
+                        Button(action: newPlan) {
+                            Label("New Saved Workout", systemImage: "plus")
+                        }
+                        Button {
+                            isShowingWorkoutImporter = true
+                        } label: {
+                            Label("Import Saved Workout", systemImage: "square.and.arrow.down")
                         }
                     }
                 } header: {
                     Text("Saved Workouts")
                 }
 
-                if !plans.isEmpty {
-                    Section {
-                        Button(action: newPlan) {
-                            Label("Create Workout", systemImage: "plus")
-                        }
-                    }
-                }
+                lastWorkoutSection
             }
             .listStyle(.insetGrouped)
             .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: plans.map(\.objectID))
             .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
             .navigationTitle("Workout")
-            .navigationBarTitleDisplayMode(.large)
+            .toolbarTitleDisplayMode(.inlineLarge)
             .navigationDestination(item: $selectedRecentWorkout) { workout in
                 WorkoutDetailView(workout: workout)
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("New Workout", systemImage: "plus", action: newPlan)
-                        Button("Import Workout", systemImage: "square.and.arrow.down") {
-                            isShowingWorkoutImporter = true
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .accessibilityLabel("Create or import workout")
-                }
             }
             .sheet(item: $planEditorRoute) { route in
                 WorkoutPlanEditorHost(
@@ -609,6 +702,28 @@ struct StartWorkoutView: View {
                 .presentationDragIndicator(.visible)
             }
         }
+        .onAppear {
+            historyStore.observe(in: managedObjectContext)
+            refreshWorkoutSuggestions()
+        }
+        .onReceive(historyStore.$snapshot) { refreshWorkoutSuggestions(snapshot: $0) }
+        .onReceive(exerciseStore.$customExercises.dropFirst()) { _ in
+            // ExerciseStore rebuilds its catalog after publishing the custom list.
+            DispatchQueue.main.async { refreshWorkoutSuggestions() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSManagedObjectContextObjectsDidChange,
+                                                        object: managedObjectContext)
+            .filter { notification in
+                let entities: Set<String> = ["WorkoutPlan", "WorkoutRoutine", "WorkoutRoutineExercise", "WorkoutRoutineSet"]
+                return [NSInsertedObjectsKey, NSUpdatedObjectsKey, NSDeletedObjectsKey, NSRefreshedObjectsKey]
+                    .contains { key in
+                        (notification.userInfo?[key] as? Set<NSManagedObject>)?
+                            .contains { entities.contains($0.entity.name ?? "") } ?? false
+                    }
+            }
+            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main)) { _ in
+                refreshWorkoutSuggestions()
+            }
         .confirmationDialog(
             planToDelete.map { "Delete \($0.displayTitle)?" } ?? "Delete workout?",
             isPresented: Binding(
@@ -656,6 +771,78 @@ struct StartWorkoutView: View {
         } message: {
             Text(persistenceError ?? "Please try again.")
         }
+    }
+
+    private func refreshWorkoutSuggestions(snapshot: TrainingHistorySnapshot? = nil) {
+        let snapshot = snapshot ?? historyStore.snapshot
+        let now = Date()
+        let catalog = exerciseStore.exercisesByUUID
+        // This is the exact computation and group mapping behind Muscle Week's LAST column.
+        let summary = HomeWeekSummary(sessions: snapshot.sessions, muscleGroup: { catalog[$0]?.muscleGroup }, now: now)
+        let candidates = plans.map { plan in
+            let exercises = plan.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
+            return WorkoutSuggestion.Candidate(
+                id: plan.objectID, title: plan.displayTitle, exerciseCount: exercises.count,
+                muscleGroups: exercises.compactMap { exercise in
+                    guard let id = exercise.exerciseUuid, let group = catalog[id]?.muscleGroup,
+                          HomeWeekSummary.muscleGroups.contains(group) else { return nil }
+                    return group
+                }, lastCompleted: snapshot.lastRoutineCompletion[plan.objectID]
+            )
+        }
+        let ranked = WorkoutSuggestion.ranked(candidates, lastTrained: summary.lastTrained, now: now)
+        rankedSuggestions = ranked
+        guard let best = ranked.first, let plan = plans.first(where: { $0.objectID == best.workout.id }) else {
+            suggestedExercises = []
+            return
+        }
+        let exercises = plan.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
+        // Resolve only the three preview exercises, on invalidation, never from a view body.
+        suggestedExercises = exercises.prefix(3).map { exercise in
+            let catalogExercise = exercise.exerciseUuid.flatMap { catalog[$0] }
+            let type = exercise.trackingType(catalogExercise: catalogExercise)
+            let targets = exercise.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? []
+            var previous: [WorkoutSet] = []
+            if let uuid = exercise.exerciseUuid,
+               let entry = snapshot.sessions.first(where: { $0.date <= now && $0.exercises.contains { $0.uuid == uuid } })?
+                .exercises.first(where: { $0.uuid == uuid }),
+               let historicalExercise = try? managedObjectContext.existingObject(with: entry.id) as? WorkoutExercise,
+               !historicalExercise.isDeleted {
+                previous = (historicalExercise.workoutSets?.array as? [WorkoutSet] ?? []).filter(\.isCompleted)
+            }
+            let currentValues: [LoggerAssist.SetValues] = targets.isEmpty ? [.init()] : targets.map {
+                .init(weight: $0.weightValue ?? 0,
+                      repetitions: Int($0.maxRepetitionsValue ?? $0.minRepetitionsValue ?? 0),
+                      isWarmup: $0.tagValue == .warmUp)
+            }
+            let index = currentValues.firstIndex { !$0.isWarmup } ?? 0
+            let values = LoggerAssist.suggestedValues(
+                at: index, currentSets: currentValues,
+                previousSets: previous.map {
+                    .init(weight: $0.weightValue, repetitions: Int($0.repetitionsValue),
+                          isCompleted: $0.isCompleted, isWarmup: $0.tagValue == .warmUp)
+                }, trackingType: type, fallback: .init(weight: 0, repetitions: 0)
+            )
+            let repetitions = values?.repetitions ?? currentValues[index].repetitions
+            let weight = values?.weight ?? currentValues[index].weight
+            let duration = targets.indices.contains(index) ? targets[index].durationValue : nil
+            return SuggestedWorkoutExercise(
+                id: exercise.objectID, title: catalogExercise?.title ?? "Unknown Exercise",
+                setCount: targets.isEmpty ? previous.count : targets.count,
+                repetitions: type.usesReps && repetitions > 0 ? repetitions : nil,
+                weight: type.usesWeight && weight > 0 ? weight : nil,
+                duration: type.usesDuration ? duration ?? previous.first { $0.tagValue != .warmUp }?.durationValue : nil
+            )
+        }
+    }
+
+    private func startSuggestedWorkout(_ id: NSManagedObjectID) {
+        guard currentWorkouts.isEmpty, watchConnection.watchWorkoutAwaitingOpen == nil,
+              let plan = plans.first(where: { $0.objectID == id }) else { return }
+        do {
+            _ = try Workout.startNew(in: managedObjectContext, routine: plan)
+            onOpenCurrentWorkout()
+        } catch { persistenceError = error.localizedDescription }
     }
 
     /// The empty-workout path deserves more than a list row: it is the entry
@@ -778,27 +965,25 @@ struct StartWorkoutView: View {
     }
 
     @ViewBuilder
-    private var recentWorkoutsSection: some View {
-        if !recentWorkouts.isEmpty {
+    private var lastWorkoutSection: some View {
+        if let workout = lastWorkout {
             Section {
-                ForEach(Array(recentWorkouts.enumerated()), id: \.element.objectID) { index, workout in
-                    RecentWorkoutRow(
-                        workout: workout,
-                        onRepeat: { repeatWorkout(workout, blank: $0) },
-                        onViewDetails: { selectedRecentWorkout = workout },
-                        onSaveAsWorkout: { saveAsWorkout(workout) }
-                    )
-                    .ironStaggeredEntrance(index: index + 1)
-                }
+                RecentWorkoutRow(
+                    workout: workout,
+                    onRepeat: { repeatWorkout(workout, blank: $0) },
+                    onViewDetails: { selectedRecentWorkout = workout },
+                    onSaveAsWorkout: { saveAsWorkout(workout) }
+                )
+                .ironStaggeredEntrance(index: plans.count + 1)
             } header: {
                 ViewThatFits(in: .horizontal) {
                     HStack {
-                        Text("Recent Workouts")
+                        Text("Last Workout")
                         Spacer()
                         seeAllButton
                     }
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Recent Workouts")
+                        Text("Last Workout")
                         seeAllButton
                     }
                 }
@@ -1463,10 +1648,181 @@ private struct WorkoutPlanDetailView: View {
     }
 }
 
+private struct MostRestedWorkoutCard: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var settingsStore: SettingsStore
+
+    let suggestion: WorkoutSuggestion.Ranked<NSManagedObjectID>
+    let exercises: [SuggestedWorkoutExercise]
+    let onStart: () -> Void
+
+    private var lastDone: Text {
+        guard let date = suggestion.workout.lastCompleted else { return Text("never done") }
+        let calendar = Calendar.current
+        let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: date),
+                                                  to: calendar.startOfDay(for: Date())).day ?? 0)
+        if days == 0 { return Text("last done today") }
+        if days == 1 { return Text("last done yesterday") }
+        return Text("last done ") + Text("\(days)").font(.ironMetric(.subheadline, weight: .semibold))
+            + Text(" days ago")
+    }
+
+    private var summaryLabel: String {
+        let rest = suggestion.muscles.map(\.speech).joined(separator: ", ")
+        let count = suggestion.workout.exerciseCount
+        return "Most rested: \(suggestion.workout.title). "
+            + (rest.isEmpty ? "" : rest + ". ")
+            + "\(count) \(count == 1 ? "exercise" : "exercises")."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Most rested")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(IronTheme.accent)
+                    Text(suggestion.workout.title)
+                        .font(.title.bold())
+                        .foregroundStyle(IronTheme.primaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    (Text("\(suggestion.workout.exerciseCount)").font(.ironMetric(.subheadline, weight: .semibold))
+                     + Text(" exercise\(suggestion.workout.exerciseCount == 1 ? "" : "s") · ") + lastDone)
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+                restTags
+                VStack(spacing: 10) {
+                    ForEach(Array(exercises.enumerated()), id: \.element.id) { index, exercise in
+                        if index > 0 { Divider() }
+                        exerciseRow(exercise)
+                    }
+                }
+                if suggestion.workout.exerciseCount > exercises.count {
+                    (Text("+")
+                     + Text("\(suggestion.workout.exerciseCount - exercises.count)")
+                        .font(.ironMetric(.subheadline, weight: .semibold))
+                     + Text(" more"))
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(summaryLabel)
+
+            Button(action: onStart) {
+                Label("Start \(suggestion.workout.title)", systemImage: "play.fill")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .buttonBorderShape(.capsule)
+            .buttonStyle(.borderedProminent)
+            .frame(minHeight: 50)
+            .accessibilityLabel("Start \(suggestion.workout.title)")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var restTags: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            verticalRestTags
+        } else if #available(iOS 16.0, *) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 4) {
+                    ForEach(Array(suggestion.muscles.prefix(3)), id: \.group) { restTag($0) }
+                }
+                verticalRestTags
+            }
+        } else {
+            verticalRestTags
+        }
+    }
+
+    private var verticalRestTags: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(suggestion.muscles.prefix(3)), id: \.group) { restTag($0) }
+        }
+    }
+
+    private func restTag(_ muscle: WorkoutSuggestion.MuscleRest) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(muscle.days == nil ? IronTheme.secondaryText : (muscle.needsRecovery ? IronTheme.warning : IronTheme.success))
+                .frame(width: 6, height: 6)
+            (Text(muscle.title + " ")
+             + Text(muscle.label).font(.ironMetric(.caption, weight: .semibold)))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(IronTheme.secondaryText)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(IronTheme.field, in: Capsule())
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func exerciseRow(_ exercise: SuggestedWorkoutExercise) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                exerciseName(exercise)
+                exerciseTargets(exercise)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                exerciseName(exercise)
+                Spacer(minLength: 0)
+                exerciseTargets(exercise)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+    }
+
+    private func exerciseName(_ exercise: SuggestedWorkoutExercise) -> some View {
+        Text(exercise.title)
+            .font(.subheadline)
+            .foregroundStyle(IronTheme.primaryText)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func number(_ value: String) -> Text {
+        Text(value)
+            .font(.ironMetric(.subheadline, weight: .semibold))
+            .foregroundColor(IronTheme.primaryText)
+    }
+
+    private func exerciseTargets(_ exercise: SuggestedWorkoutExercise) -> Text {
+        guard exercise.setCount > 0 else {
+            return Text("No targets").font(.subheadline).foregroundColor(IronTheme.secondaryText)
+        }
+        var result = number("\(exercise.setCount)")
+        if let repetitions = exercise.repetitions {
+            result = result + Text(" × ").foregroundColor(IronTheme.secondaryText) + number("\(repetitions)")
+        } else {
+            result = result + Text(exercise.setCount == 1 ? " set" : " sets").foregroundColor(IronTheme.secondaryText)
+        }
+        if let weight = exercise.weight {
+            let unit = settingsStore.weightUnit
+            let value = WeightUnit.convert(weight: weight, from: .metric, to: unit)
+            let formatted = unit.displayNumberFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
+            result = result + Text(" · ").foregroundColor(IronTheme.secondaryText) + number(formatted)
+                + Text(" \(unit == .metric ? "kg" : "lb")").font(.footnote).foregroundColor(IronTheme.secondaryText)
+        }
+        if let duration = exercise.duration {
+            result = result + Text(" · ").foregroundColor(IronTheme.secondaryText) + number(LightFormat.duration(duration))
+        }
+        return result.font(.subheadline)
+    }
+}
+
 private struct SavedWorkoutRow: View {
     @Environment(\.managedObjectContext) private var managedObjectContext
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var exerciseStore: ExerciseStore
+    @State private var isShowingDetails = false
 
     @ObservedObject var workout: WorkoutRoutine
     let onEdit: () -> Void
@@ -1475,6 +1831,7 @@ private struct SavedWorkoutRow: View {
     let onExport: () -> Void
     let canStartWorkout: Bool
     let isActiveWorkout: Bool
+    let leastRestedMuscle: WorkoutSuggestion.MuscleRest?
     let onWorkoutStarted: () -> Void
     let onFailure: (Error) -> Void
 
@@ -1507,28 +1864,36 @@ private struct SavedWorkoutRow: View {
         !workoutExercises.isEmpty && (isActiveWorkout || canStartWorkout)
     }
 
+    private var metadata: Text {
+        var result = Text("\(workoutExercises.count)").font(.ironMetric(.subheadline, weight: .semibold))
+            + Text(" exercise\(workoutExercises.count == 1 ? "" : "s")")
+        if let muscle = leastRestedMuscle {
+            let rest: Text
+            if let days = muscle.days {
+                rest = days == 0 ? Text("today")
+                    : Text("\(days)").font(.ironMetric(.subheadline, weight: .semibold))
+                        + Text(days == 1 ? " day" : " days")
+            } else {
+                rest = Text("new")
+            }
+            result = result + Text(" · ") + (Text("\(muscle.title.lowercased()) ") + rest)
+                .foregroundColor(muscle.needsRecovery ? IronTheme.warning : IronTheme.secondaryText)
+        }
+        return result + Text(" · \(lastPerformed)")
+    }
+
     var body: some View {
         let layout = dynamicTypeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
             : AnyLayout(HStackLayout(spacing: 12))
         layout {
-            NavigationLink {
-                WorkoutPlanDetailView(
-                    plan: workout,
-                    canStartWorkout: canStartWorkout,
-                    isActiveWorkout: isActiveWorkout,
-                    onEdit: onEdit,
-                    onWorkoutStarted: onWorkoutStarted,
-                    onFailure: onFailure
-                )
-            } label: {
+            Button { isShowingDetails = true } label: {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(workout.displayTitle)
                             .font(.headline)
                             .foregroundStyle(IronTheme.primaryText)
-                        (Text("\(workoutExercises.count)").font(.ironMetric(.subheadline, weight: .semibold))
-                         + Text(" exercise\(workoutExercises.count == 1 ? "" : "s") · \(lastPerformed)"))
+                        metadata
                             .font(.subheadline)
                             .foregroundStyle(IronTheme.secondaryText)
                         muscleTags
@@ -1542,7 +1907,27 @@ private struct SavedWorkoutRow: View {
                             .foregroundStyle(IronTheme.accent)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
                 .accessibilityElement(children: .combine)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens saved workout details.")
+            .background {
+                NavigationLink(isActive: $isShowingDetails) {
+                    WorkoutPlanDetailView(
+                        plan: workout,
+                        canStartWorkout: canStartWorkout,
+                        isActiveWorkout: isActiveWorkout,
+                        onEdit: onEdit,
+                        onWorkoutStarted: onWorkoutStarted,
+                        onFailure: onFailure
+                    )
+                } label: {
+                    EmptyView()
+                }
+                .hidden()
+                .accessibilityHidden(true)
             }
             startButton
         }
@@ -1582,11 +1967,11 @@ private struct SavedWorkoutRow: View {
                 .font(.subheadline.weight(.semibold))
                 .fixedSize()
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(.bordered)
         .buttonBorderShape(.capsule)
         .controlSize(.small)
-        .frame(minHeight: 30)
-        .padding(.vertical, 8)
+        .tint(IronTheme.accent)
+        .frame(minHeight: IronTheme.controlHeight)
         .contentShape(Rectangle())
         .disabled(!canStart)
         .accessibilityLabel(isActiveWorkout ? "Resume \(workout.displayTitle)" : "Start \(workout.displayTitle)")
@@ -1635,7 +2020,8 @@ private struct RecentWorkoutRow: View {
     private var title: String { workout.displayTitle(in: exerciseStore.exercises) }
 
     private var metadata: String {
-        let date = WorkoutPreviewFormatting.date(workout.start)
+        let date = LightFormat.listDate(workout.start)
+        guard !(workout.title?.isEmpty ?? true) || workout.workoutRoutine != nil else { return date }
         let muscles = workout.muscleGroups(in: exerciseStore.exercises)
             .filter { !$0.isEmpty && $0.lowercased() != "other" }
             .prefix(3).map { Exercise.displayName(forMuscleGroup: $0) }
@@ -1667,15 +2053,15 @@ private struct RecentWorkoutRow: View {
 
             Button { onRepeat(false) } label: {
                 Text("Repeat")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(IronTheme.accent)
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize()
             }
             .buttonStyle(.bordered)
-            .buttonBorderShape(.roundedRectangle(radius: IronTheme.compactCornerRadius))
+            .buttonBorderShape(.capsule)
             .controlSize(.small)
+            .tint(IronTheme.accent)
             .frame(minHeight: IronTheme.controlHeight)
             .contentShape(Rectangle())
-            .fixedSize()
             .accessibilityLabel("Repeat \(title)")
         }
         .contextMenu {
@@ -1694,11 +2080,12 @@ private struct WorkoutPreviewMetricLine: View {
     var now: Date = .now
 
     private var duration: String {
-        let seconds = Int(max(workout.isCurrentWorkout
-            ? now.timeIntervalSince(workout.start ?? now)
-            : workout.duration ?? 0, 0))
+        guard workout.isCurrentWorkout else {
+            return LightFormat.duration(workout.duration ?? 0)
+        }
+        let seconds = Int(max(now.timeIntervalSince(workout.start ?? now), 0))
         if seconds >= 3_600 {
-            return String(format: "%dh %02dm", seconds / 3_600, (seconds % 3_600) / 60)
+            return String(format: "%d:%02d", seconds / 3_600, (seconds % 3_600) / 60)
         }
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
@@ -1719,19 +2106,6 @@ private struct WorkoutPreviewMetricLine: View {
 }
 
 enum WorkoutPreviewFormatting {
-    static func date(_ date: Date?) -> String {
-        guard let date else { return "Unknown date" }
-        let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "Today" }
-        if calendar.isDateInYesterday(date) { return "Yesterday" }
-        let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate(
-            calendar.component(.year, from: date) == calendar.component(.year, from: Date())
-                ? "EEE, MMM d" : "MMM d, yyyy"
-        )
-        return formatter.string(from: date)
-    }
-
     static func volume(_ value: Double) -> String {
         if value >= 10_000 {
             return (value / 1_000).formatted(.number.precision(.fractionLength(1))) + "k"

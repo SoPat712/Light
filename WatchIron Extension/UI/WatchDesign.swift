@@ -84,6 +84,14 @@ enum IronTheme {
         default: return accent.opacity(0.22)
         }
     }
+    static func setIconColor(_ tag: String?) -> Color {
+        switch tag {
+        case "warmUp": return metricSets
+        case "dropSet": return setDrop
+        case "failure": return danger
+        default: return settingsGray
+        }
+    }
     static func effortColor(_ rating: Int) -> Color {
         switch rating {
         case 1...3: return metricVolume
@@ -111,8 +119,10 @@ enum IronMotion {
 
 extension View {
     /// Action buttons only. Data rows own their semantic surface and use .plain.
-    @ViewBuilder func watchGlassButton(prominent: Bool = false) -> some View {
-        if prominent {
+    @ViewBuilder func watchGlassButton(prominent: Bool = false, destructive: Bool = false) -> some View {
+        if destructive {
+            buttonStyle(WatchDestructiveButtonStyle())
+        } else if prominent {
             buttonStyle(WatchPrimaryButtonStyle())
         } else {
             buttonStyle(WatchSecondaryButtonStyle())
@@ -129,6 +139,28 @@ extension View {
         }
     }
 
+    @ViewBuilder fileprivate func watchDestructiveCapsule() -> some View {
+        if #available(watchOS 26.0, *) {
+            glassEffect(.regular.tint(IronTheme.danger), in: Capsule())
+        } else {
+            background(IronTheme.danger, in: Capsule())
+        }
+    }
+
+    @ViewBuilder fileprivate func watchSecondaryCapsule(isPressed: Bool) -> some View {
+        if #available(watchOS 26.0, *) {
+            background {
+                if isPressed {
+                    Capsule(style: .continuous).fill(IronTheme.glassFillPressed)
+                }
+            }
+            .glassEffect(.regular, in: Capsule(style: .continuous))
+        } else {
+            background(isPressed ? IronTheme.glassFillPressed : IronTheme.glassFill,
+                       in: Capsule(style: .continuous))
+        }
+    }
+
     @ViewBuilder func watchNeutralCapsule() -> some View {
         if #available(watchOS 26.0, *) {
             glassEffect(.regular, in: Capsule())
@@ -137,13 +169,14 @@ extension View {
         }
     }
 
-    func watchPlatter(_ color: Color = IronTheme.platter) -> some View {
-        padding(.horizontal, 8).padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
+    func watchPlatter(_ color: Color = IronTheme.platter, verticalPadding: CGFloat = 6,
+                      minHeight: CGFloat? = nil) -> some View {
+        padding(.horizontal, 8).padding(.vertical, verticalPadding)
+            .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
             .background(color, in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
     }
-    func watchVitalsInset(showsBack: Bool = true, showsVitals: Bool = true) -> some View {
-        modifier(WatchVitalsInset(showsBack: showsBack, showsVitals: showsVitals))
+    func watchVitalsInset(showsBack: Bool = true, showsVitals: Bool = true, showsTrailingButton: Bool = false) -> some View {
+        modifier(WatchVitalsInset(showsBack: showsBack, showsVitals: showsVitals, showsTrailingButton: showsTrailingButton))
     }
 
     // Fades scrolled content out behind the toolbar so the vitals stay legible.
@@ -184,6 +217,24 @@ struct WatchPrimaryButtonStyle: ButtonStyle {
     }
 }
 
+/// Full-width destructive confirmation without stretching in an unbounded layout.
+struct WatchDestructiveButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
+            .foregroundStyle(IronTheme.onAccent)
+            .watchDestructiveCapsule()
+            .contentShape(Capsule(style: .continuous))
+            .opacity(isEnabled ? 1 : 0.4)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: configuration.isPressed)
+    }
+}
+
 /// The approved neutral action treatment; never apply it to a workout/data row.
 struct WatchSecondaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
@@ -193,8 +244,7 @@ struct WatchSecondaryButtonStyle: ButtonStyle {
         configuration.label
             .padding(.horizontal, 10).padding(.vertical, 6)
             .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
-            .background(configuration.isPressed ? IronTheme.glassFillPressed : IronTheme.glassFill,
-                        in: Capsule(style: .continuous))
+            .watchSecondaryCapsule(isPressed: configuration.isPressed)
             .contentShape(Capsule(style: .continuous))
             .opacity(isEnabled ? 1 : 0.4)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
@@ -243,27 +293,33 @@ struct WatchContentList<Content: View>: View {
 struct WatchVitalsInset: ViewModifier {
     var showsBack = true
     var showsVitals = true
+    var showsTrailingButton = false
     @EnvironmentObject private var store: WorkoutSessionManagerStore
     @Environment(\.isLuminanceReduced) private var reducedLuminance
     @Environment(\.dismiss) private var dismiss
     @ScaledMetric(relativeTo: .headline) private var clockReserve: CGFloat = 52
 
+    private let toolbarButtonWidth: CGFloat = 34
+    private let toolbarSpacing: CGFloat = 4
+
+    /// watchOS hides its clock if the leading item consumes the clock's room.
+    /// Budget the pill after both toolbar controls, including their spacing.
+    private var vitalsWidth: CGFloat {
+        let screen = WKInterfaceDevice.current().screenBounds.width
+        // Margins measured on the owner's Ultra (2026-11-01): the device draws this
+        // row about 1.5 pt wider than the simulator, so trimming them (32/18 pt was
+        // tried on 2026-11-05) hides the clock on device while the simulator still
+        // shows it. Don't reduce these without a device check.
+        // The fixed widest-value templates choose the pill's form.
+        let margins: CGFloat = screen < 180 ? 22 : 34
+        let back = showsBack ? toolbarButtonWidth + toolbarSpacing : 0
+        let trailing = showsTrailingButton ? toolbarButtonWidth + toolbarSpacing : 0
+        return max(0, screen - margins - clockReserve - back - trailing)
+    }
+
     private var activeSnapshot: WatchWorkoutSnapshot? {
         guard let snapshot = store.workoutSnapshot, !snapshot.isFinishedRecord else { return nil }
         return snapshot
-    }
-
-    /// The system drops its clock when the toolbar leaves too little room for it,
-    /// so the vitals get a fixed width that always clears the widest time.
-    private var vitalsWidth: CGFloat {
-        let screen = WKInterfaceDevice.current().screenBounds.width
-        let compact = screen < 180
-        return max(44, screen - (compact ? 22 : 34) - clockReserve * (compact ? 0.88 : 1) - (showsBack ? 40 : 0))
-    }
-
-    /// Toolbar items sit lower than the system clock; this puts the vitals on its line.
-    private var vitalsLift: CGFloat {
-        WKInterfaceDevice.current().screenBounds.width < 180 ? -8 : -10
     }
 
     func body(content: Content) -> some View {
@@ -276,23 +332,23 @@ struct WatchVitalsInset: ViewModifier {
             .toolbar {
                 if showsVitals, let snapshot = activeSnapshot {
                     ToolbarItem(placement: .topBarLeading) {
-                        HStack(spacing: 6) {
+                        HStack(alignment: .center, spacing: toolbarSpacing) {
                             if showsBack {
                                 Button { dismiss() } label: {
                                     Image(systemName: "chevron.backward")
                                         .font(.system(size: 17, weight: .semibold))
                                         .foregroundStyle(IronTheme.primaryText)
-                                        .frame(width: 34, height: 34)
+                                        .frame(width: toolbarButtonWidth, height: 34)
                                         .background(IronTheme.glassFill, in: Circle())
                                         .contentShape(Circle())
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("Back")
                             }
-                            WatchVitalsRow(manager: store.workoutSessionManager, snapshot: snapshot)
-                                .privacySensitive(false).unredacted()
-                                .frame(width: vitalsWidth, alignment: .leading)
-                                .offset(y: vitalsLift)
+                            if !showsTrailingButton {
+                                WatchVitalsRow(manager: store.workoutSessionManager, snapshot: snapshot, availableWidth: vitalsWidth)
+                                    .privacySensitive(false).unredacted()
+                            }
                         }
                     }
                 }
@@ -300,8 +356,7 @@ struct WatchVitalsInset: ViewModifier {
     }
 }
 
-/// Rating pages keep unit-free vitals above the set/workout context so neither
-/// competes with the dismissal, clock or confirmation controls in the toolbar.
+/// Rating context stays below the toolbar, clear of the clock and confirmation.
 struct WatchRatingVitalsHeader: View {
     @EnvironmentObject private var store: WorkoutSessionManagerStore
     let title: String
@@ -366,7 +421,7 @@ struct WatchRatingVitalsHeader: View {
         let manager = store.workoutSessionManager
         #if DEBUG
         if snapshot.isHealthTestWorkout || manager?.healthTestMode == true {
-            VitalsLine(heartRate: "--", energy: "--", textSize: textSize)
+            VitalsLine(heartRate: "—", energy: "--", textSize: textSize)
         } else {
             measurements(manager: manager, snapshot: snapshot)
         }
@@ -379,7 +434,7 @@ struct WatchRatingVitalsHeader: View {
         if let manager, manager.uuid == snapshot.workoutID {
             LiveVitals(manager: manager, textSize: textSize)
         } else {
-            VitalsLine(heartRate: "--", energy: WatchNumber.whole(snapshot.activeEnergyKilocalories), textSize: textSize)
+            VitalsLine(heartRate: "—", energy: WatchNumber.whole(snapshot.activeEnergyKilocalories), textSize: textSize)
         }
     }
 
@@ -400,7 +455,7 @@ struct WatchRatingVitalsHeader: View {
         private func heartRate(at date: Date) -> String {
             guard let value = manager.mostRecentHeartRate, value.isFinite, value > 0,
                   let sampleDate = manager.mostRecentHeartRateDate,
-                  (-5...30).contains(date.timeIntervalSince(sampleDate)) else { return "--" }
+                  (-5...30).contains(date.timeIntervalSince(sampleDate)) else { return "—" }
             return WatchNumber.whole(value)
         }
     }
@@ -416,7 +471,8 @@ struct WatchRatingVitalsHeader: View {
                 metric("flame.fill", value: energy, color: IronTheme.metricEnergy)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Heart rate \(heartRate) beats per minute, \(energy) active calories")
+            .accessibilityLabel((heartRate == "—" ? "Heart rate unavailable" : "Heart rate \(heartRate) beats per minute")
+                                + ", \(energy) active calories")
         }
 
         private func metric(_ symbol: String, value: String, color: Color) -> some View {
@@ -424,7 +480,7 @@ struct WatchRatingVitalsHeader: View {
                 Image(systemName: symbol).font(.system(size: textSize, weight: .semibold))
                 Text(value).font(.ironMetric(size: textSize * 15 / 13, weight: .semibold))
             }
-            .foregroundStyle(color)
+            .foregroundStyle(value == "—" ? IronTheme.secondaryText : color)
             .fixedSize()
         }
     }
@@ -469,6 +525,19 @@ struct WatchStepGlyph: View {
     }
 }
 
+/// One option-row icon treatment, shared with Watch Settings.
+struct WatchSettingsIcon: View {
+    let symbol: String
+    let color: Color
+
+    var body: some View {
+        Image(systemName: symbol).font(.body.weight(.semibold))
+            .foregroundStyle(IronTheme.onAccent)
+            .frame(width: 28, height: 28).background(color, in: Circle())
+            .accessibilityHidden(true)
+    }
+}
+
 struct WatchSettingsLabel: View {
     let title: String
     let symbol: String
@@ -476,21 +545,15 @@ struct WatchSettingsLabel: View {
     var value: String? = nil
     var valueColor: Color = IronTheme.secondaryText
     var destructive = false
-    var symbolColor: Color? = nil
     var metricValue = true
     var valueLineLimit: Int? = nil
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: symbol).font(.body.weight(.semibold))
-                .foregroundStyle(symbolColor ?? IronTheme.onAccent)
-                .frame(width: 28, height: 28).background(color, in: Circle())
-                .accessibilityHidden(true)
+            WatchSettingsIcon(symbol: symbol, color: color)
             VStack(alignment: .leading, spacing: 2) { titleText; valueText }
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
-        .background(IronTheme.platter, in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
+        .watchPlatter(verticalPadding: 4, minHeight: 46)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
@@ -768,7 +831,7 @@ struct WatchNumericEditor: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .scenePadding(.horizontal)
-        .navigationTitle("").watchVitalsInset()
+        .navigationTitle("").watchVitalsInset(showsTrailingButton: true)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { onCommit(isEmpty ? nil : snapped(draft)); dismiss() } label: { Image(systemName: "checkmark") }
@@ -832,11 +895,13 @@ enum WatchNumber {
         return String(format: "%d:%02d", value / 60, value % 60)
     }
     static func duration(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds >= 60 else { return "<1m" }
         let minutes = max(0, Int(seconds) / 60)
-        return minutes >= 60 ? "\(minutes / 60)h \(String(format: "%02d", minutes % 60))m" : "\(minutes)m"
+        return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
     }
     static func elapsed(_ snapshot: WatchWorkoutSnapshot, at date: Date, reduced: Bool) -> String {
         let seconds = max(0, (snapshot.endDate ?? date).timeIntervalSince(snapshot.startDate))
+        if snapshot.isFinishedRecord { return duration(seconds) }
         return reduced ? "\(Int(seconds) / 60) min" : clock(seconds.rounded(.down))
     }
     static func dateAndTime(_ date: Date) -> String {

@@ -26,15 +26,17 @@ struct FeedView : View {
 
     @ObservedObject private var historyStore = TrainingHistoryStore.shared
     @FetchRequest(fetchRequest: FeedView.currentWorkoutFetchRequest) private var currentWorkouts: FetchedResults<Workout>
+    @FetchRequest(fetchRequest: FeedView.savedPlansFetchRequest) private var savedPlans: FetchedResults<WorkoutPlan>
+    @FetchRequest(fetchRequest: FeedView.finishedWorkoutPresenceFetchRequest) private var finishedWorkouts: FetchedResults<Workout>
 
     @State private var showingMeasurements = false
     @State private var showingChartSelector = false
     @State private var showingChartEditor = false
     @State private var showingCustomize = false
     @State private var persistenceError: String?
-    @AppStorage(HomeWeekStyle.storageKey) private var weekStyleRaw = HomeWeekStyle.rings.rawValue
-    @AppStorage(HomeSection.orderKey) private var sectionOrder = ""
-    @AppStorage(HomeSection.hiddenKey) private var hiddenSections = ""
+    @State private var selectedVolumeDayID: Date?
+    @State private var selectedPinnedDates: [PinnedChart: Date] = [:]
+    @AppStorage(HomeSection.cardsKey) private var storedCards: String?
     @AppStorage(WeeklySetTarget.lowKey) private var setTargetLow = WeeklySetTarget.defaultLow
     @AppStorage(WeeklySetTarget.highKey) private var setTargetHigh = WeeklySetTarget.defaultHigh
 
@@ -49,26 +51,22 @@ struct FeedView : View {
         Workout.currentWorkoutFetchRequest
     }
 
+    private static var finishedWorkoutPresenceFetchRequest: NSFetchRequest<Workout> {
+        let request = workoutFetchRequest
+        request.fetchLimit = 1
+        return request
+    }
+
+    static var savedPlansFetchRequest: NSFetchRequest<WorkoutPlan> {
+        let request = WorkoutPlan.fetchRequest()
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \WorkoutPlan.title, ascending: true)]
+        request.relationshipKeyPathsForPrefetching = ["workoutRoutines", "workoutRoutines.workoutRoutineExercises"]
+        return request
+    }
+
     private var completedWorkouts: [TrainingSessionSnapshot] { historyStore.snapshot.sessions }
     private var recentWorkouts: [TrainingSessionSnapshot] { Array(completedWorkouts.prefix(3)) }
-    private var weekStyle: HomeWeekStyle { HomeWeekStyle(rawValue: weekStyleRaw) ?? .rings }
     private var trainingStreak: Int { historyStore.snapshot.streak() }
-
-    private var dateText: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEEE, MMMM d"
-        return formatter.string(from: Date())
-    }
-
-    private func startEmptyWorkout() {
-        do {
-            _ = try Workout.startNew(in: managedObjectContext)
-            sceneState.selectedTab = .workout
-            sceneState.isCurrentWorkoutExpanded = true
-        } catch {
-            persistenceError = "The workout was not started. \(error.localizedDescription)"
-        }
-    }
 
     private var weekRangeText: String {
         guard let week = Calendar.current.dateInterval(of: .weekOfYear, for: Date()) else { return "" }
@@ -76,91 +74,108 @@ struct FeedView : View {
         return week.start.formatted(.dateTime.month(.abbreviated).day()) + " – " + last.formatted(.dateTime.month(.abbreviated).day())
     }
 
-    /// Fitness-style summary: the week drawn the way the user chose, and the way into a workout.
-    private func weekSection(_ summary: HomeWeekSummary) -> some View {
+    /// The first week card carries the This Week title, date range and summary totals.
+    private func weekCard(_ card: HomeSection, summary: HomeWeekSummary, isFirstWeekCard: Bool) -> some View {
         let unit = settingsStore.weightUnit.unit.symbol
+        let title = isFirstWeekCard ? "This Week" : card.title
         return Section {
-            VStack(alignment: .leading, spacing: 16) {
+            let display = VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .center) {
-                    Text("This Week")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(IronTheme.primaryText)
+                    cardTitle(title)
                     Spacer(minLength: 8)
-                    Text(weekRangeText)
-                        .font(.subheadline)
-                        .foregroundStyle(IronTheme.secondaryText)
-                    Menu {
-                        Picker("Show As", selection: $weekStyleRaw) {
-                            ForEach(HomeWeekStyle.allCases) { style in
-                                Label(style.title, systemImage: style.systemImage).tag(style.rawValue)
-                            }
-                        }
-                        Button("Customize Home", systemImage: "slider.horizontal.3") { showingCustomize = true }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .font(.title3)
-                            .frame(minWidth: IronTheme.controlHeight, minHeight: 32)
-                            .contentShape(Rectangle())
+                    if isFirstWeekCard {
+                        Text(weekRangeText)
+                            .font(.subheadline)
+                            .foregroundStyle(IronTheme.secondaryText)
                     }
-                    .accessibilityLabel("This Week Options")
-                    .padding(.trailing, -10)
                 }
 
-                switch weekStyle {
+                switch card {
                 case .rings:
                     WeekRingsView(summary: summary, unit: unit, valueLabel: { compactWeight($0) })
                 case .pace:
                     WeekPaceView(summary: summary, unit: unit, valueLabel: { compactWeight($0) })
-                    Divider()
-                    weekMetrics(summary, showsTime: true)
-                case .muscles:
-                    weekMetrics(summary)
-                    Divider()
+                    if isFirstWeekCard {
+                        Divider()
+                        weekMetrics(summary, showsTime: true)
+                    }
+                case .muscleWeek:
+                    if isFirstWeekCard {
+                        weekMetrics(summary)
+                        Divider()
+                    }
                     MuscleWeekGrid(summary: summary)
                 case .bars:
-                    weekMetrics(summary)
+                    if isFirstWeekCard { weekMetrics(summary) }
                     WeeklyVolumeChart(
                         days: summary.days.map { DayVolume(date: $0.date, volume: $0.volume, isFuture: $0.isFuture) },
                         unit: unit,
-                        valueLabel: { compactWeight($0) }
+                        valueLabel: { compactWeight($0) },
+                        selectedDayID: $selectedVolumeDayID
                     )
-                    if let comparison = weekComparisonText(summary) {
-                        comparison
-                            .font(.footnote)
-                            .foregroundStyle(IronTheme.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                default:
+                    EmptyView()
                 }
-
-                Button {
-                    if currentWorkouts.isEmpty {
-                        startEmptyWorkout()
-                    } else {
-                        sceneState.selectedTab = .workout
-                        sceneState.isCurrentWorkoutExpanded = true
-                    }
-                } label: {
-                    Label(
-                        currentWorkouts.isEmpty ? "Start Workout" : "Resume Workout",
-                        systemImage: "play.fill"
-                    )
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                }
-                .controlSize(.large)
-                .buttonBorderShape(.capsule)
-                .buttonStyle(.borderedProminent)
             }
             .padding(16)
             .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
-            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: weekStyleRaw)
+            .modifier(HomeCardAccessibilitySummary(title: title,
+                value: weekCardAccessibilityValue(card, summary: summary, isFirstWeekCard: isFirstWeekCard),
+                isSummary: card == .rings))
             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+            if card == .bars {
+                display.accessibilityAdjustableAction { direction in
+                    adjustVolumeDay(direction, summary: summary)
+                }
+            } else {
+                display
+            }
         }
     }
 
-    /// Workouts, sets and volume; Pace swaps volume, already in its header, for time.
+    private func weekCardAccessibilityValue(_ card: HomeSection, summary: HomeWeekSummary, isFirstWeekCard: Bool) -> String {
+        let unit = settingsStore.weightUnit
+        let totals = "\(HomeCardSpeech.count(summary.workouts, singular: "workout", plural: "workouts")), \(HomeCardSpeech.count(summary.sets, singular: "set", plural: "sets")), volume \(HomeCardSpeech.weight(summary.volume, unit: unit))."
+        switch card {
+        case .rings:
+            return WeekRingsView(summary: summary, unit: unit.unit.symbol, valueLabel: compactWeight)
+                .accessibilitySummary(weightUnit: unit)
+        case .pace:
+            let pace = WeekPaceView(summary: summary, unit: unit.unit.symbol, valueLabel: compactWeight)
+                .accessibilitySummary(weightUnit: unit)
+            return pace + (isFirstWeekCard ? " \(totals) Training time \(HomeCardSpeech.duration(summary.duration))." : "")
+        case .muscleWeek:
+            return MuscleWeekGrid(summary: summary).accessibilitySummary + (isFirstWeekCard ? " " + totals : "")
+        case .bars:
+            let selected = selectedVolumeDayID.flatMap { id in summary.days.first { $0.id == id } }
+            let best = summary.days.max { $0.volume < $1.volume }
+            let detail: String
+            if let selected {
+                detail = "Selected \(selected.date.formatted(.dateTime.weekday(.wide))), \(HomeCardSpeech.weight(selected.volume, unit: unit))\(selected.isFuture ? ", upcoming" : "")."
+            } else if let best, best.volume > 0 {
+                detail = "Most on \(best.date.formatted(.dateTime.weekday(.wide))), \(HomeCardSpeech.weight(best.volume, unit: unit))."
+            } else {
+                detail = "No volume logged this week."
+            }
+            return "Volume for each day this week. \(detail)" + (isFirstWeekCard ? " " + totals : "")
+        default:
+            return totals
+        }
+    }
+
+    private func adjustVolumeDay(_ direction: AccessibilityAdjustmentDirection, summary: HomeWeekSummary) {
+        guard !summary.days.isEmpty else { return }
+        let current = selectedVolumeDayID.flatMap { id in summary.days.firstIndex { $0.id == id } }
+        switch direction {
+        case .increment: selectedVolumeDayID = summary.days[min((current ?? -1) + 1, summary.days.count - 1)].id
+        case .decrement: selectedVolumeDayID = summary.days[max((current ?? summary.days.count) - 1, 0)].id
+        @unknown default: break
+        }
+    }
+
+    /// Workouts, sets and volume; Pace uses time beside its volume comparison.
     private func weekMetrics(_ summary: HomeWeekSummary, showsTime: Bool = false) -> some View {
         let layout = dynamicTypeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
@@ -170,7 +185,7 @@ struct FeedView : View {
                        tint: IronTheme.accent, index: 0)
             weekMetric(value: "\(summary.sets)", label: "Sets", tint: IronTheme.metricSets, index: 1)
             if showsTime {
-                weekMetric(value: Workout.durationFormatter.string(from: summary.duration) ?? "0m", label: "Time",
+                weekMetric(value: LightFormat.duration(summary.duration), label: "Time",
                            tint: IronTheme.metricTime, index: 2)
             } else {
                 weekMetric(value: compactWeight(summary.volume), label: "Volume",
@@ -198,20 +213,17 @@ struct FeedView : View {
         .accessibilityLabel("\(value)\(unit.map { " " + $0 } ?? "") \(label)")
     }
 
-    private func weekComparisonText(_ summary: HomeWeekSummary) -> Text? {
-        guard summary.lastVolume > 0 else { return nil }
-        let change = (summary.volume - summary.lastVolume) / summary.lastVolume * 100
-        guard abs(change) > 3 else {
-            return Text(Image(systemName: "equal")) + Text("  Volume is about the same as last week")
-        }
-        let direction = change > 0 ? "up" : "down"
-        let tint = change > 0 ? IronTheme.metricVolume : IronTheme.secondaryText
-        return Text(Image(systemName: change > 0 ? "arrow.up.right" : "arrow.down.right")).foregroundColor(tint)
-            + Text("  Volume is \(direction) ")
-            + Text("\(Int(abs(change).rounded()))%")
-                .font(.ironMetric(.footnote, weight: .semibold))
-                .foregroundColor(tint)
-            + Text(" on last week")
+    private func cardTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(IronTheme.primaryText)
+            .textCase(nil)
+    }
+
+    private func cardHeader(_ card: HomeSection) -> some View {
+        cardTitle(card.title)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .listRowSeparator(.hidden)
     }
 
     /// Average weekly sets per muscle group over the last four weeks against the user's target,
@@ -220,6 +232,7 @@ struct FeedView : View {
         let target = setTargetLow...max(setTargetHigh, setTargetLow + 1)
         let trained = summary.weeklyAverages.values.contains { $0 > 0 }
         return Section {
+            cardHeader(.muscles)
             if trained {
                 WeeklySetsChart(averages: summary.weeklyAverages, target: target)
                     .padding(.vertical, 6)
@@ -228,8 +241,6 @@ struct FeedView : View {
                     .font(.subheadline)
                     .foregroundStyle(IronTheme.secondaryText)
             }
-        } header: {
-            Text("Muscle Focus")
         } footer: {
             if trained {
                 Text(muscleFocusFooter(summary, target: target))
@@ -237,6 +248,21 @@ struct FeedView : View {
                 Text("Based on completed sets over the last 4 weeks.")
             }
         }
+        .modifier(HomeCardAccessibilitySummary(title: HomeSection.muscles.title,
+            value: muscleFocusAccessibilityValue(summary, target: target)))
+    }
+
+    private func muscleFocusAccessibilityValue(_ summary: HomeWeekSummary, target: ClosedRange<Int>) -> String {
+        let groups = HomeWeekSummary.muscleGroups
+        let meaning = "Average weekly sets per muscle group over the last 4 weeks, compared with your target of \(target.lowerBound) to \(target.upperBound) sets."
+        guard summary.weeklyAverages.values.contains(where: { $0 > 0 }) else {
+            return meaning + " No completed sets in the last 4 weeks. Complete a few workouts to see how many sets each muscle group gets a week."
+        }
+        let reaching = groups.filter { (summary.weeklyAverages[$0] ?? 0) >= Double(target.lowerBound) }.count
+        let values = groups.map {
+            "\(HomeWeekSummary.displayName($0)) \(HomeCardSpeech.number(summary.weeklyAverages[$0] ?? 0)) sets"
+        }.joined(separator: ", ")
+        return "\(meaning) \(reaching) of \(groups.count) groups reach \(target.lowerBound) sets a week. \(values). \(muscleFocusFooter(summary, target: target))"
     }
 
     private func muscleFocusFooter(_ summary: HomeWeekSummary, target: ClosedRange<Int>) -> String {
@@ -257,32 +283,41 @@ struct FeedView : View {
 
     private var calendarSection: some View {
         Section {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 6) {
+                    cardTitle(HomeSection.calendar.title)
+                    streakChip
+                }
+                .listRowSeparator(.hidden)
+                .modifier(HomeCardAccessibilitySummary(title: HomeSection.calendar.title, value: calendarAccessibilityValue))
+            } else {
+                HStack {
+                    cardTitle(HomeSection.calendar.title)
+                    Spacer(minLength: 8)
+                    streakChip
+                }
+                .listRowSeparator(.hidden)
+                .modifier(HomeCardAccessibilitySummary(title: HomeSection.calendar.title, value: calendarAccessibilityValue))
+            }
             HomeTrainingCalendar(workoutsByDay: historyStore.snapshot.byDay)
                 .padding(.vertical, 6)
 
             NavigationLink("Open Training Calendar") {
                 WorkoutCalendarView()
             }
-        } header: {
-            ViewThatFits(in: .horizontal) {
-                HStack {
-                    Text("Last 4 Weeks")
-                    Spacer()
-                    streakChip
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Last 4 Weeks")
-                    streakChip
-                }
-            }
-        } footer: {
-            if trainingStreak == 0 {
-                Text("Train this week to start a streak.")
-            } else {
-                Text("\(trainingStreak)").font(.ironMetric(.footnote, weight: .semibold))
-                + Text(" week streak.")
-            }
+            .accessibilityLabel("Open Training Calendar")
         }
+    }
+
+    private var calendarAccessibilityValue: String {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let firstDay = calendar.date(byAdding: .day, value: -27, to: today) ?? today
+        let trainedDays = historyStore.snapshot.byDay.filter { day, workouts in
+            day >= firstDay && day <= today && !workouts.isEmpty
+        }.count
+        let streak = trainingStreak >= 2 ? ", \(trainingStreak)-week streak" : ""
+        return "Days you trained over the last four weeks. \(HomeCardSpeech.count(trainedDays, singular: "training day", plural: "training days"))\(streak)."
     }
 
     @ViewBuilder
@@ -294,7 +329,10 @@ struct FeedView : View {
             } icon: {
                 Image(systemName: "flame.fill")
             }
+            .labelStyle(.titleAndIcon)
             .font(.ironMetric(.caption))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(IronTheme.accent)
             .padding(.horizontal, 8)
             .frame(minHeight: 24)
@@ -313,6 +351,11 @@ struct FeedView : View {
     /// a device preference.
     private var measurementsSection: some View {
         Section {
+            cardHeader(.body)
+                .modifier(HomeCardAccessibilitySummary(title: HomeSection.body.title, value: bodyAccessibilityValue))
+            bodyWeightTrend
+                .listRowSeparator(.hidden)
+
             ForEach(homeMeasurementKinds, id: \.self) { kind in
                 let layout = dynamicTypeSize.isAccessibilitySize
                     ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
@@ -336,7 +379,7 @@ struct FeedView : View {
                 }
                 .padding(.vertical, 2)
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                .accessibilityElement(children: .combine)
+                .accessibilityHidden(true)
             }
 
             NavigationLink("Measurements & Trends") {
@@ -344,18 +387,49 @@ struct FeedView : View {
                     .environmentObject(settingsStore)
                     .ironScreen()
             }
+            .accessibilityLabel("Measurements & Trends")
 
             Button(bodyMetricsStore.entries.isEmpty ? "Log First Measurement" : "Log Measurement") {
                 showingMeasurements = true
             }
-        } header: {
-            Text("Body")
+            .accessibilityLabel(bodyMetricsStore.entries.isEmpty ? "Log First Measurement" : "Log Measurement")
         } footer: {
             if let latest = bodyMetricsStore.latest {
                 Text("Last logged \(latest.date.formatted(.relative(presentation: .named))).")
+                    .accessibilityHidden(true)
             } else {
                 Text("Weight, body fat, and tape measurements stay on this device.")
+                    .accessibilityHidden(true)
             }
+        }
+    }
+
+    private var bodyAccessibilityValue: String {
+        let unit = settingsStore.weightUnit
+        let values = homeMeasurementKinds.map { kind -> String in
+            guard let canonical = bodyMetricsStore.latestValue(for: kind) else { return "\(kind.title) not logged" }
+            let value = kind.displayValue(from: canonical, weightUnit: unit)
+            var result = "\(kind.title) \(HomeCardSpeech.number(value)) \(measurementSpokenUnit(kind))"
+            if let change = measurementChange(kind) {
+                result += ", \(change > 0 ? "up" : "down") \(HomeCardSpeech.number(abs(change))) \(measurementSpokenUnit(kind)) since the previous measurement"
+            }
+            return result
+        }.joined(separator: ". ")
+        let now = Date()
+        let weights = bodyMetricsStore.entries.filter { $0.date <= now && $0[.bodyWeight] != nil }
+        let trend = bodyWeightChange(weights, now: now).map { change in
+            " Weight \(change == 0 ? "unchanged" : "\(change > 0 ? "up" : "down") \(HomeCardSpeech.displayWeight(abs(change), unit: unit))") in 30 days."
+        } ?? ""
+        let latest = bodyMetricsStore.latest.map { " Last logged \($0.date.formatted(.relative(presentation: .named)))." }
+            ?? " Weight, body fat, and tape measurements stay on this device."
+        return "Body weight trend over the last 90 days and latest measurements. \(values).\(trend)\(latest)"
+    }
+
+    private func measurementSpokenUnit(_ kind: BodyMeasurementKind) -> String {
+        switch kind {
+        case .bodyWeight: return HomeCardSpeech.weightUnit(settingsStore.weightUnit)
+        case .bodyFat: return "percent"
+        default: return settingsStore.weightUnit == .metric ? "centimeters" : "inches"
         }
     }
 
@@ -405,40 +479,61 @@ struct FeedView : View {
     }
 
     private var pinnedChartsSection: some View {
-        Section {
+        let charts = pinnedChartsStore.pinnedCharts.compactMap { pin -> HomePinnedChart? in
+            guard let exercise = exerciseStore.find(with: pin.exerciseUuid) else { return nil }
+            return HomePinnedChart(pin: pin, exercise: exercise,
+                points: PinnedExerciseChartRow.loadPoints(exercise: exercise, measurementType: pin.measurementType,
+                    weightUnit: settingsStore.weightUnit, context: managedObjectContext))
+        }
+        let summaries = charts.map { chart in
+            PinnedExerciseChartRow.accessibilitySummary(exercise: chart.exercise, measurementType: chart.pin.measurementType,
+                points: chart.points, selectedDate: selectedPinnedDates[chart.pin], weightUnit: settingsStore.weightUnit)
+        }
+        let value = summaries.isEmpty
+            ? "Exercise charts you pinned. \(pinnedChartsStore.pinnedCharts.isEmpty ? "No charts pinned." : "No available exercise charts.")"
+            : "Exercise charts you pinned, over the last 3 months. " + summaries.joined(separator: " ")
+        return Section {
+            cardHeader(.pinned)
+                .modifier(HomeCardAccessibilitySummary(title: HomeSection.pinned.title, value: value))
             if pinnedChartsStore.pinnedCharts.isEmpty {
                 Button("Pin an Exercise Chart") { showingChartSelector = true }
+                    .accessibilityLabel("Pin an Exercise Chart")
             } else {
-                ForEach(pinnedChartsStore.pinnedCharts, id: \.self) { chart in
-                    if let exercise = exerciseStore.find(with: chart.exerciseUuid) {
-                        PinnedExerciseChartRow(exercise: exercise, measurementType: chart.measurementType)
-                            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                    }
+                ForEach(charts) { chart in
+                    PinnedExerciseChartRow(exercise: chart.exercise, measurementType: chart.pin.measurementType,
+                        points: chart.points, selectedDate: Binding(
+                            get: { selectedPinnedDates[chart.pin] },
+                            set: { selectedPinnedDates[chart.pin] = $0 }))
+                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                        .accessibilityHidden(true)
                 }
-            }
-        } header: {
-            HStack {
-                Label("Pinned Charts", systemImage: "pin.fill")
-                    .symbolEffect(.bounce, options: .nonRepeating, value: reduceMotion ? 0 : pinnedChartsStore.pinnedCharts.count)
-                Spacer()
-                Menu("Chart Options", systemImage: "ellipsis.circle") {
-                    Button("Pin Chart", systemImage: "pin") { showingChartSelector = true }
-                    if !pinnedChartsStore.pinnedCharts.isEmpty {
-                        Button("Edit Pins", systemImage: "slider.horizontal.3") { showingChartEditor = true }
-                    }
+                Button { showingChartSelector = true } label: {
+                    Label("Pin Chart", systemImage: "pin")
                 }
-                .labelStyle(.iconOnly)
-                .textCase(nil)
+                .accessibilityLabel("Pin Chart")
+                Button { showingChartEditor = true } label: {
+                    Label("Edit Pins", systemImage: "slider.horizontal.3")
+                }
+                .accessibilityLabel("Edit Pins")
             }
         }
     }
 
     private var recentSection: some View {
-        Section("Recent Training") {
+        Section {
+            cardHeader(.recent)
+                .modifier(HomeCardAccessibilitySummary(title: HomeSection.recent.title, value: recentAccessibilityValue))
             if recentWorkouts.isEmpty {
                 Text("Completed workouts build a private training timeline here.")
                     .font(.subheadline)
                     .foregroundStyle(IronTheme.secondaryText)
+                    .accessibilityHidden(true)
+                if finishedWorkouts.isEmpty {
+                    NavigationLink(destination: RestoreBackupView(backupStore: .shared)) {
+                        Text("Restore from Backup")
+                    }
+                    .buttonStyle(.bordered)
+                }
             } else {
                 ForEach(recentWorkouts.prefix(3)) { workout in
                     NavigationLink {
@@ -451,12 +546,12 @@ struct FeedView : View {
                                     .foregroundStyle(IronTheme.primaryText)
                                     .lineLimit(2)
                                 Spacer(minLength: 8)
-                                Text(WorkoutPreviewFormatting.date(workout.date))
+                                Text(LightFormat.listDate(workout.date))
                                     .font(.subheadline)
                                     .foregroundStyle(IronTheme.secondaryText)
                             }
                             IronWorkoutMetricLine(
-                                duration: Workout.durationFormatter.string(from: workout.duration) ?? "0m",
+                                duration: LightFormat.duration(workout.duration),
                                 sets: workout.setCount,
                                 volume: compactWeight(workout.volume),
                                 unit: settingsStore.weightUnit.unit.symbol
@@ -464,6 +559,8 @@ struct FeedView : View {
                         }
                         .padding(.vertical, 2)
                     }
+                    .accessibilityLabel("Open \(workout.displayTitle(in: exerciseStore))")
+                    .accessibilityValue(workoutAccessibilityValue(workout))
                 }
 
                 Button("See All History") {
@@ -473,20 +570,341 @@ struct FeedView : View {
         }
     }
 
-    private var visibleSections: [HomeSection] {
-        let hidden = HomeSection.hidden(hiddenSections)
-        return HomeSection.ordered(sectionOrder).filter { !hidden.contains($0) }
+    private var recentAccessibilityValue: String {
+        guard !recentWorkouts.isEmpty else { return "Your latest completed workouts. Completed workouts build a private training timeline here." }
+        return "Your latest completed workouts. " + recentWorkouts.map { workout in
+            "\(workout.displayTitle(in: exerciseStore)), \(workoutAccessibilityValue(workout))."
+        }.joined(separator: " ")
+    }
+
+    private func workoutAccessibilityValue(_ workout: TrainingSessionSnapshot) -> String {
+        "\(LightFormat.listDate(workout.date)), \(HomeCardSpeech.duration(workout.duration)), \(HomeCardSpeech.count(workout.setCount, singular: "set", plural: "sets")), volume \(HomeCardSpeech.weight(workout.volume, unit: settingsStore.weightUnit))"
+    }
+
+    private var recordsSection: some View {
+        let now = Date()
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
+        let records = Array(historyStore.snapshot.recordEvents.lazy
+            .prefix(while: { $0.date >= cutoff }).filter { $0.date <= now }.prefix(3))
+        return Section {
+            cardHeader(.records)
+                .modifier(HomeCardAccessibilitySummary(title: HomeSection.records.title,
+                    value: "New personal records from the last 30 days. " + (records.isEmpty
+                        ? "No new records in the last 30 days."
+                        : records.map { recordAccessibilityValue($0) + "." }.joined(separator: " "))))
+            if records.isEmpty {
+                Text("No new records in the last 30 days.")
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .accessibilityHidden(true)
+            } else {
+                ForEach(records) { record in
+                    NavigationLink {
+                        if let exercise = exerciseStore.find(with: record.exerciseID) {
+                            ExerciseDetailView(exercise: exercise)
+                        } else {
+                            WorkoutDetailView(workout: managedObjectContext.object(with: record.workoutID) as! Workout)
+                        }
+                    } label: {
+                        recordRow(record)
+                    }
+                    .accessibilityLabel("Open record for \(exerciseStore.find(with: record.exerciseID)?.title ?? "Exercise")")
+                    .accessibilityValue(recordAccessibilityValue(record))
+                }
+            }
+        }
+    }
+
+    private func recordAccessibilityValue(_ record: ExerciseBests.RecordEvent) -> String {
+        let set = record.result
+        let unit = settingsStore.weightUnit
+        let name = exerciseStore.find(with: record.exerciseID)?.title ?? "Exercise"
+        let detail: String
+        switch record.kind {
+        case .heaviest:
+            detail = "heaviest set, \(HomeCardSpeech.weight(set.weight, unit: unit)) for \(HomeCardSpeech.count(set.repetitions, singular: "repetition", plural: "repetitions"))"
+        case .estimatedOneRepMax:
+            detail = "estimated one-repetition maximum, \(HomeCardSpeech.weight(set.estimatedOneRepMax ?? 0, unit: unit))"
+        case .set:
+            var parts: [String] = []
+            if set.trackingType.usesWeight {
+                let role = set.trackingType == .assistedBodyweight ? " assistance" : set.trackingType == .weightedBodyweight ? " added weight" : ""
+                parts.append(HomeCardSpeech.weight(set.weight, unit: unit) + role)
+            }
+            if set.trackingType.usesReps {
+                parts.append(HomeCardSpeech.count(set.repetitions, singular: "repetition", plural: "repetitions"))
+            }
+            if set.trackingType.usesDistance, let meters = set.distance {
+                let distance = WorkoutSet.distanceDisplayValue(meters, weightUnit: unit)
+                parts.append("\(HomeCardSpeech.number(distance, maximumFractionDigits: 2)) \(unit == .metric ? "kilometers" : "miles")")
+            }
+            if set.trackingType.usesDuration, let duration = set.duration {
+                parts.append(HomeCardSpeech.duration(duration, includesSeconds: true))
+            }
+            detail = "set personal record, " + parts.joined(separator: ", ")
+        }
+        return "\(name), \(detail), \(LightFormat.listDate(record.date))"
+    }
+
+    private func recordRow(_ record: ExerciseBests.RecordEvent) -> some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
+        return layout {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(exerciseStore.find(with: record.exerciseID)?.title ?? "Exercise")
+                    .font(.headline)
+                    .foregroundStyle(IronTheme.primaryText)
+                Text(recordDescription(record))
+                    .font(.ironMetric(.subheadline, weight: .semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+            }
+            if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
+            Text(LightFormat.listDate(record.date))
+                .font(.subheadline)
+                .foregroundStyle(IronTheme.secondaryText)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func recordDescription(_ record: ExerciseBests.RecordEvent) -> String {
+        let set = record.result
+        let unit = settingsStore.weightUnit
+        let weight = WeightUnit.format(weight: set.weight, from: .metric, to: unit)
+        switch record.kind {
+        case .heaviest: return "\(weight) × \(set.repetitions) · Heaviest"
+        case .estimatedOneRepMax:
+            return "e1RM \(WeightUnit.format(weight: set.estimatedOneRepMax ?? 0, from: .metric, to: unit))"
+        case .set:
+            // History also counts Pareto improvements that are neither an all-time
+            // heaviest set nor an e1RM maximum. Keep their label accurate.
+            var parts: [String] = []
+            if set.trackingType.usesWeight { parts.append(set.trackingType.weightPrefix + weight) }
+            if set.trackingType.usesReps {
+                let reps = "\(set.repetitions)" + (set.trackingType.usesWeight ? "" : " reps")
+                if !parts.isEmpty { parts[0] += " × " + reps } else { parts.append(reps) }
+            }
+            if set.trackingType.usesDistance, let distance = set.distance {
+                parts.append(WorkoutSet.distanceTitle(distance, weightUnit: unit))
+            }
+            if set.trackingType.usesDuration, let duration = set.duration {
+                parts.append(SetTrackingType.durationText(duration))
+            }
+            return parts.joined(separator: " · ") + " · Set PR"
+        }
+    }
+
+    private var bodyWeightTrend: some View {
+        let now = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -90, to: now) ?? now
+        let entries = bodyMetricsStore.entries.filter { $0.date <= now && $0[.bodyWeight] != nil }
+        let samples = entries.filter { $0.date >= start }.reversed().compactMap { entry -> BodyMeasurementTrendSample? in
+            guard let weight = entry[.bodyWeight] else { return nil }
+            return BodyMeasurementTrendSample(id: entry.id, date: entry.date,
+                value: BodyMeasurementKind.bodyWeight.displayValue(from: weight, weightUnit: settingsStore.weightUnit))
+        }
+        return Button { showingMeasurements = true } label: {
+            if let latest = entries.first, let weight = latest[.bodyWeight] {
+                VStack(alignment: .leading, spacing: 8) {
+                    IronMetricValue(
+                        value: String(format: "%.1f", BodyMeasurementKind.bodyWeight.displayValue(from: weight, weightUnit: settingsStore.weightUnit)),
+                        unit: settingsStore.weightUnit.unit.symbol,
+                        style: .title2, weight: .semibold, unitStyle: .footnote,
+                        tint: IronTheme.metricBody
+                    )
+                    if let change = bodyWeightChange(entries, now: now) {
+                        Label {
+                            Text("\(change > 0 ? "+" : change < 0 ? "−" : "")\(String(format: "%.1f", abs(change))) \(settingsStore.weightUnit.unit.symbol) in 30 days")
+                        } icon: {
+                            Image(systemName: change > 0 ? "arrow.up" : change < 0 ? "arrow.down" : "arrow.right")
+                        }
+                        .font(.ironMetric(.subheadline, weight: .semibold))
+                        .foregroundStyle(IronTheme.secondaryText)
+                    }
+                    if #available(iOS 16.0, *), samples.count >= 2 {
+                        HomeBodyWeightTrend(samples: samples, unit: settingsStore.weightUnit.unit.symbol)
+                            .frame(height: 64)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            } else {
+                Text("Log your weight in Body to see a trend.")
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Log Measurement")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Opens body measurements")
+    }
+
+    private func bodyWeightChange(_ entries: [BodyMeasurementEntry], now: Date) -> Double? {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
+        // Use the last logged value at the start of the window; do not present
+        // a short, two-entry change as though it covered a full month.
+        guard let latest = entries.first, latest.date > cutoff,
+              let previous = entries.first(where: { $0.date <= cutoff }),
+              let weight = latest[.bodyWeight], let oldWeight = previous[.bodyWeight] else { return nil }
+        return BodyMeasurementKind.bodyWeight.displayValue(from: weight - oldWeight, weightUnit: settingsStore.weightUnit)
+    }
+
+    private var nextSavedWorkout: WorkoutRoutine? {
+        let groups = savedPlans.map { $0.workoutRoutines?.array as? [WorkoutRoutine] ?? [] }
+        let routines = groups.flatMap { $0 }
+        let completions = historyStore.snapshot.lastRoutineCompletion
+        let now = Date()
+        let mostRecent = routines.filter { completions[$0.objectID].map { $0 <= now } ?? false }
+            .max { (completions[$0.objectID] ?? .distantPast) < (completions[$1.objectID] ?? .distantPast) }
+        if let mostRecent,
+           let ordered = groups.first(where: { $0.count > 1 && $0.contains(mostRecent) }),
+           let index = ordered.firstIndex(of: mostRecent) {
+            return ordered[(index + 1) % ordered.count]
+        }
+        let cutoff = Calendar.current.date(byAdding: .day, value: -60, to: now) ?? now
+        return routines.filter { routine in
+            completions[routine.objectID].map { $0 >= cutoff && $0 <= now } ?? false
+        }.min { (completions[$0.objectID] ?? .distantPast) < (completions[$1.objectID] ?? .distantPast) }
+            ?? routines.first
+    }
+
+    private var nextWorkoutSection: some View {
+        Section {
+            cardHeader(.nextWorkout)
+                .modifier(HomeCardAccessibilitySummary(title: HomeSection.nextWorkout.title, value: nextWorkoutAccessibilityValue))
+            if let routine = nextSavedWorkout {
+                let isActive = currentWorkouts.first?.workoutRoutine?.objectID == routine.objectID
+                let count = routine.workoutRoutineExercises?.count ?? 0
+                nextWorkoutLayout {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(routine.displayTitle)
+                            .font(.headline)
+                            .foregroundStyle(IronTheme.primaryText)
+                        Text("\(count) \(count == 1 ? "exercise" : "exercises") · \(lastDone(routine))")
+                            .font(.subheadline)
+                            .foregroundStyle(IronTheme.secondaryText)
+                    }
+                    .accessibilityHidden(true)
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
+                    Button(isActive ? "Resume" : "Start") { startSavedWorkout(routine) }
+                        .font(.subheadline.weight(.semibold))
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .disabled(count == 0 || (!isActive && !currentWorkouts.isEmpty))
+                        .accessibilityLabel("\(isActive ? "Resume" : "Start") \(routine.displayTitle)")
+                }
+                .padding(.vertical, 2)
+            } else {
+                Text("Save a workout to see it here.")
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+
+    private var nextWorkoutAccessibilityValue: String {
+        guard let routine = nextSavedWorkout else { return "The saved workout that's up next. Save a workout to see it here." }
+        let count = routine.workoutRoutineExercises?.count ?? 0
+        let active = currentWorkouts.first?.workoutRoutine?.objectID == routine.objectID
+        return "The saved workout that's up next. \(routine.displayTitle), \(HomeCardSpeech.count(count, singular: "exercise", plural: "exercises")). \(lastDone(routine)).\(active ? " Workout in progress; resume to continue." : "")"
     }
 
     @ViewBuilder
-    private func homeSection(_ section: HomeSection, summary: HomeWeekSummary) -> some View {
+    private func nextWorkoutLayout<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        if #available(iOS 16.0, *) {
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
+            layout { content() }
+        } else if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 12, content: content)
+        } else {
+            HStack(alignment: .center, spacing: 12, content: content)
+        }
+    }
+
+    private func lastDone(_ routine: WorkoutRoutine) -> String {
+        guard let date = historyStore.snapshot.lastRoutineCompletion[routine.objectID] else { return "Never done" }
+        return "Last done \(date.formatted(.relative(presentation: .named)))"
+    }
+
+    private func startSavedWorkout(_ routine: WorkoutRoutine) {
+        if currentWorkouts.first?.workoutRoutine?.objectID == routine.objectID {
+            sceneState.selectedTab = .workout
+            sceneState.isCurrentWorkoutExpanded = true
+            return
+        }
+        do {
+            _ = try Workout.startNew(in: managedObjectContext, routine: routine)
+            sceneState.selectedTab = .workout
+            sceneState.isCurrentWorkoutExpanded = true
+        } catch {
+            persistenceError = "The workout was not started. \(error.localizedDescription)"
+        }
+    }
+
+    private var homeCards: [HomeSection] { HomeSection.resolve(storedCards) }
+
+    private func updateCards(_ change: (inout [HomeSection]) -> Void) {
+        var cards = homeCards
+        change(&cards)
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+            storedCards = HomeSection.encode(cards)
+        }
+    }
+
+    @ViewBuilder
+    private func cardActions(_ card: HomeSection) -> some View {
+        if #available(iOS 17.0, *) {
+            Button("Customize Home", systemImage: "slider.horizontal.3") { showingCustomize = true }
+            Button("Remove from Home", systemImage: "minus.circle", role: .destructive) {
+                updateCards { $0.removeAll { $0 == card } }
+            }
+        } else {
+            Button { showingCustomize = true } label: {
+                Label("Customize Home", systemImage: "slider.horizontal.3")
+            }
+            Button(role: .destructive) {
+                updateCards { $0.removeAll { $0 == card } }
+            } label: {
+                Label("Remove from Home", systemImage: "minus.circle")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func homeSection(_ section: HomeSection, summary: HomeWeekSummary, isFirstWeekCard: Bool) -> some View {
         switch section {
-        case .week: weekSection(summary)
+        case .rings, .pace, .muscleWeek, .bars: weekCard(section, summary: summary, isFirstWeekCard: isFirstWeekCard)
         case .calendar: calendarSection
         case .recent: recentSection
         case .muscles: muscleFocusSection(summary)
         case .body: measurementsSection
         case .pinned: pinnedChartsSection
+        case .records: recordsSection
+        case .nextWorkout: nextWorkoutSection
+        case .trainingTrend:
+            Section {
+                VStack(alignment: .leading, spacing: 16) {
+                    cardHeader(.trainingTrend)
+                        .accessibilityHidden(true)
+                    TrainingTrendCard()
+                }
+                .listRowSeparator(.hidden)
+            }
+        case .muscleLoad:
+            Section {
+                cardHeader(.muscleLoad)
+                    .accessibilityHidden(true)
+                MuscleLoadCard()
+                    .padding(.vertical, 6)
+            }
         }
     }
 
@@ -500,19 +918,25 @@ struct FeedView : View {
                 if let error = historyStore.error {
                     Section { Button("Retry Loading Training") { historyStore.refresh() } } footer: { Text(error) }
                 }
-                ForEach(visibleSections) { section in
-                    homeSection(section, summary: summary)
-                }
-                Section {
-                    Button("Customize Home", systemImage: "slider.horizontal.3") { showingCustomize = true }
+                let cards = homeCards
+                let firstWeekCard = cards.first(where: \.isWeekCard)
+                ForEach(cards) { section in
+                    homeSection(section, summary: summary, isFirstWeekCard: section == firstWeekCard)
+                        .modifier(HomeCardAccessibilityContainer(isSingleElement: section == .muscles))
+                        .contextMenu { cardActions(section) }
                 }
             }
             .listStyle(.insetGrouped)
             .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
             .task { historyStore.observe(in: managedObjectContext) }
             .navigationTitle("Home")
-            .navigationBarTitleDisplayMode(.large)
-            .modifier(HomeDateSubtitle(text: dateText))
+            .toolbarTitleDisplayMode(.inlineLarge)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Edit") { showingCustomize = true }
+                        .accessibilityLabel("Edit Home")
+                }
+            }
             .navigationDestination(isPresented: $showingMeasurements) {
                 BodyMeasurementsView(store: bodyMetricsStore)
                     .environmentObject(settingsStore)
@@ -540,20 +964,23 @@ struct FeedView : View {
             } message: {
                 Text(persistenceError ?? "Please try again.")
             }
-            .sensoryFeedback(.error, trigger: persistenceError) { _, error in error != nil }
+            .modifier(HomeWorkoutStartErrorFeedback(persistenceError: persistenceError))
         }
     }
 }
 
-/// Today's date under the large title, where Fitness and Health put it.
-private struct HomeDateSubtitle: ViewModifier {
-    let text: String
+private struct HomeWorkoutStartErrorFeedback: ViewModifier {
+    let persistenceError: String?
 
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.navigationSubtitle(text)
+        if #available(iOS 17.0, *) {
+            content.sensoryFeedback(.error, trigger: persistenceError) { _, error in error != nil }
         } else {
-            content
+            content.onChange(of: persistenceError) { error in
+                if error != nil {
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                }
+            }
         }
     }
 }
@@ -662,11 +1089,11 @@ struct DayVolume: Identifiable {
 private struct WeeklyVolumeChart: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hasAppeared = false
-    @State private var selectedDayID: Date?
 
     let days: [DayVolume]
     let unit: String
     let valueLabel: (Double) -> String
+    @Binding var selectedDayID: Date?
 
     private var maxVolume: Double {
         let maximum = days.map(\.volume).max() ?? 0
@@ -713,10 +1140,6 @@ private struct WeeklyVolumeChart: View {
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: days.map(\.volume))
             .onAppear { hasAppeared = true }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Volume by day this week")
-            .accessibilityValue(accessibilitySummary)
-            .accessibilityAdjustableAction(adjustDay)
             .sensoryFeedback(.selection, trigger: selectedDay?.id)
 
             if let day = selectedDay ?? days.max(by: { $0.volume < $1.volume }), day.volume > 0 || selectedDay != nil {
@@ -731,23 +1154,6 @@ private struct WeeklyVolumeChart: View {
                     .contentTransition(reduceMotion ? .opacity : .numericText())
                     .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: day.volume)
             }
-        }
-    }
-
-    private var accessibilitySummary: String {
-        let selectedDays = selectedDayID.map { id in days.filter { $0.id == id } } ?? days
-        return selectedDays.map {
-            "\($0.date.formatted(.dateTime.weekday(.wide))), \(valueLabel($0.volume)) \(unit)"
-        }.joined(separator: "; ")
-    }
-
-    private func adjustDay(_ direction: AccessibilityAdjustmentDirection) {
-        guard !days.isEmpty else { return }
-        let current = selectedDayID.flatMap { id in days.firstIndex { $0.id == id } }
-        switch direction {
-        case .increment: selectedDayID = days[min((current ?? -1) + 1, days.count - 1)].id
-        case .decrement: selectedDayID = days[max((current ?? days.count) - 1, 0)].id
-        @unknown default: break
         }
     }
 }
@@ -1134,6 +1540,54 @@ private struct BodyMeasurementTrendSample: Identifiable {
     let id: UUID
     let date: Date
     let value: Double
+}
+
+@available(iOS 16.0, *)
+private struct HomeBodyWeightTrend: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasAppeared = false
+    let samples: [BodyMeasurementTrendSample]
+    let unit: String
+
+    private var yDomain: ClosedRange<Double> {
+        let low = samples.map(\.value).min() ?? 0
+        let high = samples.map(\.value).max() ?? 1
+        let padding = max((high - low) * 0.25, 0.5)
+        return max(0, low - padding)...(high + padding)
+    }
+
+    var body: some View {
+        Chart {
+            ForEach(samples) { sample in
+                LineMark(
+                    x: .value("Date", sample.date),
+                    y: .value("Body Weight", hasAppeared || reduceMotion ? sample.value : yDomain.lowerBound)
+                )
+                .interpolationMethod(.linear)
+                .lineStyle(StrokeStyle(lineWidth: 2))
+                .foregroundStyle(IronTheme.metricBody)
+            }
+            if let latest = samples.last {
+                PointMark(
+                    x: .value("Date", latest.date),
+                    y: .value("Body Weight", hasAppeared || reduceMotion ? latest.value : yDomain.lowerBound)
+                )
+                .symbolSize(20)
+                .foregroundStyle(IronTheme.metricBody)
+            }
+        }
+        .chartYScale(domain: yDomain)
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
+        .onAppear { hasAppeared = true }
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Body weight trend, \(samples.count) entries over the last 90 days")
+        .accessibilityValue(samples.first.flatMap { first in
+            samples.last.map { String(format: "%.1f to %.1f %@", first.value, $0.value, unit) }
+        } ?? "")
+    }
 }
 
 private struct BodyMeasurementTrendChart: View {
@@ -1780,25 +2234,33 @@ struct BodyMeasurementsView: View {
     }
 }
 
+private struct HomePinnedChart: Identifiable {
+    let pin: PinnedChart
+    let exercise: Exercise
+    let points: [PinnedExerciseChartRow.Point]
+    var id: PinnedChart { pin }
+}
+
 struct PinnedExerciseChartRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var hasAppeared = false
     @EnvironmentObject private var settingsStore: SettingsStore
-    @Environment(\.managedObjectContext) private var managedObjectContext
 
     let exercise: Exercise
     let measurementType: WorkoutExerciseChartData.MeasurementType
+    let points: [Point]
 
-    @State private var selectedDate: Date?
+    @Binding var selectedDate: Date?
 
-    private struct Point: Identifiable {
+    struct Point: Identifiable {
         let id: NSManagedObjectID
         let date: Date
         let value: Double
     }
 
-    private var points: [Point] {
+    static func loadPoints(exercise: Exercise, measurementType: WorkoutExerciseChartData.MeasurementType,
+                           weightUnit: WeightUnit, context: NSManagedObjectContext) -> [Point] {
         let timeFrame = WorkoutExerciseChartData.TimeFrame.threeMonths
         let request = WorkoutExercise.historyFetchRequest(
             of: exercise.uuid,
@@ -1807,11 +2269,10 @@ struct PinnedExerciseChartRow: View {
         )
         let evaluator = WorkoutExerciseChartData.evaluator(
             for: measurementType,
-            weightUnit: settingsStore.weightUnit,
-            maxRepetitionsForOneRepMax: settingsStore.maxRepetitionsOneRepMax
+            weightUnit: weightUnit
         )
 
-        let workoutExercises = (try? managedObjectContext.fetch(request)) ?? []
+        let workoutExercises = (try? context.fetch(request)) ?? []
         return workoutExercises
             .compactMap { workoutExercise -> Point? in
                 guard let date = workoutExercise.workout?.start,
@@ -1820,6 +2281,38 @@ struct PinnedExerciseChartRow: View {
                 return Point(id: workoutExercise.objectID, date: date, value: value)
             }
             .sorted { $0.date < $1.date }
+    }
+
+    static func accessibilitySummary(exercise: Exercise, measurementType: WorkoutExerciseChartData.MeasurementType,
+                                     points: [Point], selectedDate: Date?, weightUnit: WeightUnit) -> String {
+        let metric: String
+        switch measurementType {
+        case .oneRM: metric = "Estimated one-repetition maximum"
+        case .totalWeight: metric = "Total lifting volume"
+        case .totalSets: metric = "Total sets"
+        case .totalRepetitions: metric = "Total repetitions"
+        }
+        let subject = "\(metric) for \(exercise.title)"
+        guard let first = points.first, let last = points.last else {
+            return "\(subject): no completed sets in the last 3 months."
+        }
+        let selected = selectedDate.flatMap { date in
+            points.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
+        }
+        let shown = selected ?? last
+        func spokenValue(_ value: Double) -> String {
+            switch measurementType {
+            case .oneRM, .totalWeight: return HomeCardSpeech.displayWeight(value, unit: weightUnit)
+            case .totalSets: return HomeCardSpeech.count(Int(value.rounded()), singular: "set", plural: "sets")
+            case .totalRepetitions: return HomeCardSpeech.count(Int(value.rounded()), singular: "repetition", plural: "repetitions")
+            }
+        }
+        let date = shown.date.formatted(.dateTime.month(.wide).day())
+        let value = "\(subject): \(selected == nil ? "" : "selected ")\(spokenValue(shown.value)) on \(date)"
+        guard points.count > 1 else { return value + ". One workout in the last 3 months." }
+        let change = shown.value - first.value
+        let delta = abs(change) < 0.05 ? "unchanged" : "\(change > 0 ? "up" : "down") \(spokenValue(abs(change)))"
+        return "\(value), \(delta) \(selected == nil ? "in 3 months" : "from the first value in the last 3 months")."
     }
 
     private var metricColor: Color {
@@ -1900,7 +2393,6 @@ struct PinnedExerciseChartRow: View {
                     .chartXSelection(value: $selectedDate)
                     .ironHorizontalChartScrubbing { selectedDate = nil }
                     .frame(height: dynamicTypeSize.isAccessibilitySize ? 120 : 52)
-                    .accessibilityLabel("\(exercise.title) \(measurementType.title) over the last 3 months")
                 }
             }
         }

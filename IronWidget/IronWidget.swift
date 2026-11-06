@@ -1043,6 +1043,7 @@ private struct WorkoutDynamicIslandBottom: View {
 
                         if context.state.isRestPaused {
                             WorkoutPausedRestControls(context: context)
+                                .padding(.horizontal, 12)
                         } else if let end = context.state.restTimerEnd {
                             WorkoutRunningRestControls(
                                 workoutID: context.attributes.workoutID,
@@ -1050,6 +1051,7 @@ private struct WorkoutDynamicIslandBottom: View {
                                 duration: context.state.restDuration,
                                 compact: true
                             )
+                            .padding(.horizontal, 12)
                         }
                     }
                 } else {
@@ -1164,6 +1166,9 @@ private struct WorkoutSetProgressTile: View {
             let gap: CGFloat = 2
             let width = (geometry.size.width - CGFloat(columns - 1) * gap) / CGFloat(columns)
             let height = (geometry.size.height - CGFloat(rows - 1) * gap) / CGFloat(rows)
+            let side = max(0, min(width, height))
+            let originX = (geometry.size.width - (CGFloat(columns) * side + CGFloat(columns - 1) * gap)) / 2
+            let originY = (geometry.size.height - (CGFloat(rows) * side + CGFloat(rows - 1) * gap)) / 2
             ZStack(alignment: .topLeading) {
                 ForEach(0..<cells, id: \.self) { cell in
                     let fill = min(max(progress * Double(cells) - Double(cell), 0), 1)
@@ -1175,10 +1180,10 @@ private struct WorkoutSetProgressTile: View {
                                 .scaleEffect(x: 1, y: CGFloat(fill), anchor: .bottom)
                         }
                         .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
-                        .frame(width: width, height: height)
+                        .frame(width: side, height: side)
                         .position(
-                            x: CGFloat(cell % columns) * (width + gap) + width / 2,
-                            y: CGFloat(cell / columns) * (height + gap) + height / 2
+                            x: originX + CGFloat(cell % columns) * (side + gap) + side / 2,
+                            y: originY + CGFloat(cell / columns) * (side + gap) + side / 2
                         )
                 }
             }

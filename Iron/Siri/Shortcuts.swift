@@ -14,7 +14,7 @@ import os.log
 enum Shortcuts {
     /// The IronIntents and IronIntentsUI extensions are shelved until a real release, so nothing can run these shortcuts.
     /// Set to true when they're embedded again (see docs/HANDOFF.md).
-    private static let isAvailable = false
+    private static let isAvailable = true
 
     static func setShortcutSuggestions() {
         guard isAvailable else {
@@ -25,7 +25,8 @@ enum Shortcuts {
         }
 
         let exercises = ExerciseStore.shared.shownExercises.filter { exercise in
-            ["Bench Press: Barbell", "Squat: Barbell", "Deadlift: Barbell"].contains(exercise.title)
+            // Catalog source names, so display renaming can't widen the suggestion set.
+            ["Bench Press: Barbell", "Squat: Barbell", "Deadlift: Barbell"].contains(exercise.originalTitle)
         }
         
         let prShortcuts = exercises.compactMap { exercise -> INShortcut? in

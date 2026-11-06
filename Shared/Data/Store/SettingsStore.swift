@@ -53,11 +53,20 @@ enum IronAppearance: String, CaseIterable, Identifiable {
 final class SettingsStore: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
     static let healthTestModeEnabledNotification = Notification.Name("Iron.healthTestModeEnabled")
+    static let restoredFromBackupNotification = Notification.Name("Iron.settingsRestoredFromBackup")
     
     private var userDefaults: UserDefaults
+    private var defaultsObserver: AnyCancellable?
     
     init(userDefaults: UserDefaults) {
         self.userDefaults = userDefaults
+        // Backups restore a complete defaults batch, including preferences that
+        // don't have a SettingsStore property. Re-read them in live views too.
+        // Only on restore: UserDefaults.didChangeNotification fires for every write.
+        defaultsObserver = NotificationCenter.default.publisher(
+            for: Self.restoredFromBackupNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
     var weightUnit: WeightUnit {
@@ -117,16 +126,6 @@ final class SettingsStore: ObservableObject {
         set {
             self.objectWillChange.send()
             userDefaults.keepRestTimerRunning = newValue
-        }
-    }
-    
-    var maxRepetitionsOneRepMax: Int {
-        get {
-            userDefaults.maxRepetitionsOneRepMax
-        }
-        set {
-            self.objectWillChange.send()
-            userDefaults.maxRepetitionsOneRepMax = newValue
         }
     }
     

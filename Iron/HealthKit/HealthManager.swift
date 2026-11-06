@@ -62,11 +62,22 @@ class HealthManager {
     let healthStore: HKHealthStore
     private let mutationCoordinator = MutationCoordinator()
     private let workoutWriter: WorkoutWriter?
+    private let workoutEffortWriter: WorkoutEffortWriter?
+    private let effortObserverLock = NSLock()
+    // authorizationStatus(for:) is a synchronous call to healthd; a stalled
+    // daemon must never block the main thread at launch or foreground.
+    private let healthStatusQueue = DispatchQueue(label: "me.joshpatra.light.health-status", qos: .utility)
+    private var effortWorkoutObserver: HKObserverQuery?
     
     // The injected writer receives values, never managed objects or real HealthKit.
-    init(workoutWriter: WorkoutWriter? = nil) {
+    init(workoutWriter: WorkoutWriter? = nil, workoutEffortWriter: WorkoutEffortWriter? = nil) {
         self.healthStore = HKHealthStore()
         self.workoutWriter = workoutWriter
+        // Existing export tests replace all Health I/O with the workout seam.
+        // Keep effort offline too unless a dedicated effort fake is supplied.
+        self.workoutEffortWriter = workoutEffortWriter ?? (workoutWriter == nil ? nil : { _, completion in
+            completion(.success(()))
+        })
     }
 }
 
@@ -151,11 +162,19 @@ extension HealthManager {
     // completion is called on a background queue!
     func requestShareWorkoutPermission(completion: @escaping (Result<Void, Error>) -> Void) {
         let workoutType = HKObjectType.workoutType()
-        if healthStore.authorizationStatus(for: workoutType) == .sharingAuthorized {
+        let effortType = workoutEffortType
+        if healthStore.authorizationStatus(for: workoutType) == .sharingAuthorized,
+           effortType.map({ healthStore.authorizationStatus(for: $0) != .notDetermined }) ?? true {
             completion(.success(()))
             return
         }
-        requestPermissions(toShare: [workoutType], read: [workoutType], completion: completion)
+        var shareTypes: Set<HKSampleType> = [workoutType]
+        var readTypes: Set<HKObjectType> = [workoutType]
+        if let effortType {
+            shareTypes.insert(effortType)
+            readTypes.insert(effortType)
+        }
+        requestPermissions(toShare: shareTypes, read: readTypes, completion: completion)
     }
 
     /// Requests every category Iron currently exchanges with Apple Health in a
@@ -165,7 +184,7 @@ extension HealthManager {
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         let workoutType = HKObjectType.workoutType()
-        let quantityTypes = bodyMeasurementTypes
+        let quantityTypes = bodyMeasurementTypes + (workoutEffortType.map { [$0] } ?? [])
         let shareTypes: [HKSampleType] = [workoutType] + quantityTypes.map { $0 as HKSampleType }
         let readTypes: [HKObjectType] = [workoutType] + quantityTypes.map { $0 as HKObjectType }
         requestPermissions(
@@ -178,6 +197,8 @@ extension HealthManager {
     var accessState: AccessState {
         guard HKHealthStore.isHealthDataAvailable() else { return .unavailable }
 
+        // Effort is optional: existing Health connections stay ready even when
+        // this newer category has not been requested or was declined.
         let shareTypes: [HKSampleType] = [HKObjectType.workoutType()]
             + bodyMeasurementTypes.map { $0 as HKSampleType }
         let statuses = shareTypes.map(healthStore.authorizationStatus(for:))
@@ -188,6 +209,13 @@ extension HealthManager {
             return .ready
         }
         return .needsReview
+    }
+
+    private var workoutEffortType: HKQuantityType? {
+        if #available(iOS 18.0, *) {
+            return HKObjectType.quantityType(forIdentifier: .workoutEffortScore)
+        }
+        return nil
     }
 
     private var bodyMeasurementTypes: [HKQuantityType] {
@@ -455,7 +483,9 @@ extension HealthManager {
             }
             // A Watch finish owns its Health sample even before it reaches the phone.
             guard workout.healthExportState != "watch" else {
-                completion(.success(.alreadyPresent))
+                self.performSyncWorkoutEffort(workoutID: workoutID, context: context) {
+                    completion(.success(.alreadyPresent))
+                }
                 return
             }
             do {
@@ -477,7 +507,13 @@ extension HealthManager {
                            !SettingsStore.shared.healthTestMode {
                             try self.persistHealthExportState("exported", for: workout, in: context)
                         }
-                        completion(result)
+                        if case .success = result {
+                            self.performSyncWorkoutEffort(workoutID: workoutID, context: context) {
+                                completion(result)
+                            }
+                        } else {
+                            completion(result)
+                        }
                     } catch {
                         // Health may have saved: pending reconciliation safely reuses its UUID.
                         completion(.failure(error))
@@ -1011,6 +1047,7 @@ extension HealthManager {
         exerciseStore: ExerciseStore = .shared,
         completion: @escaping (Result<WorkoutUpdates, Error>) -> Void = { _ in }
     ) {
+        observeHealthWorkoutsForEffort()
         // Re-fetch when this pass reaches the coordinator. Repeated triggers
         // skip exported rows, while an unlock arriving during a failure is retained.
         enqueueExportPass(in: context, exerciseStore: exerciseStore,
@@ -1018,15 +1055,19 @@ extension HealthManager {
     }
 
     private func enqueueExportPass(in context: NSManagedObjectContext, exerciseStore: ExerciseStore,
-                                   pendingOnly: Bool,
+                                   pendingOnly: Bool, effortOnly: Bool = false, effortSince: Date? = nil,
                                    completion: @escaping (Result<WorkoutUpdates, Error>) -> Void) {
         mutationCoordinator.enqueue { finish in
             context.perform {
                 do {
                     let request: NSFetchRequest<Workout> = Workout.fetchRequest()
                     if pendingOnly { request.predicate = NSPredicate(format: "healthExportState == %@", "pending") }
+                    if effortOnly, let effortSince {
+                        // Late Health arrivals only matter for recently rated workouts.
+                        request.predicate = NSPredicate(format: "end >= %@ AND sessionEffort > 0", effortSince as NSDate)
+                    }
                     let ids = try context.fetch(request).filter {
-                        $0.healthExportEligibility == .eligible && $0.healthExportState != "watch"
+                        $0.healthExportEligibility == .eligible
                             && $0.healthExportState != "test" && !SettingsStore.shared.healthTestMode
                     }.map(\.objectID)
                     var created = 0
@@ -1040,6 +1081,12 @@ extension HealthManager {
                                 ?? .success(WorkoutUpdates(created: created, deleted: 0, modified: modified))
                             finish()
                             DispatchQueue.main.async { completion(result) }
+                            return
+                        }
+                        if effortOnly {
+                            self.performSyncWorkoutEffort(workoutID: ids[index], context: context) {
+                                next(index + 1)
+                            }
                             return
                         }
                         self.performSyncWorkoutIfNeeded(workoutID: ids[index], context: context,
@@ -1060,6 +1107,234 @@ extension HealthManager {
                     DispatchQueue.main.async { completion(.failure(error)) }
                 }
             }
+        }
+    }
+}
+
+// MARK: - Session effort
+
+extension HealthManager {
+    struct WorkoutEffortRequest {
+        let uuid: UUID
+        let rating: Double?
+    }
+
+    typealias WorkoutEffortWriter = (WorkoutEffortRequest, @escaping (Result<Void, Error>) -> Void) -> Void
+
+    struct OwnedWorkoutEffortSample {
+        let id: UUID
+        let rating: Double
+        let start: Date
+        let end: Date
+    }
+
+    enum WorkoutEffortAction: Equatable {
+        case none
+        case delete([UUID])
+        case save(rating: Double, deleting: [UUID])
+        case reuse(UUID, deleting: [UUID])
+    }
+
+    static func canSyncWorkoutEffort(eligibility: Workout.HealthExportEligibility,
+                                    exportState: String?, testMode: Bool) -> Bool {
+        eligibility == .eligible && exportState != "test" && !testMode
+    }
+
+    /// Input samples have already been restricted to this phone's source and
+    /// the local workout's external UUID. Never infer ownership from dates.
+    static func workoutEffortAction(
+        eligibility: Workout.HealthExportEligibility, exportState: String?, testMode: Bool,
+        canShare: Bool, rating: Double?, healthWorkoutStart: Date?, healthWorkoutEnd: Date?,
+        ownedSamples: [OwnedWorkoutEffortSample]
+    ) -> WorkoutEffortAction {
+        guard canSyncWorkoutEffort(eligibility: eligibility, exportState: exportState, testMode: testMode),
+              canShare, let start = healthWorkoutStart, let end = healthWorkoutEnd else { return .none }
+        let samples = ownedSamples.sorted { $0.id.uuidString < $1.id.uuidString }
+        let ids = samples.map(\.id)
+        guard let rating, rating.isFinite, (1...10).contains(rating) else {
+            return ids.isEmpty ? .none : .delete(ids)
+        }
+        if let reusable = samples.first(where: {
+            $0.rating == rating && $0.start == start && $0.end == end
+        }) {
+            return .reuse(reusable.id, deleting: ids.filter { $0 != reusable.id })
+        }
+        return .save(rating: rating, deleting: ids)
+    }
+
+    /// Updates effort only; this never creates, copies or repairs an HKWorkout.
+    /// Re-fetch when dequeued so rapid rating edits use the latest saved value.
+    func syncWorkoutEffort(workout: Workout, completion: @escaping () -> Void = {}) {
+        guard let context = workout.managedObjectContext else { completion(); return }
+        let workoutID = workout.objectID
+        mutationCoordinator.enqueue { finish in
+            self.performSyncWorkoutEffort(workoutID: workoutID, context: context) {
+                finish()
+                DispatchQueue.main.async(execute: completion)
+            }
+        }
+    }
+
+    private func performSyncWorkoutEffort(workoutID: NSManagedObjectID, context: NSManagedObjectContext,
+                                         completion: @escaping () -> Void) {
+        context.perform {
+            guard let workout = (try? context.existingObject(with: workoutID)) as? Workout,
+                  !workout.isDeleted, !workoutID.isTemporaryID, let uuid = workout.uuid,
+                  Self.canSyncWorkoutEffort(eligibility: workout.healthExportEligibility,
+                                           exportState: workout.healthExportState,
+                                           testMode: SettingsStore.shared.healthTestMode) else {
+                completion()
+                return
+            }
+            self.observeHealthWorkoutsForEffort()
+            let request = WorkoutEffortRequest(uuid: uuid, rating: workout.sessionEffortValue)
+            let writer = self.workoutEffortWriter ?? self.writeWorkoutEffortToHealth
+            writer(request) { result in
+                if case .failure(let error) = result {
+                    // Optional effort access must not undo a successful workout export.
+                    os_log("Could not sync Light workout effort: %@", log: .health, type: .error, error.localizedDescription)
+                }
+                completion()
+            }
+        }
+    }
+
+    /// WatchConnectivity can deliver the finish/rating before HealthKit syncs
+    /// the Watch's HKWorkout. A workout observer retries once it reaches iPhone.
+    private func observeHealthWorkoutsForEffort() {
+        guard workoutWriter == nil, workoutEffortWriter == nil,
+              HKHealthStore.isHealthDataAvailable(), let type = workoutEffortType else { return }
+        healthStatusQueue.async { self.startEffortObserverIfAuthorized(type: type) }
+    }
+
+    private func startEffortObserverIfAuthorized(type: HKQuantityType) {
+        guard healthStore.authorizationStatus(for: type) == .sharingAuthorized else { return }
+        effortObserverLock.lock()
+        defer { effortObserverLock.unlock() }
+        guard effortWorkoutObserver == nil else { return }
+        let query = HKObserverQuery(sampleType: .workoutType(), predicate: nil) { [weak self] _, done, error in
+            guard let self, error == nil else {
+                done()
+                return
+            }
+            self.enqueueExportPass(in: WorkoutDataStorage.shared.persistentContainer.viewContext,
+                                   exerciseStore: .shared, pendingOnly: false, effortOnly: true,
+                                   effortSince: Date().addingTimeInterval(-3 * 86_400)) { _ in done() }
+        }
+        effortWorkoutObserver = query
+        healthStore.execute(query)
+    }
+
+    private func writeWorkoutEffortToHealth(_ request: WorkoutEffortRequest,
+                                            completion: @escaping (Result<Void, Error>) -> Void) {
+        healthStatusQueue.async { self.writeWorkoutEffortToHealthOffMain(request, completion: completion) }
+    }
+
+    private func writeWorkoutEffortToHealthOffMain(_ request: WorkoutEffortRequest,
+                                                   completion: @escaping (Result<Void, Error>) -> Void) {
+        guard #available(iOS 18.0, *), HKHealthStore.isHealthDataAvailable(),
+              !SettingsStore.shared.healthTestMode, let type = workoutEffortType,
+              healthStore.authorizationStatus(for: type) == .sharingAuthorized else {
+            completion(.success(()))
+            return
+        }
+        // Match both recording paths exactly as workout reconciliation does.
+        // No source predicate here: the Watch owns its live-builder workout.
+        let uuidPredicate = HKQuery.predicateForObjects(withMetadataKey: HKMetadataKeyExternalUUID,
+                                                       allowedValues: [request.uuid.uuidString])
+        let workoutQuery = HKSampleQuery(sampleType: .workoutType(), predicate: uuidPredicate,
+                                         limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, error in
+            if let error { completion(.failure(error)); return }
+            guard !SettingsStore.shared.healthTestMode,
+                  let workout = (samples as? [HKWorkout])?.min(by: { $0.uuid.uuidString < $1.uuid.uuidString }) else {
+                completion(.success(()))
+                return
+            }
+            let ownSamplesPredicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+                uuidPredicate, HKQuery.predicateForObjects(from: .default())
+            ])
+            let effortQuery = HKSampleQuery(sampleType: type, predicate: ownSamplesPredicate,
+                                            limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, error in
+                if let error { completion(.failure(error)); return }
+                let owned = (samples as? [HKQuantitySample]) ?? []
+                let action = Self.workoutEffortAction(
+                    eligibility: .eligible, exportState: nil, testMode: SettingsStore.shared.healthTestMode,
+                    canShare: self.healthStore.authorizationStatus(for: type) == .sharingAuthorized,
+                    rating: request.rating, healthWorkoutStart: workout.startDate, healthWorkoutEnd: workout.endDate,
+                    ownedSamples: owned.map {
+                        OwnedWorkoutEffortSample(id: $0.uuid, rating: $0.quantity.doubleValue(for: .appleEffortScore()),
+                                                start: $0.startDate, end: $0.endDate)
+                    }
+                )
+                self.applyWorkoutEffortAction(action, ownedSamples: owned, workout: workout,
+                                              request: request, type: type, completion: completion)
+            }
+            self.healthStore.execute(effortQuery)
+        }
+        healthStore.execute(workoutQuery)
+    }
+
+    @available(iOS 18.0, *)
+    private func applyWorkoutEffortAction(_ action: WorkoutEffortAction, ownedSamples: [HKQuantitySample],
+                                          workout: HKWorkout, request: WorkoutEffortRequest, type: HKQuantityType,
+                                          completion: @escaping (Result<Void, Error>) -> Void) {
+        let deleting: [UUID]
+        switch action {
+        case .none: completion(.success(())); return
+        case .delete(let ids), .save(_, let ids), .reuse(_, let ids): deleting = ids
+        }
+        func continueAfterDeletion(_ result: Result<Void, Error>) {
+            guard case .success = result else { completion(result); return }
+            guard !SettingsStore.shared.healthTestMode else { completion(.success(())); return }
+            switch action {
+            case .none, .delete:
+                completion(.success(()))
+            case .save(let rating, _):
+                let sample = HKQuantitySample(type: type, quantity: HKQuantity(unit: .appleEffortScore(), doubleValue: rating),
+                                              start: workout.startDate, end: workout.endDate, metadata: [
+                                                HKMetadataKeyExternalUUID: request.uuid.uuidString,
+                                                HKMetadataKeyWasUserEntered: true
+                                              ])
+                self.healthStore.save(sample) { success, error in
+                    guard success else { completion(.failure(error ?? AuthorizationError.denied)); return }
+                    self.relateWorkoutEffort(sample, to: workout, completion: completion)
+                }
+            case .reuse(let id, _):
+                guard let sample = ownedSamples.first(where: { $0.uuid == id }) else {
+                    completion(.failure(WorkoutSyncError.missingWorkoutData))
+                    return
+                }
+                // A prior save may have succeeded while relating failed. Keep
+                // that sample and repair the relationship instead of duplicating.
+                let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+                    HKQuery.predicateForObject(with: id),
+                    HKQuery.predicateForWorkoutEffortSamplesRelated(workout: workout, activity: nil)
+                ])
+                let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: 1,
+                                          sortDescriptors: nil) { _, samples, error in
+                    if let error { completion(.failure(error)); return }
+                    if samples?.isEmpty == false { completion(.success(())); return }
+                    self.relateWorkoutEffort(sample, to: workout, completion: completion)
+                }
+                self.healthStore.execute(query)
+            }
+        }
+        let oldSamples = ownedSamples.filter { deleting.contains($0.uuid) }
+        guard !oldSamples.isEmpty else { continueAfterDeletion(.success(())); return }
+        guard !SettingsStore.shared.healthTestMode else { completion(.success(())); return }
+        // Effort changes explicitly delete our old samples before saving the new
+        // score. A failed delete aborts; a failed save is repaired on the next pass.
+        healthStore.delete(oldSamples) { success, error in
+            continueAfterDeletion(success ? .success(()) : .failure(error ?? AuthorizationError.denied))
+        }
+    }
+
+    @available(iOS 18.0, *)
+    private func relateWorkoutEffort(_ sample: HKQuantitySample, to workout: HKWorkout,
+                                     completion: @escaping (Result<Void, Error>) -> Void) {
+        guard !SettingsStore.shared.healthTestMode else { completion(.success(())); return }
+        healthStore.relateWorkoutEffortSample(sample, with: workout, activity: nil) { success, error in
+            completion(success ? .success(()) : .failure(error ?? AuthorizationError.denied))
         }
     }
 }

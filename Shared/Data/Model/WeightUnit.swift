@@ -46,6 +46,7 @@ extension WeightUnit {
     var numberFormatter: NumberFormatter {
         let numberFormatter = NumberFormatter()
         numberFormatter.allowsFloats = true
+        numberFormatter.usesGroupingSeparator = false
         numberFormatter.minimumFractionDigits = minimumFractionDigits
         numberFormatter.maximumFractionDigits = maximumFractionDigits
         return numberFormatter
@@ -68,6 +69,43 @@ extension WeightUnit {
 }
 
 extension WeightUnit {
+    static func sanitizedDecimalInput(
+        _ input: String,
+        maximumFractionDigits: Int,
+        decimalSeparator: String = Locale.current.decimalSeparator ?? ".",
+        groupingSeparator: String = Locale.current.groupingSeparator ?? ","
+    ) -> String {
+        // With comma decimals, distinguish pasted thousands ("1.005") from
+        // a period entered on the keypad ("2.5"). A native decimal takes priority.
+        let periodGroups = input.filter { $0.wholeNumberValue != nil || $0 == "." }
+            .split(separator: ".", omittingEmptySubsequences: false)
+        let isGroupedInteger = periodGroups.count > 1
+            && (1...3).contains(periodGroups[0].count)
+            && periodGroups.dropFirst().allSatisfy { $0.count == 3 }
+        let acceptsKeypadDecimal = decimalSeparator == ","
+            && !input.contains(decimalSeparator)
+            && (groupingSeparator != "." || !isGroupedInteger)
+        var result = ""
+        var hasDecimalSeparator = false
+        var fractionDigitCount = 0
+
+        for character in input {
+            if let digit = character.wholeNumberValue {
+                if hasDecimalSeparator {
+                    guard fractionDigitCount < maximumFractionDigits else { continue }
+                    fractionDigitCount += 1
+                }
+                result.append(contentsOf: String(digit))
+            } else if String(character) == decimalSeparator || (character == "." && acceptsKeypadDecimal) {
+                guard !hasDecimalSeparator else { continue }
+                if result.isEmpty { result = "0" }
+                if maximumFractionDigits > 0 { result.append(contentsOf: decimalSeparator) }
+                hasDecimalSeparator = true
+            }
+        }
+        return result
+    }
+
     static func convert(weight: Double, from: WeightUnit, to: WeightUnit) -> Double {
         Measurement(value: weight, unit: from.unit).converted(to: to.unit).value
     }
@@ -86,7 +124,11 @@ extension WeightUnit {
             return 5 // 2x 2.5 lb
         }
     }
-    
+
+    /// What one +/- press changes in the logger, in either unit. The owner asked
+    /// for 2.5 lb rather than a plate pair; suggestions and warm-ups keep barbellIncrement.
+    var adjustmentStep: Double { 2.5 }
+
     var barbellWeight: Double {
         switch self {
         case .metric:

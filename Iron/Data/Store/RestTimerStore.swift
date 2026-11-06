@@ -29,6 +29,8 @@ final class RestTimerStore: ObservableObject {
     typealias ExpiryScheduler = (_ deadline: Date, _ handler: @escaping () -> Void) -> ExpiryCancellation
 
     let objectWillChange = ObservableObjectPublisher()
+    /// Only a running deadline reaching zero emits this; skips and cancellations do not.
+    let didExpire = PassthroughSubject<Void, Never>()
 
     private let userDefaults: UserDefaults
     private let now: () -> Date
@@ -41,6 +43,7 @@ final class RestTimerStore: ObservableObject {
     private let isAppActive: () -> Bool
     private var cancelScheduledExpiry: ExpiryCancellation?
     private var expiryGeneration: UInt = 0
+    private var hasDeferredWatchUpdate = false
 
     init(
         userDefaults: UserDefaults,
@@ -140,6 +143,7 @@ final class RestTimerStore: ObservableObject {
         let start = duration == nil || pausedRemaining != nil ? nil : start
 
         expiryGeneration &+= 1
+        hasDeferredWatchUpdate = false
         cancelScheduledExpiry?()
         cancelScheduledExpiry = nil
 
@@ -190,6 +194,7 @@ final class RestTimerStore: ObservableObject {
                 IronSoundPlayer.shared.play(.restComplete)
             }
         }
+        if canPlayAppFeedback { didExpire.send() }
         objectWillChange.send()
     }
 
@@ -237,12 +242,21 @@ extension RestTimerStore {
 }
 
 extension RestTimerStore {
-    func start(duration: TimeInterval) {
+    func start(duration: TimeInterval, deferringWatchUpdate: Bool = false) {
         guard let duration = Self.validDuration(duration) else {
             cancel()
             return
         }
-        transition(start: now(), duration: duration, pausedRemaining: nil)
+        transition(start: now(), duration: duration, pausedRemaining: nil, updateWatch: !deferringWatchUpdate)
+        hasDeferredWatchUpdate = deferringWatchUpdate
+    }
+
+    /// Local logger motion may batch the Watch snapshot without delaying the
+    /// timer's persisted start, notifications or expiry scheduling.
+    func flushDeferredWatchUpdate() {
+        guard hasDeferredWatchUpdate else { return }
+        hasDeferredWatchUpdate = false
+        updateWatch()
     }
 
     func setRemaining(_ remaining: TimeInterval) {

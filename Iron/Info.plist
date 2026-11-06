@@ -23,7 +23,7 @@
 				<string>iron_backup_file_images/iron_backup_file_320.png</string>
 			</array>
 			<key>CFBundleTypeName</key>
-			<string>Light Backup (Iron Compatible)</string>
+			<string>Light Backup</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
@@ -70,6 +70,8 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>LightAppGroupIdentifier</key>
+	<string>$(LIGHT_APP_GROUP)</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Light reads your body weight, height, body fat, waist, heart rate, and workout data to keep your training history and measurements in sync.</string>
 	<key>NSHealthUpdateUsageDescription</key>
@@ -78,7 +80,7 @@
 	<true/>
 	<key>NSUbiquitousContainers</key>
 	<dict>
-		<key>iCloud.com.kabouzeid.Iron</key>
+		<key>iCloud.me.joshpatra.light</key>
 		<dict>
 			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
 			<true/>
@@ -140,7 +142,7 @@
 				<string>public.data</string>
 			</array>
 			<key>UTTypeDescription</key>
-			<string>Light Backup (Iron Compatible)</string>
+			<string>Light Backup</string>
 			<key>UTTypeIconFiles</key>
 			<array>
 				<string>iron_backup_file_images/iron_backup_file_29.png</string>

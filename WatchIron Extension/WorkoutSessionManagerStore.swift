@@ -520,12 +520,14 @@ struct WatchWorkoutHistoryIndex {
     struct Entry {
         let workoutID: UUID
         let startDate: Date
+        let endDate: Date?
         let weightUnit: WatchWorkoutWeightUnit?
         let exercise: WatchWorkoutExercise
         let completedSets: [Int: WatchWorkoutSet]
     }
 
     private var entries: [UUID: [Entry]] = [:]
+    private var finishedEntries: [UUID: [Entry]] = [:]
 
     init(history: [WatchWorkoutSnapshot]) {
         for workout in history.sorted(by: { $0.startDate > $1.startDate }) {
@@ -534,11 +536,19 @@ struct WatchWorkoutHistoryIndex {
                 guard let id = exercise.exerciseUuid, seen.insert(id).inserted else { continue }
                 var sets: [Int: WatchWorkoutSet] = [:]
                 for set in exercise.sets where set.completed && sets[set.order] == nil { sets[set.order] = set }
-                entries[id, default: []].append(Entry(workoutID: workout.workoutID,
-                    startDate: workout.startDate, weightUnit: workout.weightUnit,
-                    exercise: exercise, completedSets: sets))
+                let entry = Entry(workoutID: workout.workoutID, startDate: workout.startDate,
+                    endDate: workout.endDate, weightUnit: workout.weightUnit, exercise: exercise, completedSets: sets)
+                entries[id, default: []].append(entry)
+                if workout.isFinishedRecord { finishedEntries[id, default: []].append(entry) }
             }
         }
+        for id in Array(finishedEntries.keys) {
+            finishedEntries[id]?.sort { ($0.endDate ?? $0.startDate) > ($1.endDate ?? $1.startDate) }
+        }
+    }
+
+    func latestFinishedExercises(excluding workoutID: UUID) -> [UUID: Entry] {
+        finishedEntries.compactMapValues { $0.first { $0.workoutID != workoutID } }
     }
 
     func previousExercises(for snapshot: WatchWorkoutSnapshot) -> [UUID: Entry] {
@@ -598,9 +608,14 @@ class WorkoutSessionManagerStore: ObservableObject {
     private var previousExercises: [UUID: WatchWorkoutHistoryIndex.Entry] = [:]
     private var libraryObserver: AnyCancellable?
     private var persistenceObserver: AnyCancellable?
+    private var prefillObserver: AnyCancellable?
 
     init() {
         let cached = WatchWorkoutStore.shared.libraryPresentation()
+        let current = WatchWorkoutStore.shared.snapshot()
+        if let current, !current.isFinishedRecord {
+            SetTrackingPreferences.beginLoggerSession(workoutID: current.workoutID, startedAt: current.startDate)
+        }
         library = cached.library
         historyIndex = cached.historyIndex
         presentedLibraryVersion = cached.version
@@ -614,6 +629,9 @@ class WorkoutSessionManagerStore: ObservableObject {
             .sink { [weak self] notification in
                 if let error = notification.userInfo?["error"] as? Error { self?.recordPersistenceFailure(error) }
             }
+        prefillObserver = SetTrackingPreferences.cache.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
         // Covers a library mutation between the initial read and subscription.
         DispatchQueue.main.async { self.refreshLibraryPresentation() }
     }
@@ -919,7 +937,68 @@ class WorkoutSessionManagerStore: ObservableObject {
     }
 
     var workoutSnapshot: WatchWorkoutSnapshot? {
-        _workoutSnapshot
+        _workoutSnapshot.map { fillingSetValues(in: $0) }
+    }
+
+    /// Both presentation and Log Set read this projection. Filled fields never
+    /// become overrides merely because a structure/sync event stores the values.
+    private func fillingSetValues(in original: WatchWorkoutSnapshot) -> WatchWorkoutSnapshot {
+        guard !original.isFinishedRecord else { return original }
+        var snapshot = original
+        let presentation = WatchWorkoutStore.shared.libraryPresentation()
+        let previous = presentation.historyIndex.latestFinishedExercises(excluding: snapshot.workoutID)
+        let unit = snapshot.weightUnit ?? preferredWeightUnit
+        let saved = presentation.library.savedWorkouts.first { $0.id == snapshot.sourceSavedWorkoutID }
+        let ownership = SetTrackingPreferences.load().loggerFields ?? [:]
+        for index in snapshot.exercises.indices {
+            let exercise = snapshot.exercises[index]
+            let type = exercise.effectiveTrackingType
+            let entry = exercise.exerciseUuid.flatMap { previous[$0] }
+            let factor = entry?.weightUnit == nil || entry?.weightUnit == unit
+                ? 1 : (unit == .pound ? 2.2046226218487757 : 1 / 2.2046226218487757)
+            let prior = entry?.exercise.sets.sorted { $0.order < $1.order }.map { set in
+                SetValuePrefill.SetInput(values: .init(weight: set.weight.map { $0 * factor },
+                    repetitions: set.reps, duration: set.duration, distance: set.distance), isWarmup: set.tag == "warmUp")
+            } ?? []
+            let plan = saved?.exercises.first { $0.id == exercise.routineExerciseID }
+                ?? saved?.exercises.first { $0.order == exercise.order && $0.exerciseUuid == exercise.exerciseUuid }
+            let inputs = exercise.sets.map { set -> SetValuePrefill.SetInput in
+                let ownershipEntry = ownership[set.id.uuidString]
+                let fields = ownershipEntry?.fields
+                let rawValues = SetValuePrefill.Values(weight: set.weight, repetitions: set.reps,
+                                                       duration: set.duration, distance: set.distance)
+                // A recovered Watch session from before provenance existed
+                // may contain real edits. Keep those stored measurements;
+                // every newly created row now has an explicit ownership entry.
+                let entered = fields ?? (original.startedOnWatch == true
+                    ? Set(type.columns.filter { rawValues[$0] != nil }) : [])
+                let target = fields == nil ? plan?.sets.first { $0.order == set.order } : nil
+                let targetFactor = saved?.weightUnit == nil || saved?.weightUnit == unit
+                    ? 1 : (unit == .pound ? 2.2046226218487757 : 1 / 2.2046226218487757)
+                var targets = ownershipEntry?.targets
+                if var existing = targets {
+                    existing.weight = existing.weight.map { $0 * (unit == .pound ? 2.2046226218487757 : 1) }
+                    targets = existing
+                } else {
+                    targets = .init(weight: target?.weight.map { $0 * targetFactor },
+                        repetitions: target?.reps ?? target?.maxTargetReps ?? target?.minTargetReps
+                            ?? (fields == nil && snapshot.sourceSavedWorkoutID != nil ? set.maxTargetReps ?? set.minTargetReps : nil),
+                        duration: target?.duration, distance: target?.distance)
+                }
+                return .init(values: rawValues, userEnteredFields: entered,
+                    targets: targets ?? .init(),
+                    isCompleted: set.completed, isWarmup: set.tag == "warmUp")
+            }
+            let values = SetValuePrefill.resolve(currentSets: inputs, previousSets: prior, trackingType: type)
+            for row in exercise.sets.indices where !exercise.sets[row].completed {
+                snapshot.exercises[index].sets[row].weight = values[row].weight
+                snapshot.exercises[index].sets[row].reps = values[row].repetitions
+                snapshot.exercises[index].sets[row].duration = values[row].duration
+                snapshot.exercises[index].sets[row].distance = values[row].distance
+            }
+        }
+        snapshot.selectedSetText = snapshot.trackedSelectedSetText
+        return snapshot
     }
 
     private func targetsCurrentWorkout(_ uuid: UUID) -> Bool {
@@ -930,6 +1009,9 @@ class WorkoutSessionManagerStore: ObservableObject {
     }
 
     private func publishSnapshot(_ snapshot: WatchWorkoutSnapshot?) {
+        if let snapshot, !snapshot.isFinishedRecord {
+            SetTrackingPreferences.beginLoggerSession(workoutID: snapshot.workoutID, startedAt: snapshot.startDate)
+        }
         _workoutSnapshot = snapshot
         if let snapshot, let manager = workoutSessionManager, manager.uuid == snapshot.workoutID {
             manager.selectedSetText = snapshot.trackedSelectedSetText ?? snapshot.selectedSetText
@@ -1191,6 +1273,9 @@ extension WorkoutSessionManagerStore {
             }
             #endif
             if receipt == .unchanged {
+                if !snapshot.isFinishedRecord {
+                    SetTrackingPreferences.beginLoggerSession(workoutID: snapshot.workoutID, startedAt: snapshot.startDate)
+                }
                 self._workoutSnapshot = snapshot
                 self.reconcileFinishedWorkoutAfterRecovery()
                 if self.workoutSessionManager == nil { self.ensureAutomaticRecording() }
@@ -1227,10 +1312,13 @@ extension WorkoutSessionManagerStore {
             guard set.weight != weight || set.reps != reps || set.rpe != rpe else {
                 return
             }
+            if set.weight != weight { SetTrackingPreferences.markLoggerField(.weight, for: setID) }
+            if set.reps != reps { SetTrackingPreferences.markLoggerField(.reps, for: setID) }
             set.weight = weight
             set.reps = reps
             set.rpe = rpe
             snapshot.exercises[exerciseIndex].sets[setIndex] = set
+            snapshot = self.fillingSetValues(in: snapshot)
             snapshot.selectedSetID = setID
             snapshot.selectedSetText = snapshot.trackedSelectedSetText
             guard self.advanceRevision(&snapshot) else { return }
@@ -1250,8 +1338,12 @@ extension WorkoutSessionManagerStore {
                   let setIndex = snapshot.exercises[exerciseIndex].sets.firstIndex(where: { $0.id == setID }) else { return }
 
             var set = snapshot.exercises[exerciseIndex].sets[setIndex]
+            if !set.completed {
+                guard self.persistDisplayedSetValues(&snapshot, setID: setID) else { return }
+            }
             set.completed.toggle()
             snapshot.exercises[exerciseIndex].sets[setIndex] = set
+            snapshot = self.fillingSetValues(in: snapshot)
             snapshot.selectedSetID = setID
             snapshot.selectedSetText = snapshot.trackedSelectedSetText
             guard self.advanceRevision(&snapshot) else { return }
@@ -1269,18 +1361,14 @@ extension WorkoutSessionManagerStore {
                   snapshot.workoutID == workoutID,
                   let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }) else { return }
             let source = snapshot.exercises[exerciseIndex].sets.last
-            var set = WatchWorkoutSet(
+            let set = WatchWorkoutSet(
                 order: snapshot.exercises[exerciseIndex].sets.count + 1,
-                weight: source?.weight,
-                reps: source?.reps ?? 5,
-                rpe: nil, // Rated per set; a copied rating would skip the question.
                 previousWeight: source?.previousWeight ?? source?.weight,
-                previousReps: source?.previousReps ?? source?.reps,
-                completed: false,
-                tag: nil, duration: source?.duration, distance: source?.distance
+                previousReps: source?.previousReps ?? source?.reps
             )
-            set.prepareForTracking(snapshot.exercises[exerciseIndex].effectiveTrackingType)
+            SetTrackingPreferences.setLoggerFields([], for: set.id)
             snapshot.exercises[exerciseIndex].sets.append(set)
+            snapshot = self.fillingSetValues(in: snapshot)
             snapshot.selectedSetID = set.id
             snapshot.selectedSetText = snapshot.trackedSelectedSetText
             guard self.advanceRevision(&snapshot) else { return }
@@ -1288,7 +1376,8 @@ extension WorkoutSessionManagerStore {
             self.commitEvent(snapshotChange: .replace(snapshot),
                              workoutID: workoutID, kind: .setAdded,
                              exerciseID: exerciseID, setID: set.id,
-                             weight: set.weight, reps: set.reps, rpe: set.rpe)
+                             weight: snapshot.exercises[exerciseIndex].sets.last?.weight,
+                             reps: snapshot.exercises[exerciseIndex].sets.last?.reps, rpe: nil)
         }
     }
 
@@ -1335,7 +1424,7 @@ extension WorkoutSessionManagerStore {
             guard var snapshot = self.workoutSnapshot,
                   snapshot.workoutID == workoutID,
                   let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == afterExerciseID }) else { return }
-            let set = WatchWorkoutSet(order: 1, reps: 5)
+            let set = WatchWorkoutSet(order: 1)
             let exercise = WatchWorkoutExercise(
                 order: exerciseIndex + 2,
                 name: name,
@@ -1345,7 +1434,9 @@ extension WorkoutSessionManagerStore {
                 exerciseUuid: catalogExerciseUuid,
                 imageURL: imageURL
             )
+            SetTrackingPreferences.setLoggerFields([], for: set.id)
             snapshot.exercises.insert(exercise, at: exerciseIndex + 1)
+            snapshot = self.fillingSetValues(in: snapshot)
             for index in snapshot.exercises.indices {
                 snapshot.exercises[index].order = index + 1
             }
@@ -2241,6 +2332,7 @@ extension WorkoutSessionManagerStore {
             // on main, with no durable-store lock held during the hop.
             DispatchQueue.main.sync { mutation(&snapshot) }
             WatchWorkoutEditing.normalize(&snapshot)
+            snapshot = self.fillingSetValues(in: snapshot)
             guard snapshot != previous, self.advanceRevision(&snapshot) else { return }
             snapshot.updatedAt = Date()
             snapshot.selectedSetText = snapshot.trackedSelectedSetText
@@ -2296,11 +2388,27 @@ extension WorkoutSessionManagerStore {
         }
     }
 
+    /// The phone's completion event changes completion/rest only. Queue the
+    /// displayed measurements first so a no-edit Log Set also records its fills
+    /// on the phone. The following immediate completion checkpoint durably
+    /// contains both events, retaining the existing rest/Live Activity behavior.
+    private func persistDisplayedSetValues(_ snapshot: inout WatchWorkoutSnapshot, setID: UUID) -> Bool {
+        guard advanceRevision(&snapshot) else { return false }
+        snapshot.updatedAt = Date()
+        var fields = WatchWorkoutFieldChanges()
+        fields.sets[setID.uuidString] = ["weight", "reps", "duration", "distance"]
+        return commitEvent(snapshotChange: .replace(snapshot), workoutID: snapshot.workoutID,
+                           kind: .workoutStructureUpdated, eventSnapshot: snapshot, fieldChanges: fields)
+    }
+
     func completeSet(exerciseID: UUID, setID: UUID) {
         WorkoutSessionManager.perform {
             guard var snapshot = self.workoutSnapshot, !snapshot.isFinishedRecord,
                   let exercise = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }),
                   let set = snapshot.exercises[exercise].sets.firstIndex(where: { $0.id == setID }) else { return }
+            if !snapshot.exercises[exercise].sets[set].completed {
+                guard self.persistDisplayedSetValues(&snapshot, setID: setID) else { return }
+            }
             snapshot.exercises[exercise].sets[set].completed.toggle()
             let completed = snapshot.exercises[exercise].sets[set].completed
             snapshot.selectedSetID = completed ? WatchWorkoutEditing.nextSet(in: snapshot, after: setID) : setID
@@ -2331,8 +2439,8 @@ extension WorkoutSessionManagerStore {
                 ?? snapshot.exercises.count
             let type = SetTrackingPreferences.override(for: pick.id)
                 ?? SetTrackingType.defaultType(name: pick.name, equipment: WatchWorkoutSummary.equipment(pick.name).map { [$0] } ?? [])
-            var set = WatchWorkoutSet(order: 1, reps: 8)
-            set.prepareForTracking(type)
+            let set = WatchWorkoutSet(order: 1)
+            SetTrackingPreferences.setLoggerFields([], for: set.id)
             let exercise = WatchWorkoutExercise(order: index + 1, name: pick.name, sets: [set],
                                                restTimerDuration: 90, muscleGroup: pick.muscle,
                                                exerciseUuid: pick.id, imageURL: pick.imageURL, trackingType: type.rawValue)
@@ -2351,7 +2459,7 @@ extension WorkoutSessionManagerStore {
         copyNotes(from: saved.exercises, into: &snapshot, sourceIsSavedWorkout: true)
         snapshot.comment = saved.comment
         copyTrackingTypes(from: saved.exercises, into: &snapshot)
-        begin(WatchWorkoutEditing.converting(snapshot, to: preferredWeightUnit))
+        begin(WatchWorkoutEditing.converting(snapshot, to: preferredWeightUnit), source: saved.exercises, isPlan: true)
     }
 
     func repeatWorkout(_ history: WatchWorkoutSnapshot) {
@@ -2360,7 +2468,23 @@ extension WorkoutSessionManagerStore {
                                                       unit: history.weightUnit ?? preferredWeightUnit)
         copyNotes(from: history.exercises, into: &snapshot)
         copyTrackingTypes(from: history.exercises, into: &snapshot)
-        begin(WatchWorkoutEditing.converting(snapshot, to: preferredWeightUnit))
+        begin(WatchWorkoutEditing.converting(snapshot, to: preferredWeightUnit), source: history.exercises)
+    }
+
+    private func registerSetFields(in snapshot: WatchWorkoutSnapshot, source: [WatchWorkoutExercise], isPlan: Bool) {
+        SetTrackingPreferences.beginLoggerSession(workoutID: snapshot.workoutID, startedAt: snapshot.startDate)
+        for (exercise, original) in zip(snapshot.exercises, source) {
+            for (set, target) in zip(exercise.sets, original.sets) {
+                var fields = Set<SetTrackingType.Column>()
+                if isPlan {
+                    if target.weight != nil { fields.insert(.weight) }
+                    if target.reps != nil || target.maxTargetReps != nil || target.minTargetReps != nil { fields.insert(.reps) }
+                    if target.duration != nil { fields.insert(.duration) }
+                    if target.distance != nil { fields.insert(.distance) }
+                }
+                SetTrackingPreferences.setLoggerFields(fields, for: set.id)
+            }
+        }
     }
 
     private func copyTrackingTypes(from source: [WatchWorkoutExercise], into snapshot: inout WatchWorkoutSnapshot) {
@@ -2401,14 +2525,17 @@ extension WorkoutSessionManagerStore {
         }
     }
 
-    private func begin(_ snapshot: WatchWorkoutSnapshot) {
+    private func begin(_ snapshot: WatchWorkoutSnapshot, source: [WatchWorkoutExercise]? = nil, isPlan: Bool = false) {
         WorkoutSessionManager.perform {
             guard self.workoutSnapshot == nil else {
                 self.recordingError = "Finish your current workout first."
                 return
             }
             var snapshot = snapshot
+            SetTrackingPreferences.beginLoggerSession(workoutID: snapshot.workoutID, startedAt: snapshot.startDate)
+            if let source { self.registerSetFields(in: snapshot, source: source, isPlan: isPlan) }
             snapshot.startedOnWatch = true
+            snapshot = self.fillingSetValues(in: snapshot)
             snapshot.selectedSetText = snapshot.trackedSelectedSetText
             #if DEBUG
             snapshot.healthTestMode = UserDefaults.standard.healthTestMode
@@ -2660,8 +2787,8 @@ extension WatchWorkoutSet {
         if !type.usesWeight { weight = nil }
         if !type.usesReps {
             reps = nil; minTargetReps = nil; maxTargetReps = nil
-        } else if (reps ?? 0) == 0 { reps = 5 }
-        duration = type.usesDuration ? (duration ?? 60) : nil
+        }
+        if !type.usesDuration { duration = nil }
         if !type.usesDistance { distance = nil }
     }
 

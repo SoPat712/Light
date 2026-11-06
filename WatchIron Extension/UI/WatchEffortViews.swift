@@ -34,9 +34,12 @@ struct WatchEffortRatingPage: View {
                     }
                 }
         } scale: {
-            WatchRatingScale(count: 10, selectedIndex: rating == 0 ? nil : rating - 1) {
-                IronTheme.effortColor($0 + 1)
-            }
+            WatchRatingScale(count: 10, selectedIndex: rating == 0 ? nil : rating - 1,
+                             color: { IronTheme.effortColor($0 + 1) },
+                             onSelect: { index in
+                                 select(index + 1)
+                                 crownFocused = true
+                             })
         }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: rating)
         .onAppear {
@@ -121,9 +124,13 @@ struct WatchRPEPage: View {
                 }
         } scale: {
             WatchRatingScale(count: WatchSetRPEScale.allowedValues.count,
-                             selectedIndex: selectedValue.flatMap { WatchSetRPEScale.allowedValues.firstIndex(of: $0) }) { _ in
-                IronTheme.metricEffort.opacity(isSuggestion ? 0.45 : 1)
-            }
+                             selectedIndex: selectedValue.flatMap { WatchSetRPEScale.allowedValues.firstIndex(of: $0) },
+                             color: { _ in IronTheme.metricEffort.opacity(isSuggestion ? 0.45 : 1) },
+                             onSelect: { index in
+                                 interacted()
+                                 select(WatchSetRPEScale.allowedValues[index])
+                                 crownFocused = true
+                             })
         }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: value)
         .onAppear {
@@ -165,7 +172,8 @@ struct WatchRPEPage: View {
     }
 }
 
-/// Both ratings share context, number, graph and explanation below toolbar vitals.
+/// Both ratings share context, number, graph and explanation below the toolbar.
+/// The confirmation button reserves the toolbar; these pages have no vitals pill.
 /// Only automatic RPE's owner schedules acceptance.
 private struct WatchRatingReadoutBudget {
     let height: CGFloat
@@ -220,13 +228,6 @@ private struct WatchRatingPageLayout<Readout: View, Scale: View>: View {
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .bottomBar)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                if let snapshot = store.workoutSnapshot, !snapshot.isFinishedRecord {
-                    WatchVitalsRow(manager: store.workoutSessionManager, snapshot: snapshot)
-                        .privacySensitive(false).unredacted()
-                        .opacity(reducedLuminance ? 0.45 : 1)
-                }
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     WatchFeedback.play(.success)
@@ -271,6 +272,7 @@ private struct WatchRatingScale: View {
     let count: Int
     let selectedIndex: Int?
     let color: (Int) -> Color
+    var onSelect: ((Int) -> Void)? = nil
 
     var body: some View {
         GeometryReader { proxy in
@@ -285,6 +287,14 @@ private struct WatchRatingScale: View {
                         .frame(width: width)
                 }
             }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottomLeading)
+            .contentShape(Rectangle())
+            // A finger picks the bar under it: tap one, or slide across to scrub.
+            .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
+                let slot = (proxy.size.width + gap) / CGFloat(count)
+                guard slot > 0, drag.location.x.isFinite else { return }
+                onSelect?(min(max(Int(drag.location.x / slot), 0), count - 1))
+            }, including: onSelect == nil ? .none : .all)
         }
     }
 }

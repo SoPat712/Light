@@ -181,7 +181,7 @@ struct ExerciseStatisticsView: View {
 
 }
 
-/// Inline progress owns presentation choices; session math is shared with Show All.
+/// Inline progress owns chart presentation choices; session math is shared with Show All.
 struct ExerciseInlineProgressView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -192,30 +192,21 @@ struct ExerciseInlineProgressView: View {
     @State private var selectedPoint: ExerciseProgressPoint?
 
     let exercise: Exercise
-    let onOpenWorkout: (Workout) -> Void
-    let onShowAllHistory: () -> Void
 
     private enum Selection: String, CaseIterable {
-        case oneRM = "1RM", weight = "Weight", volume = "Volume", history = "History"
+        case oneRM = "1RM", weight = "Weight", volume = "Volume"
 
-        var metric: ExerciseProgressMetric? {
+        var metric: ExerciseProgressMetric {
             switch self {
             case .oneRM: return .oneRM
             case .weight: return .topWeight
             case .volume: return .totalWeight
-            case .history: return nil
             }
         }
     }
 
-    init(
-        exercise: Exercise,
-        onOpenWorkout: @escaping (Workout) -> Void,
-        onShowAllHistory: @escaping () -> Void
-    ) {
+    init(exercise: Exercise) {
         self.exercise = exercise
-        self.onOpenWorkout = onOpenWorkout
-        self.onShowAllHistory = onShowAllHistory
         _history = FetchRequest(fetchRequest: WorkoutExercise.historyFetchRequest(of: exercise.uuid))
     }
 
@@ -232,6 +223,34 @@ struct ExerciseInlineProgressView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Menu {
+                    Picker("Metric", selection: Binding(
+                        get: { selection }, set: { storedSelection = $0.rawValue }
+                    )) {
+                        ForEach(Selection.allCases, id: \.self) { metric in
+                            Text(metric.rawValue).tag(metric)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(selection.metric.title)
+                            .font(.title3.weight(.semibold))
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(IronTheme.accent)
+                    .frame(minHeight: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Chart metric")
+                .accessibilityValue(selection.metric.title)
+                Spacer(minLength: 0)
+            }
+
+            rangePills
+
             if completedHistory.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "chart.xyaxis.line")
@@ -246,25 +265,9 @@ struct ExerciseInlineProgressView: View {
                 .frame(maxWidth: .infinity)
                 .padding(24)
             } else {
-                Picker("Progress view", selection: Binding(
-                    get: { selection }, set: { storedSelection = $0.rawValue }
-                )) {
-                    ForEach(Selection.allCases, id: \.self) { segment in
-                        Text(segment.rawValue).tag(segment)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(minHeight: IronTheme.controlHeight)
-
-                Group {
-                    if let metric = selection.metric {
-                        metricContent(metric)
-                    } else {
-                        recentHistory
-                    }
-                }
-                .id(selection)
-                .transition(.opacity)
+                metricContent(selection.metric)
+                    .id(selection)
+                    .transition(.opacity)
             }
         }
         .padding(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
@@ -316,7 +319,6 @@ struct ExerciseInlineProgressView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 154)
             }
-            rangePills
         }
     }
 
@@ -347,9 +349,11 @@ struct ExerciseInlineProgressView: View {
 
     private func headlineValue(_ point: ExerciseProgressPoint, metric: ExerciseProgressMetric) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(selectedPoint == nil ? metric.inlineTitle : ExerciseSessionDate.string(from: point.date, relative: false))
-                .font(.footnote)
-                .foregroundStyle(IronTheme.secondaryText)
+            if selectedPoint != nil {
+                Text(ExerciseSessionDate.string(from: point.date, relative: false))
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
+            }
             IronMetricValue(
                 value: progress.valueParts(point.value, for: metric).number,
                 unit: settingsStore.weightUnit.unit.symbol,
@@ -414,19 +418,48 @@ struct ExerciseInlineProgressView: View {
             }
         }
     }
+}
 
-    private var recentHistory: some View {
-        let points = progress.progressPoints(for: .oneRM)
-        let sessions = Array(completedHistory.prefix(5))
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Recent sessions")
-                Spacer(minLength: 8)
-                Text("Best e1RM")
+/// Recent sessions remain visible independently of the chart metric and range.
+struct ExerciseRecentHistorySection: View {
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @FetchRequest private var history: FetchedResults<WorkoutExercise>
+
+    let exercise: Exercise
+    let onOpenWorkout: (Workout) -> Void
+    let onShowAllHistory: () -> Void
+
+    init(
+        exercise: Exercise,
+        onOpenWorkout: @escaping (Workout) -> Void,
+        onShowAllHistory: @escaping () -> Void
+    ) {
+        self.exercise = exercise
+        self.onOpenWorkout = onOpenWorkout
+        self.onShowAllHistory = onShowAllHistory
+        _history = FetchRequest(fetchRequest: WorkoutExercise.historyFetchRequest(of: exercise.uuid))
+    }
+
+    private var completedHistory: [WorkoutExercise] {
+        history.filter { ($0.numberOfCompletedSets ?? 0) > 0 }
+    }
+
+    var body: some View {
+        let points = ExerciseProgressData(
+            exercise: exercise,
+            workoutExercises: Array(history),
+            settingsStore: settingsStore
+        ).progressPoints(for: .oneRM)
+        let sessions = Array(completedHistory.prefix(10))
+
+        Section {
+            if sessions.isEmpty {
+                Text("Completed sets for \(exercise.title) will appear here.")
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
             }
-            .font(.footnote)
-            .foregroundStyle(IronTheme.secondaryText)
-            ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
+
+            ForEach(sessions) { session in
                 let point = points.first { $0.id == ExerciseProgressData.identifier(for: session) }
                 ExerciseHistorySessionRow(
                     session: session,
@@ -434,23 +467,33 @@ struct ExerciseInlineProgressView: View {
                     isRecord: point?.isRecord ?? false,
                     onOpenWorkout: onOpenWorkout
                 )
-                if index < sessions.count - 1 {
-                    Rectangle().fill(IronTheme.outline).frame(height: 0.5).accessibilityHidden(true)
+            }
+
+            if completedHistory.count > sessions.count {
+                Button(action: onShowAllHistory) {
+                    HStack {
+                        Text("Show All")
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .accessibilityHidden(true)
+                    }
+                    .foregroundStyle(IronTheme.accent)
+                    .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show All")
+                .accessibilityHint("Opens all \(completedHistory.count) sessions of this exercise")
+            }
+        } header: {
+            HStack {
+                Text("History")
+                Spacer(minLength: 8)
+                if !sessions.isEmpty {
+                    Text("Best e1RM")
                 }
             }
-            Button {
-                onShowAllHistory()
-            } label: {
-                HStack(spacing: 6) {
-                    Text("Show all \(completedHistory.count) sessions")
-                        .font(.ironMetric(.subheadline, weight: .semibold))
-                    Image(systemName: "chevron.right").font(.caption.weight(.semibold))
-                }
-                .foregroundStyle(IronTheme.accent)
-                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
-                .background(IronTheme.tertiaryFill, in: Capsule())
-            }
-            .buttonStyle(.plain)
         }
     }
 }
@@ -621,7 +664,7 @@ struct ExerciseProgressData {
         switch metric {
         case .oneRM:
             return sets
-                .compactMap { Self.epleyEstimate(for: $0, maxReps: settingsStore.maxRepetitionsOneRepMax) }
+                .compactMap { Self.epleyEstimate(for: $0) }
                 .max()
                 .map {
                     WeightUnit.convert(weight: $0, from: .metric, to: settingsStore.weightUnit)
@@ -653,12 +696,11 @@ struct ExerciseProgressData {
         session.uuid?.uuidString ?? session.objectID.uriRepresentation().absoluteString
     }
 
-    /// B6 specifies Epley; the model's estimatedOneRepMax uses Brzycki.
-    /// Keep the display calculation local rather than changing stored PR behavior.
-    static func epleyEstimate(for set: WorkoutSet, maxReps: Int) -> Double? {
+    /// Apply the display's eligibility filters before using the model's Epley estimate.
+    static func epleyEstimate(for set: WorkoutSet) -> Double? {
         guard set.isCompleted, set.trackingType.volumeRule == .externalLoadTimesReps, set.weightValue > 0,
-              set.repetitionsValue > 0, Int(set.repetitionsValue) <= maxReps else { return nil }
-        return set.weightValue * (1 + Double(set.repetitionsValue) / 30)
+              set.repetitionsValue > 0 else { return nil }
+        return set.estimatedOneRepMax()
     }
 
     private func completedSets(for workoutExercise: WorkoutExercise) -> [WorkoutSet] {
@@ -911,8 +953,6 @@ enum ExerciseProgressMetric: Hashable {
         case .bestDistance: return "Best Distance"
         }
     }
-
-    var inlineTitle: String { self == .totalWeight ? "Volume per session" : title }
 
     var compactTitle: String {
         switch self {

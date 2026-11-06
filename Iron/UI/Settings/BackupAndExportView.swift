@@ -13,6 +13,15 @@ import os.log
 import UniformTypeIdentifiers
 
 struct BackupAndExportView: View {
+    private let showsHevyImport: Bool
+    private enum Destination: Hashable {
+        case hevyImport
+    }
+
+    init(showsHevyImport: Bool = false) {
+        self.showsHevyImport = showsHevyImport
+    }
+
     @Environment(\.managedObjectContext) var managedObjectContext
     @EnvironmentObject var settingsStore: SettingsStore
     @EnvironmentObject var exerciseStore: ExerciseStore
@@ -37,110 +46,135 @@ struct BackupAndExportView: View {
     @State private var showingRemoveConfirmation = false
     @State private var showingReplaceConfirmation = false
     @State private var hevyImportOutcome: HevyCSVImportOutcome?
-    @State private var isCreatingCloudBackup = false
-    @State private var cloudBackupSucceeded = false
+    @ObservedObject private var dataActions = SettingsDataActionCoordinator.shared
+    @State private var preparationFeedback = 0
+    @State private var successFeedback = 0
+    @State private var errorFeedback = 0
 
     private var cloudBackupFooterText: String {
-        var strings = [String]()
-        if settingsStore.autoBackup {
-            strings.append("Light attempts an automatic backup when iOS closes the app.")
+        if case .unavailable(let message) = backupStore.loadState {
+            return message.replacingOccurrences(of: "Iron", with: "Light")
         }
-        strings.append("Backups are in Light’s iCloud Drive folder and the Files app; only the last backup each day is kept.")
-
-        return strings.joined(separator: " ")
+        return "Automatic backups are attempted when Light closes, keeping the latest backup each day in iCloud Drive."
     }
 
     var body: some View {
-        List {
-            Section {
-                nativeSummaryRow(
-                    title: "Bring everything into Light",
-                    detail: "Imports one or both Hevy CSV files automatically.",
-                    systemImage: "square.and.arrow.down"
-                )
-
-                Button(action: {
-                    isReplacingImport = false
-                    isShowingCSVImporter = true
-                }) {
-                    SettingsSubpageLabel("Choose CSV from Files", systemImage: "folder.fill", tint: IronTheme.metricVolume)
-                }
-                .buttonStyle(.plain)
-            } header: {
-                Text("Import")
-            } footer: {
-                Text("Choose workout_data.csv, measurement_data.csv, or both. Light detects each file automatically.")
-            }
-
-            importedDataSection
-
-            Section {
-                nativeSummaryRow(
-                    title: "Take your data with you",
-                    detail: "Share Hevy-compatible CSV files or a complete Light backup.",
-                    systemImage: "square.and.arrow.up"
-                )
-
-                Button(action: exportHevyWorkoutCSV) {
-                    SettingsSubpageLabel("Workouts (Hevy CSV)", systemImage: "tablecells", tint: IronTheme.accent)
-                }
-                .buttonStyle(.plain)
-                Button(action: exportHevyMeasurementCSV) {
-                    SettingsSubpageLabel("Measurements (Hevy CSV)", systemImage: "ruler", tint: IronTheme.metricBody)
-                }
-                .buttonStyle(.plain)
-
-                Button(action: exportWorkoutDataJSON) {
-                    SettingsSubpageLabel("JSON", systemImage: "curlybraces", tint: IronTheme.metricVolume)
-                }
-                .buttonStyle(.plain)
-                Button(action: exportWorkoutDataText) {
-                    SettingsSubpageLabel("Plain Text", systemImage: "doc.plaintext", tint: IronTheme.metricVolume)
-                }
-                .buttonStyle(.plain)
-
-                Button(action: createAndShareBackup) {
-                    SettingsSubpageLabel("Share Full Backup", systemImage: "archivebox.fill", tint: IronTheme.metricVolume)
-                }
-                .buttonStyle(.plain)
-            } header: {
-                Text("Export")
-            }
-
-            Section {
-                nativeCloudBackupContent
-                if let creationDate = backupStore.lastBackup?.creationDate {
-                    LabeledContent("Last Backup") {
-                        Text(BackupFileStore.BackupFile.dateFormatter.string(from: creationDate))
-                            .font(.ironMetric(.body, weight: .semibold))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            } header: {
-                Text("iCloud Backup")
-            } footer: {
-                Text(cloudBackupFooterText)
+        if showsHevyImport {
+            settingsContent
+        } else {
+            settingsContent.navigationDestination(for: Destination.self) { _ in
+                HevyImportView()
             }
         }
+    }
+
+    private var settingsContent: some View {
+        List {
+            if showsHevyImport {
+                hevyImportContent
+            } else {
+                Section {
+                    Button {
+                        isReplacingImport = false
+                        isShowingCSVImporter = true
+                    } label: {
+                        SettingsActionLabel("Import from Hevy", systemImage: "square.and.arrow.down",
+                                            tint: IronTheme.metricVolume, trailingSymbol: "folder")
+                    }
+                    if !importedWorkouts.isEmpty {
+                        // Keep the destination alive when removing the final imported workout.
+                        NavigationLink(value: Destination.hevyImport) {
+                            LabeledContent {
+                                Text("^[\(importedWorkouts.count) workout](inflect: true)")
+                                    .font(.ironMetric(.body, weight: .semibold))
+                            } label: {
+                                SettingsRowLabel("Hevy Import", systemImage: "tray.full.fill", tint: IronTheme.metricSets)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Hevy")
+                } footer: {
+                    Text("Choose workout_data.csv, measurement_data.csv, or both from your Hevy export.")
+                }
+
+                Section {
+                    Button(action: createAndShareBackup) {
+                        SettingsActionLabel("Share Full Backup", systemImage: "archivebox.fill", tint: IronTheme.accent,
+                                            trailingSymbol: "square.and.arrow.up",
+                                            isPreparing: dataActions.activeAction == .fullBackup)
+                    }
+                    .accessibilityLabel(dataActions.activeAction == .fullBackup ? "Preparing Share Full Backup" : "Share Full Backup")
+
+                    NavigationLink {
+                        RestoreBackupView(backupStore: backupStore)
+                    } label: {
+                        SettingsRowLabel("Restore Light Backup", systemImage: "arrow.counterclockwise", tint: IronTheme.metricVolume)
+                    }
+                    nativeCloudBackupContent
+                    LabeledContent {
+                        Text(backupStore.lastBackup.map {
+                            BackupFileStore.BackupFile.dateFormatter.string(from: $0.creationDate)
+                        } ?? "None")
+                        .font(.ironMetric(.body, weight: .semibold))
+                    } label: {
+                        SettingsRowLabel("Last Backup", systemImage: "clock.fill", tint: IronTheme.secondaryText)
+                    }
+                } header: {
+                    Text("Backup")
+                } footer: {
+                    Text(cloudBackupFooterText)
+                }
+
+                Section("Export") {
+                    Button(action: exportHevyWorkoutCSV) {
+                        SettingsActionLabel("Workouts (Hevy CSV)", systemImage: "tablecells", tint: IronTheme.accent,
+                                            trailingSymbol: "square.and.arrow.up",
+                                            isPreparing: dataActions.activeAction == .workouts)
+                    }
+                    .accessibilityLabel(dataActions.activeAction == .workouts ? "Preparing Workouts (Hevy CSV)" : "Workouts (Hevy CSV)")
+                    Button(action: exportHevyMeasurementCSV) {
+                        SettingsActionLabel("Measurements (Hevy CSV)", systemImage: "ruler", tint: IronTheme.metricBody,
+                                            trailingSymbol: "square.and.arrow.up",
+                                            isPreparing: dataActions.activeAction == .measurements)
+                    }
+                    .accessibilityLabel(dataActions.activeAction == .measurements ? "Preparing Measurements (Hevy CSV)" : "Measurements (Hevy CSV)")
+                    Button(action: exportWorkoutDataJSON) {
+                        SettingsActionLabel("JSON", systemImage: "curlybraces", tint: IronTheme.metricVolume,
+                                            trailingSymbol: "square.and.arrow.up",
+                                            isPreparing: dataActions.activeAction == .json)
+                    }
+                    .accessibilityLabel(dataActions.activeAction == .json ? "Preparing JSON" : "JSON")
+                    Button(action: exportWorkoutDataText) {
+                        SettingsActionLabel("Plain Text", systemImage: "doc.plaintext", tint: IronTheme.secondaryText,
+                                            trailingSymbol: "square.and.arrow.up",
+                                            isPreparing: dataActions.activeAction == .text)
+                    }
+                    .accessibilityLabel(dataActions.activeAction == .text ? "Preparing Plain Text" : "Plain Text")
+                }
+            }
+        }
+        .labeledContentStyle(SettingsValueStyle())
+        .disabled(dataActions.isBusy)
         .listStyle(.insetGrouped)
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
         }
-        .onAppear(perform: backupStore.fetchBackups)
-        .navigationTitle("Import & Export")
+        .onAppear {
+            if !showsHevyImport { backupStore.fetchBackups() }
+        }
+        .navigationTitle(showsHevyImport ? "Hevy Import" : "Import & Export")
         .navigationBarTitleDisplayMode(.inline)
         .ironScreen()
+        .sensoryFeedback(.impact(weight: .light), trigger: preparationFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
+        .sensoryFeedback(.success, trigger: successFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
+        .sensoryFeedback(.error, trigger: errorFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
         .alert(item: $operationError) { operationError in
             Alert(
                 title: Text(operationError.title),
                 message: Text(operationError.error.localizedDescription),
                 dismissButton: .default(Text("OK"))
             )
-        }
-        .alert("Backup created", isPresented: $cloudBackupSucceeded) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Your latest Light data is now stored in iCloud Drive and is available from Restore Backup or the Files app.")
         }
         .ironActivitySheet(activityItems: $activityItems)
         .fileImporter(
@@ -179,57 +213,51 @@ struct BackupAndExportView: View {
         }
     }
 
-    private var importedDataSection: some View {
+    private var hevyImportContent: some View {
         Section {
-            importedSummary
+            LabeledContent {
+                Text(importedWorkouts.count.formatted())
+                    .font(.ironMetric(.body, weight: .semibold))
+            } label: {
+                SettingsRowLabel("Workouts", systemImage: "dumbbell.fill", tint: IronTheme.metricSets)
+            }
+            LabeledContent {
+                Text(importedDateRange)
+            } label: {
+                SettingsRowLabel("Dates", systemImage: "calendar", tint: IronTheme.accent)
+            }
+
+            Button(action: exportHevyImportCSV) {
+                SettingsActionLabel("Download Hevy Import", systemImage: "arrow.down.doc.fill", tint: IronTheme.metricVolume,
+                                    trailingSymbol: "square.and.arrow.up",
+                                    isPreparing: dataActions.activeAction == .hevyImport)
+            }
+            .accessibilityLabel(dataActions.activeAction == .hevyImport ? "Preparing Download Hevy Import" : "Download Hevy Import")
+            .accessibilityHint("Regenerates a Hevy CSV from your imported workouts")
+            .disabled(importedWorkouts.isEmpty)
 
             Button {
                 isReplacingImport = true
                 isShowingCSVImporter = true
             } label: {
-                SettingsSubpageLabel("Replace with New Export…", systemImage: "arrow.triangle.2.circlepath", tint: IronTheme.metricVolume)
+                SettingsActionLabel("Replace with New Export", systemImage: "arrow.triangle.2.circlepath",
+                                    tint: IronTheme.accent, trailingSymbol: "folder")
             }
-            .buttonStyle(.plain)
             Button(role: .destructive) {
                 showingRemoveConfirmation = true
             } label: {
                 HStack(spacing: 12) {
-                    SettingsSubpageIconTile(systemImage: "trash.fill", tint: IronTheme.danger)
+                    SettingsRowIcon(systemImage: "trash.fill", tint: IronTheme.danger)
                     Text("Remove Imported Workouts")
-                        .font(.body)
                         .foregroundStyle(IronTheme.danger)
-                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .tint(IronTheme.danger)
-            // ironScreen supplies the legacy accent environment used by
-            // native List label icons; override it for this destructive row.
-            .accentColor(IronTheme.danger)
             .disabled(importedWorkouts.isEmpty)
-        } header: {
-            Text("Imported Data")
         } footer: {
-            Text("Workouts you logged in Light and body measurements are kept. Imported workouts are never exported to Apple Health.")
+            Text("Imported workouts are never sent to Apple Health.")
         }
-    }
-
-    private var importedSummary: some View {
-        let count = importedWorkouts.count.formatted()
-        let unit = importedWorkouts.count == 1 ? "workout" : "workouts"
-        return (
-            Text("Hevy · ").foregroundColor(IronTheme.primaryText)
-                + Text(count).font(.ironMetric(.body, weight: .semibold))
-                    .foregroundColor(IronTheme.primaryText)
-                + Text(" \(unit) · \(importedDateRange)").foregroundColor(IronTheme.secondaryText)
-        )
-        .font(.body)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityLabel("Hevy, \(count) \(unit), \(importedDateRange)")
     }
 
     private var importedDateRange: String {
@@ -252,82 +280,58 @@ struct BackupAndExportView: View {
         }
     }
 
-    private func nativeSummaryRow(
-        title: String,
-        detail: String,
-        systemImage: String
-    ) -> some View {
-        SettingsSubpageLabel(title, detail: detail, systemImage: systemImage, tint: IronTheme.metricVolume)
-    }
-
     @ViewBuilder
     private var nativeCloudBackupContent: some View {
         switch backupStore.loadState {
         case .idle, .loading:
-            HStack(spacing: 12) {
-                SettingsSubpageLabel("Checking iCloud Drive", detail: "Looking for Light backups saved by your devices…",
-                                     systemImage: "icloud.fill")
-                ProgressView()
+            LabeledContent {
+                HStack(spacing: 8) {
+                    Text("Checking…")
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityHidden(true)
+                }
+            } label: {
+                SettingsRowLabel("iCloud Drive", systemImage: "icloud.fill", tint: IronTheme.metricTime)
             }
 
-        case .unavailable(let message):
-            SettingsSubpageLabel("iCloud Drive unavailable", detail: message,
-                                 systemImage: "icloud.slash", tint: IronTheme.warning)
-
+        case .unavailable:
+            LabeledContent {
+                SettingsStatusBadge(text: "Unavailable", isGood: false)
+            } label: {
+                SettingsRowLabel("iCloud Drive", systemImage: "icloud.slash.fill", tint: IronTheme.metricTime)
+            }
             Button(action: backupStore.fetchBackups) {
-                SettingsSubpageLabel("Try iCloud Again", systemImage: "arrow.clockwise")
+                SettingsActionLabel("Try iCloud Again", systemImage: "arrow.clockwise", tint: IronTheme.accent,
+                                    trailingSymbol: "arrow.clockwise.circle")
             }
-            .buttonStyle(.plain)
 
         case .loaded:
-            if backupStore.lastBackup != nil {
-                NavigationLink(destination: RestoreBackupView(backupStore: backupStore)) {
-                    SettingsSubpageLabel("Restore from iCloud", detail: restoreAvailabilityText,
-                                         systemImage: "arrow.counterclockwise.icloud")
-                }
-            } else {
-                SettingsSubpageLabel("Restore from iCloud", detail: "No saved backups yet",
-                                     systemImage: "icloud.slash", tint: IronTheme.secondaryText)
+            LabeledContent {
+                SettingsStatusBadge(text: "On", isGood: true)
+            } label: {
+                SettingsRowLabel("iCloud Drive", systemImage: "icloud.fill", tint: IronTheme.metricTime)
             }
-
-            Toggle(isOn: $settingsStore.autoBackup) {
-                SettingsSubpageLabel("Automatic backups", detail: "Attempt a backup when Light closes",
-                                     systemImage: "clock.arrow.circlepath")
-            }
-            .tint(IronTheme.accent)
-
+            SettingsToggle("Back Up Automatically", systemImage: "clock.arrow.2.circlepath", tint: IronTheme.accent,
+                           isOn: $settingsStore.autoBackup)
+                .tint(IronTheme.accent)
             Button(action: createCloudBackup) {
-                HStack(spacing: 12) {
-                    SettingsSubpageLabel(isCreatingCloudBackup ? "Creating Backup…" : "Back Up Now",
-                                         systemImage: "icloud.and.arrow.up")
-                    if isCreatingCloudBackup { ProgressView() }
-                }
+                SettingsActionLabel("Back Up Now", systemImage: "icloud.and.arrow.up.fill", tint: IronTheme.metricTime,
+                                    trailingSymbol: "arrow.up.circle",
+                                    isPreparing: dataActions.activeAction == .cloudBackup)
             }
-            .buttonStyle(.plain)
-            .disabled(isCreatingCloudBackup)
+            .accessibilityLabel(dataActions.activeAction == .cloudBackup ? "Preparing Back Up Now" : "Back Up Now")
         }
-    }
-
-    private var restoreAvailabilityText: String {
-        guard let creationDate = backupStore.lastBackup?.creationDate else {
-            return "No saved backups yet"
-        }
-        return "Latest: \(BackupFileStore.BackupFile.dateFormatter.string(from: creationDate))"
     }
 
     private func createAndShareBackup() {
-        do {
+        let store = exerciseStore
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        prepareExport(.fullBackup, filename: "\(formatter.string(from: Date())).ironbackup",
+                      errorTitle: "Could Not Create Backup") { context in
             os_log("Creating backup data", log: .backup, type: .default)
-            let data = try IronBackup.createBackupData(managedObjectContext: managedObjectContext, exerciseStore: exerciseStore)
-
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd"
-            let url = try tempFile(data: data, name: "\(formatter.string(from: Date())).ironbackup")
-
-            shareFile(url: url)
-        } catch {
-            os_log("Could not create backup: %@", log: .backup, type: .default, error.localizedDescription)
-            operationError = DataOperationError(title: "Could Not Create Backup", error: error)
+            return try IronBackup.createBackupData(managedObjectContext: context, exerciseStore: store)
         }
     }
 
@@ -368,97 +372,184 @@ struct BackupAndExportView: View {
     }
 
     private func exportHevyWorkoutCSV() {
-        do {
-            let workouts = try fetchWorkouts()
-            let data = try HevyCSV.exportData(
-                workouts: workouts,
-                exercises: exerciseStore.exercises,
-                weightUnit: settingsStore.weightUnit
+        let exercises = exerciseStore.exercises
+        let unit = settingsStore.weightUnit
+        prepareExport(.workouts, filename: "workout_data.csv", errorTitle: "Could Not Export Workout Data") { context in
+            try HevyCSV.exportData(workouts: SettingsExportFiles.fetchWorkouts(in: context),
+                                   exercises: exercises, weightUnit: unit)
+        }
+    }
+
+    private func exportHevyImportCSV() {
+        let exercises = exerciseStore.exercises
+        let unit = settingsStore.weightUnit
+        // Original files were never retained; regenerate only the Hevy-imported sessions.
+        prepareExport(.hevyImport, filename: "hevy_import_workout_data.csv", errorTitle: "Could Not Download Hevy Import") { context in
+            try HevyCSV.exportData(
+                workouts: SettingsExportFiles.fetchWorkouts(in: context, predicate: HevyImportedWorkouts.predicate),
+                exercises: exercises,
+                weightUnit: unit
             )
-            shareFile(url: try tempFile(data: data, name: "workout_data.csv"))
-        } catch {
-            operationError = DataOperationError(title: "Could Not Export Workout Data", error: error)
         }
     }
 
     private func exportHevyMeasurementCSV() {
-        do {
-            let data = try HevyCSV.exportMeasurementData(
-                entries: BodyMetricsStore.shared.entries,
-                weightUnit: settingsStore.weightUnit
-            )
-            shareFile(url: try tempFile(data: data, name: "measurement_data.csv"))
-        } catch {
-            operationError = DataOperationError(title: "Could Not Export Measurements", error: error)
+        let entries = BodyMetricsStore.shared.entries
+        let unit = settingsStore.weightUnit
+        prepareExport(.measurements, filename: "measurement_data.csv", errorTitle: "Could Not Export Measurements") { _ in
+            try HevyCSV.exportMeasurementData(entries: entries, weightUnit: unit)
         }
     }
 
     private func exportWorkoutDataJSON() {
-        do {
-            let workouts = try fetchWorkouts()
+        let exercises = ExerciseStore.shared.exercises
+        prepareExport(.json, filename: "workout_data.json", errorTitle: "Could Not Export Workout Data") { context in
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
             encoder.dateEncodingStrategy = .iso8601
             if let exercisesKey = CodingUserInfoKey.exercisesKey {
-                encoder.userInfo[exercisesKey] = ExerciseStore.shared.exercises
+                encoder.userInfo[exercisesKey] = exercises
             }
-            let data = try encoder.encode(workouts)
-            shareFile(url: try tempFile(data: data, name: "workout_data.json"))
-        } catch {
-            operationError = DataOperationError(title: "Could Not Export Workout Data", error: error)
+            return try encoder.encode(SettingsExportFiles.fetchWorkouts(in: context))
         }
     }
 
     private func exportWorkoutDataText() {
-        do {
-            let workouts = try fetchWorkouts()
-            let text = workouts
-                .compactMap { $0.logText(in: exerciseStore.exercises, weightUnit: settingsStore.weightUnit) }
+        let exercises = exerciseStore.exercises
+        let unit = settingsStore.weightUnit
+        prepareExport(.text, filename: "workout_data.txt", errorTitle: "Could Not Export Workout Data") { context in
+            let text = try SettingsExportFiles.fetchWorkouts(in: context)
+                .compactMap { $0.logText(in: exercises, weightUnit: unit) }
                 .joined(separator: "\n\n\n\n\n")
-            let data = Data(text.utf8)
-            shareFile(url: try tempFile(data: data, name: "workout_data.txt"))
-        } catch {
-            operationError = DataOperationError(title: "Could Not Export Workout Data", error: error)
+            return Data(text.utf8)
+        }
+    }
+
+    private func prepareExport(
+        _ action: SettingsDataActionCoordinator.Action,
+        filename: String,
+        errorTitle: String,
+        makeData: @escaping (NSManagedObjectContext) throws -> Data
+    ) {
+        guard dataActions.begin(action) else { return }
+        preparationFeedback += 1
+        let reader = SettingsDataActionCoordinator.reader(parent: managedObjectContext)
+        Task { @MainActor in
+            do {
+                let url = try await reader.perform {
+                    try SettingsExportFiles.write(data: makeData(reader), name: filename)
+                }
+                dataActions.finish()
+                successFeedback += 1
+                activityItems = [url]
+            } catch {
+                dataActions.finish()
+                errorFeedback += 1
+                operationError = DataOperationError(title: errorTitle, error: error)
+            }
         }
     }
 
     private func createCloudBackup() {
-        guard !isCreatingCloudBackup else { return }
-        isCreatingCloudBackup = true
-        backupStore.create(data: {
-            try self.managedObjectContext.performAndWait { context in
-                os_log("Creating backup data", log: .backup, type: .default)
-                return try IronBackup.createBackupData(managedObjectContext: context, exerciseStore: self.exerciseStore)
+        guard dataActions.begin(.cloudBackup) else { return }
+        preparationFeedback += 1
+        let reader = SettingsDataActionCoordinator.reader(parent: managedObjectContext)
+        let store = exerciseStore
+        Task { @MainActor in
+            do {
+                let data = try await reader.perform {
+                    try IronBackup.createBackupData(managedObjectContext: reader, exerciseStore: store)
+                }
+                // The store writes the prepared bytes on its existing iCloud queue.
+                backupStore.create(data: { data }, onSuccess: { _ in
+                    DispatchQueue.main.async {
+                        dataActions.finish()
+                        // The drop-down plays the success haptic.
+                        LightToastCenter.shared.show(LightToast(
+                            title: "Backup Created", subtitle: "Saved to iCloud Drive",
+                            systemImage: "checkmark.icloud.fill"))
+                    }
+                }, onError: { error in
+                    DispatchQueue.main.async {
+                        dataActions.finish()
+                        errorFeedback += 1
+                        operationError = DataOperationError(title: "Could Not Create iCloud Backup", error: error)
+                    }
+                })
+            } catch {
+                dataActions.finish()
+                errorFeedback += 1
+                operationError = DataOperationError(title: "Could Not Create iCloud Backup", error: error)
             }
-        }, onSuccess: { _ in
-            DispatchQueue.main.async {
-                self.isCreatingCloudBackup = false
-                self.cloudBackupSucceeded = true
-            }
-        }, onError: { error in
-            DispatchQueue.main.async {
-                self.isCreatingCloudBackup = false
-                self.operationError = DataOperationError(title: "Could Not Create iCloud Backup", error: error)
-            }
-        })
+        }
+    }
+}
+
+/// A separate destination sharing the existing import confirmations and export preparation path.
+struct HevyImportView: View {
+    var body: some View {
+        BackupAndExportView(showsHevyImport: true)
+    }
+}
+
+/// One gate for exports, manual backups and restores, including across subpage navigation.
+@MainActor
+final class SettingsDataActionCoordinator: ObservableObject {
+    enum Action: Equatable {
+        case workouts, hevyImport, measurements, json, text, fullBackup, cloudBackup, restore
     }
 
-    private func fetchWorkouts() throws -> [Workout] {
+    static let shared = SettingsDataActionCoordinator()
+    @Published private(set) var activeAction: Action?
+    var isBusy: Bool { activeAction != nil }
+
+    func begin(_ action: Action) -> Bool {
+        guard !isBusy else { return false }
+        activeAction = action
+        return true
+    }
+
+    func finish() {
+        activeAction = nil
+    }
+
+    static func reader(parent: NSManagedObjectContext) -> NSManagedObjectContext {
+        let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        // Read the store directly: a child of the UI context would fire every fault through the
+        // main queue, stalling the spinner for a large history. Edits are saved as they're made,
+        // so the store already holds them. Fetched objects and encoding stay on this queue.
+        if let coordinator = parent.persistentStoreCoordinator {
+            context.persistentStoreCoordinator = coordinator
+        } else {
+            context.parent = parent
+        }
+        context.undoManager = nil
+        return context
+    }
+}
+
+private enum SettingsExportFiles {
+    static func fetchWorkouts(in context: NSManagedObjectContext, predicate: NSPredicate? = nil) throws -> [Workout] {
         let request: NSFetchRequest<Workout> = Workout.fetchRequest()
-        request.predicate = NSPredicate(format: "\(#keyPath(Workout.isCurrentWorkout)) != %@", NSNumber(booleanLiteral: true))
+        let completed = NSPredicate(format: "\(#keyPath(Workout.isCurrentWorkout)) != %@", NSNumber(booleanLiteral: true))
+        if let predicate {
+            request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [completed, predicate])
+        } else {
+            request.predicate = completed
+        }
         request.sortDescriptors = [NSSortDescriptor(keyPath: \Workout.start, ascending: false)]
-        return try managedObjectContext.fetch(request)
+        // Every export walks each workout's exercises and sets; load them in the same pass.
+        request.relationshipKeyPathsForPrefetching = ["workoutExercises", "workoutExercises.workoutSets"]
+        return try context.fetch(request)
     }
 
-    private func tempFile(data: Data, name: String) throws -> URL {
-        let path = FileManager.default.temporaryDirectory
-        let url = path.appendingPathComponent(name)
+    static func write(data: Data, name: String) throws -> URL {
+        // Separate share sessions so a later export cannot overwrite a file still being shared.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(name)
         try data.write(to: url, options: .atomic)
         return url
-    }
-
-    private func shareFile(url: URL) {
-        activityItems = [url]
     }
 }
 

@@ -5,18 +5,19 @@ The GitHub repo is now `SoPat712/Light` (`origin` updated). The folder is `~/Pro
 and the project is `Light.xcodeproj`; the scheme and targets are still named `Iron`.
 `~/Projects/Iron` is a symlink to the new folder so older scripts keep working.
 
-## Customizable Home (2026-11-02, simulator only, not installed)
-Build 70 is on both devices. Since then, uncommitted and not yet on a device:
-- This Week card styles: Rings (default), Pace, Muscles, Bars, from the card's ••• menu or
-  Customize Home. Muscle Focus is now average weekly sets per group against a target band
-  (default 10–20, adjustable). Sections can be hidden and reordered. See DESIGN_SYSTEM §15.2.
-- Code: `Iron/UI/Components/HomeWeekViews.swift` (new), `FeedView.swift`; tests in
-  `IronTests/ThisWeekWidgetDataTests.swift` (`HomeWeekSummaryTests`); 462/462 pass.
-- Debug flags `-ironInspectCustomizeHome` and `-ironInspectHomeSections` open those screens.
+## Customizable Home (2026-11-02)
+Build 71 (installed) added This Week styles chosen one at a time, the Muscle Focus target
+band, and hide/reorder for sections. Since then, uncommitted and not yet on a device:
+- Each This Week view (Rings, Pace, Muscle Week, Daily Volume) is its own Home card, so any
+  number show together. Customize Home lists the cards on Home (delete, drag) and the ones
+  to add. The first week card is "This Week" with Start Workout. See DESIGN_SYSTEM §15.2.
+- Code: `Iron/UI/Components/HomeWeekViews.swift`, `FeedView.swift`; tests in
+  `IronTests/ThisWeekWidgetDataTests.swift` (`HomeWeekSummaryTests`).
+- Debug flag `-ironInspectCustomizeHome` opens Customize Home on its own.
 - The shared phone simulator stopped accepting simhid taps and drags on 2026-11-02, and
-  Simulator.app is not installed with this Xcode. Check lower Home sections by writing
-  `home.sectionOrder` (for example `muscles,week`) with `simctl spawn … defaults write`.
-- Not seen working: the ••• menu and taps in Customize Home (no touch input in the simulator).
+  Simulator.app is not installed with this Xcode. Check lower Home cards by writing
+  `home.cards` (for example `bars,pace`) with `simctl spawn … defaults write`.
+- Not seen working: the ••• menus and taps in Customize Home (no touch input in the simulator).
 
 ## Build 57 RPE-first flow (2026-10-31)
 
@@ -431,7 +432,25 @@ Be fast: the owner tests on their phone daily and wants builds on it quickly.
 2. **Give it its own design identity**, Apple-native: "imagine if Apple made a workout
    tracker". It must stop looking like a Hevy copy. The full system is in `DESIGN_SYSTEM.md`.
 
-## 2. Current state (as of commit `c3f401a` on `main`)
+## 2. Current state (2026-11-04, uncommitted working tree)
+
+- **Identity/signing:** the active Debug app is `me.joshpatra.light`; `com.joshpatra.IronDev`
+  is retired. Sign through the Xcode account with `-allowProvisioningUpdates`; the API key
+  only refreshes existing App IDs and cannot create the new identity.
+- **Backup/import:** backup v7 includes portable app settings (`AppSettingsArchive`), alongside
+  workout data. Restore → Choose Backup File accepts a backup from Files/AirDrop. Download
+  Hevy Import regenerates a CSV of Hevy-imported workouts; the original CSV is not retained.
+- **Exercise search:** shared `ExerciseSearch` ranks exact/title matches, aliases, prefixes and
+  typo matches, with recency within a match tier; library and add-exercise search use it.
+- **Apple Health:** session effort exports as an Apple effort score linked to the existing
+  workout, including later edits. Imported workouts never export. Debug Health test mode
+  defaults **off**; it must be enabled deliberately to suppress recording/export.
+- **Fast checks:** `~/.local/share/light/standalone/build-and-test.sh` compiles with
+  `build-for-testing -jobs 8`, then runs the standalone tests; screenshots use layout settling
+  rather than long fixed waits. Shared runs still follow the coordinator/resource guard and
+  current jobs1 limit; the fast script's job count is not a resource-policy override.
+
+### Historical baseline (commit `c3f401a` on `main`)
 
 | Area | State |
 | --- | --- |
@@ -675,7 +694,7 @@ details. The interactive interaction reference remains in the thread's
   orchestration with parallel Codex workers. They are a capable engineer.
 - Git: works on `main` of the fork `origin` (SoPat712/Iron). Commit per feature or lane. Push
   only when asked. Never push upstream. `reference-material/` is untracked on purpose; never add it.
-- Phone: "Josh's iPhone", UDID `00008150-001914903E69401C`, bundle `com.joshpatra.IronDev`,
+- Phone: "Josh's iPhone", UDID `00008150-001914903E69401C`, bundle `me.joshpatra.light`,
   personal-team signing (`-allowProvisioningUpdates`). The free-team profile expires after
   about 7 days; if launch fails with a profile error, rebuild and reinstall.
 - Ask before booting a simulator.

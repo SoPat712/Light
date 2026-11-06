@@ -7,34 +7,86 @@
 //
 
 import SwiftUI
+import UIKit
+import ImageIO
 import WorkoutDataKit
 
+private struct ExerciseThumbnailRequest: Hashable, Sendable {
+    let url: URL
+    let pixelSize: Int
+}
+
+/// The cached CGImage has already been downsampled and decoded. Creating its
+/// UIImage on the main actor never defers compressed-image work to scrolling.
+private actor ExerciseThumbnailCache {
+    static let shared = ExerciseThumbnailCache()
+
+    private let images: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.countLimit = 128
+        cache.totalCostLimit = 16 * 1_024 * 1_024
+        return cache
+    }()
+    private var pending: [ExerciseThumbnailRequest: Task<CGImage?, Never>] = [:]
+
+    func image(for request: ExerciseThumbnailRequest) async -> CGImage? {
+        let key = "\(request.url.absoluteString)|\(request.pixelSize)" as NSString
+        if let image = images.object(forKey: key) { return image }
+        if let task = pending[request] { return await task.value }
+
+        let task = Task.detached(priority: .utility) {
+            guard let data = await ExerciseMediaStore.shared.stillData(for: request.url),
+                  let source = CGImageSourceCreateWithData(data as CFData, [
+                    kCGImageSourceShouldCache: false
+                  ] as CFDictionary) else { return nil as CGImage? }
+            return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: request.pixelSize,
+                kCGImageSourceShouldCacheImmediately: true
+            ] as CFDictionary)
+        }
+        pending[request] = task
+        let image = await task.value
+        pending[request] = nil
+        if let image {
+            images.setObject(image, forKey: key, cost: image.bytesPerRow * image.height)
+        }
+        return image
+    }
+}
+
 struct ExerciseDiagramThumbnail: View {
+    @Environment(\.displayScale) private var displayScale
     let exercise: Exercise
     var size: CGFloat = 58
 
-    @State private var loadedRemoteMediaURL: URL?
+    @State private var loadedRequest: ExerciseThumbnailRequest?
+    @State private var loadedImage: UIImage?
+
+    private var request: ExerciseThumbnailRequest? {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-ironHideExerciseArt") { return nil }
+        #endif
+        guard let url = exercise.imageURL else { return nil }
+        return ExerciseThumbnailRequest(url: url, pixelSize: max(Int(min(size * displayScale, 240).rounded(.up)), 1))
+    }
 
     var body: some View {
+        let request = request
         ZStack {
             Circle()
                 .fill(IronTheme.diagramCanvas)
-            if exercise.imageURL == nil || loadedRemoteMediaURL != exercise.imageURL {
+            if loadedRequest == request, let loadedImage {
+                Image(uiImage: loadedImage)
+                    .resizable()
+                    .scaledToFit()
+                    // Keep wide machine/cable movements inside the same canvas.
+                    .frame(width: size * 0.66, height: size * 0.66)
+            } else {
                 Image(systemName: "figure.strengthtraining.traditional")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(IronTheme.secondaryText)
-            }
-            if let remoteURL = exercise.imageURL {
-                ExerciseRemoteMediaView(
-                    url: remoteURL,
-                    animated: false,
-                    targetPixelSize: min(size * UIScreen.main.scale, 240),
-                    onLoaded: { loadedRemoteMediaURL = remoteURL }
-                )
-                // Keep the complete movement canvas inside the circular mask.
-                // Several wide machine/cable frames reach all four corners,
-                // so the usual 1/sqrt(2) circle fit is still too tight.
-                .frame(width: size * 0.66, height: size * 0.66)
             }
         }
         .frame(width: size, height: size)
@@ -44,10 +96,16 @@ struct ExerciseDiagramThumbnail: View {
                 .stroke(IronTheme.outline.opacity(0.55), lineWidth: 1)
         )
         .shadow(color: IronTheme.mediaBackdrop.opacity(0.08), radius: 2, x: 0, y: 1)
-        .onChange(of: exercise.imageURL) { _, newURL in
-            if loadedRemoteMediaURL != newURL {
-                loadedRemoteMediaURL = nil
+        .task(id: request) {
+            guard let request else {
+                loadedRequest = nil
+                loadedImage = nil
+                return
             }
+            let image = await ExerciseThumbnailCache.shared.image(for: request)
+            guard !Task.isCancelled else { return }
+            loadedImage = image.map { UIImage(cgImage: $0) }
+            loadedRequest = request
         }
         .accessibilityHidden(true)
     }
@@ -98,6 +156,9 @@ struct ExerciseLibraryRow: View {
 
     let exercise: Exercise
 
+    @State private var showingMedia = false
+    @State private var mediaFeedback = 0
+
     private var lastPerformed: Date? {
         exerciseStore.lastPerformedDates[exercise.uuid]
     }
@@ -106,9 +167,31 @@ struct ExerciseLibraryRow: View {
         ExerciseLibraryMetadata(exercise: exercise, lastPerformed: lastPerformed)
     }
 
+    @ViewBuilder
     var body: some View {
+        if exercise.hasPlayableDemonstration {
+            row.accessibilityAction(named: Text("Play Demonstration")) {
+                showingMedia = true
+            }
+        } else {
+            row
+        }
+    }
+
+    private var row: some View {
         HStack(spacing: 12) {
             ExerciseDiagramThumbnail(exercise: exercise, size: 48)
+                .contentShape(Circle())
+                // Recognized holds consume the enclosing link's tap. Movement
+                // cancels the hold so the List can scroll from the thumbnail.
+                .highPriorityGesture(
+                    LongPressGesture(minimumDuration: 0.4, maximumDistance: 10)
+                        .onEnded { _ in
+                            showingMedia = true
+                            mediaFeedback += 1
+                        },
+                    including: exercise.hasPlayableDemonstration ? .all : .none
+                )
             VStack(alignment: .leading, spacing: 2) {
                 Text(exercise.title)
                     .font(.body.weight(.semibold))
@@ -126,6 +209,14 @@ struct ExerciseLibraryRow: View {
         .padding(.vertical, 2)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(metadata.accessibilityLabel)
+        .sheet(isPresented: $showingMedia) {
+            ExerciseMediaSheet(exercise: exercise)
+        }
+        .onChange(of: mediaFeedback) { _ in
+            if SettingsStore.shared.workoutHaptics {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            }
+        }
     }
 }
 
@@ -188,7 +279,7 @@ struct ExerciseRecencyListContent<Row: View>: View {
 
     var body: some View {
         if isSearchResult {
-            ForEach(exerciseStore.orderedByRecency(exerciseGroups[0].exercises), id: \.self, content: row)
+            ForEach(exerciseGroups[0].exercises, id: \.self, content: row)
         } else {
             let recent = recentExercises
             if !recent.isEmpty {

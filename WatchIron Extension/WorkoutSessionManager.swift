@@ -633,12 +633,21 @@ extension WorkoutSessionManager {
         }
     }
     
+    /// Everything the Watch needs to record a strength workout on its own: the workout and
+    /// the samples its live builder saves (heart rate, active and resting energy), the
+    /// effort score, and body measurements and history for calories and context.
     private static func requestWorkoutPermissions(completion: @escaping (Result<Void, Error>) -> Void) {
-        guard let heartRate = HKQuantityType.quantityType(forIdentifier: .heartRate) else { completion(.failure(NSError())); return }
-        guard let activeEnergyBurned = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) else { completion(.failure(NSError())); return }
-        let share: Set = [HKObjectType.workoutType()]
-        let read = Set([heartRate, activeEnergyBurned])
-        
+        var shareIdentifiers: [HKQuantityTypeIdentifier] = [.heartRate, .activeEnergyBurned, .basalEnergyBurned]
+        var readIdentifiers: [HKQuantityTypeIdentifier] = shareIdentifiers + [.restingHeartRate, .bodyMass, .height]
+        if #available(watchOS 11.0, *) {
+            shareIdentifiers.append(.workoutEffortScore)
+            readIdentifiers += [.workoutEffortScore, .estimatedWorkoutEffortScore]
+        }
+        let share: Set<HKSampleType> = Set(shareIdentifiers.compactMap { HKQuantityType.quantityType(forIdentifier: $0) })
+            .union([HKObjectType.workoutType()])
+        let read: Set<HKObjectType> = Set(readIdentifiers.compactMap { HKQuantityType.quantityType(forIdentifier: $0) as HKObjectType? })
+            .union([HKObjectType.workoutType()])
+
         Self.requestPermissions(toShare: share, read: read, completion: completion)
     }
     

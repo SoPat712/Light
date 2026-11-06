@@ -69,6 +69,7 @@ final class IronSoundPlayer: NSObject {
     private var isPreloading = false
     private var isAppActive = false
     private var lastTickTime: TimeInterval = -.infinity
+    private var isPreviewing = false
 
     private override init() {
         super.init()
@@ -144,6 +145,10 @@ final class IronSoundPlayer: NSObject {
             }
             if preview {
                 for player in self.players.values where player.isPlaying { player.stop() }
+                // A preview is asked for on purpose, so it plays with Silent on; it still mixes
+                // with music. Workout cues stay ambient and keep honoring Ring/Silent.
+                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                self.isPreviewing = true
             }
             guard let player = self.players[sound] else { return }
             player.currentTime = 0
@@ -155,6 +160,10 @@ final class IronSoundPlayer: NSObject {
         // Delegate callbacks can arrive on another queue. Keep all player/session
         // calls serialized, including the implicit activation in prepareToPlay.
         sessionQueue.async {
+            if self.isPreviewing, !self.players.values.contains(where: \.isPlaying) {
+                self.isPreviewing = false
+                try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
+            }
             guard self.isAppActive else { return }
             player.currentTime = 0
             player.prepareToPlay()

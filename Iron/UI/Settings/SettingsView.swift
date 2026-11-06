@@ -37,14 +37,14 @@ struct SettingsView: View {
         NavigationStack {
             settingsRoot
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.large)
+            .toolbarTitleDisplayMode(.inlineLarge)
             .sheet(item: $actionAlert) { alert in
                 IronStatusSheet(
                     headerTitle: "Light",
                     title: alert.title,
                     message: alert.message,
                     systemImage: "info.circle.fill",
-                    tint: .accentColor
+                    tint: IronTheme.accent
                 )
             }
             .sheet(item: $feedbackPresentation) { presentation in
@@ -79,7 +79,7 @@ struct SettingsView: View {
                 }
             }
 
-            Section {
+            Section("General") {
                 settingsLink(
                     "Appearance",
                     detail: settingsStore.appearance.title,
@@ -87,9 +87,6 @@ struct SettingsView: View {
                     tile: .indigo,
                     destination: AppearanceSettingsView()
                 )
-            }
-
-            Section {
                 settingsLink(
                     "Units",
                     detail: settingsStore.weightUnit.title,
@@ -97,45 +94,48 @@ struct SettingsView: View {
                     tile: .orange,
                     destination: UnitsSettingsView()
                 )
-                settingsLink("Workout preferences", icon: "slider.horizontal.3", tile: .blue, destination: GeneralSettingsView())
-                settingsLink("Sounds & haptics", icon: "speaker.wave.2.fill", tile: .pink, destination: SoundsSettingsView())
+                settingsLink("Workout Preferences", icon: "slider.horizontal.3", tile: .blue, destination: GeneralSettingsView())
+                settingsLink("Sounds & Haptics", icon: "speaker.wave.2.fill", tile: .pink, destination: SoundsSettingsView())
+            }
+
+            Section("Connections") {
                 if HealthSettingsView.isSupported {
                     settingsLink("Apple Health", icon: "heart.fill", tile: .health, destination: HealthSettingsView())
                 }
                 if WatchSettingsView.isSupported {
                     settingsLink("Apple Watch", icon: "applewatch", tile: .watch, destination: WatchSettingsView())
                 }
-            } header: {
-                Text("Training")
             }
 
             Section("Your Data") {
-                settingsLink("Import & export", icon: "arrow.up.arrow.down", tile: .green, destination: BackupAndExportView())
+                settingsLink("Import & Export", icon: "arrow.up.arrow.down", tile: .green, destination: BackupAndExportView())
             }
 
-            Section("Support") {
+            Section {
                 Button(action: sendFeedback) {
-                    settingsRow("Send feedback", icon: "paperplane.fill", tile: .blue)
+                    settingsRow("Send Feedback", icon: "paperplane.fill", tile: .blue)
                 }
-                .buttonStyle(.plain)
 
                 Button(action: openReview) {
                     settingsRow("Rate Light", icon: "star.fill", tile: .yellow)
                 }
-                .buttonStyle(.plain)
 
-                settingsLink(
-                    "Licenses & attributions",
-                    icon: "doc.text.fill",
-                    tile: .gray,
-                    destination: LicensesAttributionsView()
-                )
                 settingsLink("About Light", icon: "info.circle.fill", tile: .gray, destination: AboutView())
+            } header: {
+                Text("Support")
+            } footer: {
+                #if !DEBUG
+                Text(versionString).foregroundStyle(IronTheme.secondaryText)
+                #endif
             }
 
             #if DEBUG
-            Section("Development") {
-                settingsLink("Developer settings", icon: "hammer.fill", tile: .darkGray, destination: DeveloperSettings())
+            Section {
+                settingsLink("Developer Settings", icon: "hammer.fill", tile: .darkGray, destination: DeveloperSettings())
+            } header: {
+                Text("Development")
+            } footer: {
+                Text(versionString).foregroundStyle(IronTheme.secondaryText)
             }
             #endif
         }
@@ -145,6 +145,12 @@ struct SettingsView: View {
         }
         .ironScreen()
         .task { loadWorkoutStats() }
+    }
+
+    private var versionString: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        return "Light \(version) (\(build))"
     }
 
     private func loadWorkoutStats() {
@@ -164,7 +170,7 @@ struct SettingsView: View {
         _ title: String,
         detail: String? = nil,
         icon: String,
-        tile: SettingsIconTile.Style,
+        tile: SettingsSubpageIconTile.Style,
         destination: Destination
     ) -> some View {
         NavigationLink(destination: destination) {
@@ -176,16 +182,16 @@ struct SettingsView: View {
         _ title: String,
         detail: String? = nil,
         icon: String,
-        tile: SettingsIconTile.Style
+        tile: SettingsSubpageIconTile.Style
     ) -> some View {
         HStack(spacing: 14) {
-            SettingsIconTile(systemImage: icon, style: tile)
+            SettingsSubpageIconTile(systemImage: icon, style: tile)
             if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                     if let detail {
                         Text(detail)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(IronTheme.secondaryText)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -194,12 +200,13 @@ struct SettingsView: View {
                 Spacer(minLength: 8)
                 if let detail {
                     Text(detail)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(IronTheme.secondaryText)
                 }
             }
         }
         .font(.body)
-        .foregroundStyle(.primary)
+        .foregroundStyle(IronTheme.primaryText)
+        .fixedSize(horizontal: false, vertical: true)
         .contentShape(Rectangle())
     }
 
@@ -222,27 +229,27 @@ struct SettingsView: View {
 }
 
 /// iOS Settings-style glyph tile: a white symbol on a colored rounded square.
-private struct SettingsIconTile: View {
+private struct SettingsSubpageIconTile: View {
     enum Style {
         case indigo, orange, blue, pink, green, yellow, gray, darkGray, health, watch
 
         var fill: Color {
             switch self {
-            case .indigo: return Color(UIColor.systemIndigo)
-            case .orange: return Color(UIColor.systemOrange)
-            case .blue: return Color(UIColor.systemBlue)
-            case .pink: return Color(UIColor.systemPink)
-            case .green: return Color(UIColor.systemGreen)
-            case .yellow: return Color(UIColor.systemYellow)
-            case .gray: return Color(UIColor.systemGray)
-            case .darkGray: return Color(UIColor.systemGray2)
+            case .indigo: return IronTheme.accent
+            case .orange: return IronTheme.metricSets
+            case .blue: return IronTheme.accent
+            case .pink: return IronTheme.metricEffort
+            case .green: return IronTheme.metricVolume
+            case .yellow: return IronTheme.metricRecord
+            case .gray: return IronTheme.secondaryText
+            case .darkGray: return IronTheme.secondaryText
             case .health: return IronTheme.diagramCanvas
-            case .watch: return Color(UIColor(white: 0.17, alpha: 1))
+            case .watch: return IronTheme.mediaBackdrop
             }
         }
 
         var glyph: Color {
-            self == .health ? Color(UIColor.systemPink) : IronTheme.onMedia
+            self == .health ? IronTheme.metricEffort : IronTheme.onAccent
         }
 
         /// White and near-black tiles need an edge to separate from the cell.
@@ -277,12 +284,6 @@ private struct SettingsHeaderCard: View {
     let workoutCount: Int?
     let firstWorkoutDate: Date?
 
-    private var versionString: String {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
-        return "Version \(version) (\(build))"
-    }
-
     private var countTitle: String? {
         guard let workoutCount else { return nil }
         return workoutCount == 1 ? "1 workout" : "\(workoutCount.formatted()) workouts"
@@ -306,21 +307,17 @@ private struct SettingsHeaderCard: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Light")
-                    .font(.title3.weight(.bold))
+                    .font(.headline)
                     .foregroundStyle(IronTheme.primaryText)
                 if let countTitle {
-                    (Text(countTitle).foregroundColor(IronTheme.accent)
-                     + Text(firstWorkoutDate.map { " · since \($0.formatted(.dateTime.month(.abbreviated).year()))" } ?? "")
-                        .foregroundColor(IronTheme.secondaryText))
-                        .font(.subheadline.weight(.semibold))
+                    Text(countTitle + (firstWorkoutDate.map { " since \($0.formatted(.dateTime.month(.abbreviated).year()))" } ?? ""))
+                        .font(.ironMetric(.subheadline, weight: .semibold))
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(versionString)
-                    .font(.footnote)
-                    .foregroundStyle(IronTheme.secondaryText)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 6)
         .accessibilityElement(children: .combine)
         .accessibilityHint("Opens About Light")
     }
@@ -373,11 +370,10 @@ private struct FeedbackOptionsSheet: View {
         NavigationStack {
             List {
                 Section {
-                    Button("Open Default Mail App", systemImage: "envelope.fill", action: openMailApp)
+                    Button("Open Default Mail App", action: openMailApp)
 
                     Button(
-                        copied ? "Address Copied" : "Copy \(emailAddress)",
-                        systemImage: copied ? "checkmark" : "doc.on.doc"
+                        copied ? "Address Copied" : "Copy \(emailAddress)"
                     ) {
                         UIPasteboard.general.string = emailAddress
                         copied = true
@@ -386,18 +382,15 @@ private struct FeedbackOptionsSheet: View {
                     Text("Send Feedback")
                 } footer: {
                     if mailLaunchFailed {
-                        Label(
-                            "No email app could open this message. Copy the address instead.",
-                            systemImage: "exclamationmark.triangle.fill"
-                        )
-                        .foregroundStyle(.orange)
+                        Text("No email app could open this message; copy the address instead.")
+                            .foregroundStyle(IronTheme.danger)
                     } else {
-                        Text("Apple Mail isn’t configured on this device. Open another email app or copy our support address.")
+                        Text("Open another email app or copy our support address when Apple Mail isn’t configured.")
                     }
                 }
             }
             .listStyle(.insetGrouped)
-            .navigationTitle("Feedback")
+            .navigationTitle("Send Feedback")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -443,23 +436,35 @@ private struct AppearanceSettingsView: View {
     var body: some View {
         List {
             Section {
-                ForEach(IronAppearance.allCases) { appearance in
-                    Button {
-                        settingsStore.appearance = appearance
-                        UISelectionFeedbackGenerator().selectionChanged()
-                    } label: {
-                        HStack {
-                            Label(appearance.title, systemImage: appearance.systemImage)
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            if settingsStore.appearance == appearance {
-                                Image(systemName: "checkmark")
-                                    .font(.body.weight(.semibold))
-                                    .foregroundStyle(.tint)
+                // Display & Brightness style: tap a preview of the screen itself.
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(IronAppearance.allCases) { appearance in
+                        let isSelected = settingsStore.appearance == appearance
+                        Button { select(appearance) } label: {
+                            VStack(spacing: 8) {
+                                AppearancePreview(appearance: appearance)
+                                    .frame(height: 118)
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .strokeBorder(isSelected ? IronTheme.accent : .clear, lineWidth: 2.5)
+                                    }
+                                Text(appearance.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(IronTheme.primaryText)
+                                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                    .font(.title3)
+                                    .foregroundStyle(isSelected ? IronTheme.accent : IronTheme.secondaryText)
+                                    .contentTransition(.symbolEffect(.replace))
                             }
+                            .frame(maxWidth: .infinity)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(appearance.title)
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
                     }
                 }
+                .padding(.vertical, 8)
             } header: {
                 Text("Theme")
             } footer: {
@@ -469,6 +474,52 @@ private struct AppearanceSettingsView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Appearance")
         .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: settingsStore.appearance)
+    }
+
+    private func select(_ appearance: IronAppearance) {
+        guard settingsStore.appearance != appearance else { return }
+        settingsStore.appearance = appearance
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+}
+
+/// A miniature Light screen drawn with the real theme roles in a forced color scheme.
+private struct AppearancePreview: View {
+    let appearance: IronAppearance
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        Group {
+            switch appearance {
+            case .light: MiniScreen().environment(\.colorScheme, .light)
+            case .dark: MiniScreen().environment(\.colorScheme, .dark)
+            case .system:
+                HStack(spacing: 0) {
+                    MiniScreen().environment(\.colorScheme, .light)
+                    MiniScreen().environment(\.colorScheme, .dark)
+                }
+            }
+        }
+        .clipShape(shape)
+        .overlay { shape.strokeBorder(IronTheme.outline, lineWidth: 1) }
+        .accessibilityHidden(true)
+    }
+
+    private struct MiniScreen: View {
+        var body: some View {
+            ZStack(alignment: .top) {
+                IronTheme.background
+                VStack(spacing: 6) {
+                    Capsule().fill(IronTheme.accent).frame(height: 10)
+                    ForEach(0..<3, id: \.self) { _ in
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(IronTheme.surface)
+                            .frame(height: 18)
+                    }
+                }
+                .padding(10)
+            }
+        }
     }
 }
 
@@ -485,9 +536,9 @@ struct LicensesAttributionsView: View {
                     message: "Exercise metadata includes OpenGym’s community-written catalog, with AGPL-3.0 descriptions, instructions and corrections. Original ExerciseDB text from Hasan Emir Yıldırım’s dataset retains its MIT notice. These notices and source details are bundled with Light’s catalog.",
                     license: "AGPL-3.0 / MIT",
                     links: [
-                        AttributionLink(title: "OpenGym catalog", url: URL(string: "https://github.com/DuarteSantos8/openGym/tree/main/catalogue")!),
-                        AttributionLink(title: "Catalog notices", url: URL(string: "https://github.com/DuarteSantos8/openGym/blob/main/NOTICE.md")!),
-                        AttributionLink(title: "Dataset source", url: URL(string: "https://github.com/hasaneyldrm/exercises-dataset")!)
+                        AttributionLink(title: "OpenGym Catalog", url: URL(string: "https://github.com/DuarteSantos8/openGym/tree/main/catalogue")!),
+                        AttributionLink(title: "Catalog Notices", url: URL(string: "https://github.com/DuarteSantos8/openGym/blob/main/NOTICE.md")!),
+                        AttributionLink(title: "Dataset Source", url: URL(string: "https://github.com/hasaneyldrm/exercises-dataset")!)
                     ]
                 )
             } header: {
@@ -512,7 +563,7 @@ struct LicensesAttributionsView: View {
                     message: "Front and back muscle highlighting uses MuscleMap 1.6.4 by Melih Colpan.",
                     license: "MIT",
                     links: [
-                        AttributionLink(title: "MuscleMap source", url: URL(string: "https://github.com/melihcolpan/MuscleMap")!)
+                        AttributionLink(title: "MuscleMap Source", url: URL(string: "https://github.com/melihcolpan/MuscleMap")!)
                     ]
                 )
             } header: {
@@ -523,6 +574,8 @@ struct LicensesAttributionsView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Licenses & Attributions")
+        .navigationBarTitleDisplayMode(.inline)
+        .labeledContentStyle(SettingsValueStyle())
     }
 
     @ViewBuilder
@@ -533,16 +586,16 @@ struct LicensesAttributionsView: View {
     ) -> some View {
         Text(message)
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(IronTheme.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
 
         LabeledContent("License", value: license)
 
         ForEach(Array(links.enumerated()), id: \.offset) { _, link in
             Link(destination: link.url) {
-                LabeledContent(link.title) {
-                    Image(systemName: "arrow.up.right")
-                        .font(.caption.weight(.semibold))
-                }
+                Text(link.title)
+                    .foregroundStyle(IronTheme.accent)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -629,7 +682,6 @@ struct WorkoutCalendarView: View {
                         calendarGrid
                     }
                 }
-                .padding(.vertical, 6)
             } footer: {
                 Text("^[\(monthWorkouts.count) workout](inflect: true) in \(monthTitle).")
             }
@@ -700,7 +752,7 @@ struct WorkoutCalendarView: View {
             Button { selectedDay = TrainingDay(date: date) } label: {
                 calendarDayContent(date, workoutCount: count)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderless)
             .accessibilityHint("Opens the daily recap")
         } else {
             Color.clear.frame(minHeight: IronTheme.controlHeight)

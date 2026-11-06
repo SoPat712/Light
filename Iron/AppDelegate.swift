@@ -21,6 +21,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         ExerciseStore.migrateCustomExercisesToAppGroupIfNecessary()
         WorkoutDataStorage.migrateToAppGroupIfNecessary()
         SettingsStore.migrateToAppGroupIfNecessary()
+        SettingsStore.resetHealthTestModeForRealUseIfNeeded()
         ExerciseStore.migrateHiddenExercisesToAppGroupIfNecessary()
         IronSoundPlayer.shared.preload()
         

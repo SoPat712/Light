@@ -154,6 +154,7 @@ enum WatchFocusDemo {
     /// Debug destinations stay local; no production navigation case is needed.
     enum LocalRoute: Hashable {
         case notes(UUID), plates(UUID), trackingType(UUID)
+        case plateSetup(UUID), barWeight(UUID), setOptions(UUID, UUID)
     }
 
     static func openRootRouteIfRequested(library: WatchWorkoutLibrary, navigation: WatchNavigation) {
@@ -190,6 +191,9 @@ enum WatchFocusDemo {
         case "active", "now": navigation.workoutPage = .now
         case "notes": return .notes(snapshot.exercises.first?.id ?? exercise.id)
         case "plates": return .plates(exercise.id)
+        case "plate-setup": return .plateSetup(exercise.id)
+        case "bar-weight": return .barWeight(exercise.id)
+        case "set-options": return .setOptions(exercise.id, set.id)
         case "tracking-type": return .trackingType(exercise.id)
         case "rpe", "rpe-manual": navigation.path.append(.rpe(exercise.id, set.id))
         case "rest-picker": navigation.path.append(.restTimer(exercise.id))
@@ -217,8 +221,13 @@ enum WatchFocusDemo {
         let demoWeight = args.firstIndex(of: "--demo-weight").flatMap { args.indices.contains($0 + 1) ? Double(args[$0 + 1]) : nil } ?? 135
         let catalog = WatchBundledLibrary.load().exercises
         let group = UUID()
-        func exercise(_ name: String, index: Int) -> WatchWorkoutExercise {
-            let pick = catalog.first { $0.name.localizedCaseInsensitiveContains(name) }
+        func exercise(_ name: String, catalogID: String, index: Int) -> WatchWorkoutExercise {
+            // Demo identity must survive display-name changes and catalog sorting.
+            let pick = catalog.first { $0.id.uuidString == catalogID }
+                ?? catalog.first {
+                    $0.name.localizedCaseInsensitiveContains(name)
+                        || ($0.aliases?.contains { $0.localizedCaseInsensitiveContains(name) } ?? false)
+                }
             let id = UUID()
             return WatchWorkoutExercise(id: id, order: index, name: pick?.name ?? name,
                 sets: (1...3).map { WatchWorkoutSet(order: $0, weight: demoWeight, reps: 8,
@@ -230,7 +239,10 @@ enum WatchFocusDemo {
                 routineNote: index == 1 ? "Superset with lateral raises" : nil,
                 routineExerciseID: index == 1 ? id : nil)
         }
-        let exercises = [exercise("Barbell Bench Press", index: 1), exercise("Dumbbell Row", index: 2)]
+        let exercises = [
+            exercise("Barbell Bench Press", catalogID: "C0D3C3CD-9F1F-4A89-B845-DAB5923B22A7", index: 1),
+            exercise("Dumbbell Row", catalogID: "13664A80-F9E2-5E0E-A2D5-F5EEEB1769EF", index: 2)
+        ]
         if let first = exercises.first, let id = first.exerciseUuid {
             ExerciseNotes.setNote(first.exerciseNote, for: id, notify: false)
         }

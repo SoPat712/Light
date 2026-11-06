@@ -51,6 +51,14 @@ struct WorkoutSessionView: View {
                         exerciseKey: exercise.exerciseUuid?.uuidString ?? exercise.name)
                 }
             case .trackingType(let exerciseID): WatchExerciseTrackingTypePicker(exerciseID: exerciseID)
+            case .plateSetup(let exerciseID), .barWeight(let exerciseID):
+                if let exercise = store.workoutSnapshot?.exercises.first(where: { $0.id == exerciseID }) {
+                    WatchPlateSetupDemoPage(unit: store.workoutSnapshot?.weightUnit ?? store.preferredWeightUnit,
+                        exerciseKey: exercise.exerciseUuid?.uuidString ?? exercise.name,
+                        showsBaseWeight: route == .barWeight(exerciseID))
+                }
+            case .setOptions(let exerciseID, let setID):
+                ActiveSetOptionsPage(exerciseID: exerciseID, setID: setID)
             }
         }
         #endif
@@ -114,6 +122,8 @@ private struct WatchNowPage: View {
             NavigationLink(value: WatchRoute.catalog(nil)) {
                 WatchActionLabel(title: "Add Exercise", symbol: "plus")
             }.watchGlassButton(prominent: true)
+                // The primary style fills the height Log Set is given; here nothing bounds it.
+                .frame(height: IronTheme.controlHeight + 8)
         }.frame(maxWidth: .infinity)
     }
 
@@ -123,6 +133,7 @@ private struct WatchNowPage: View {
             NavigationLink(value: WatchRoute.finish) {
                 WatchActionLabel(title: "Finish", symbol: "flag.checkered")
             }.watchGlassButton(prominent: true)
+                .frame(height: IronTheme.controlHeight + 8)
         }.frame(maxWidth: .infinity)
     }
 }
@@ -318,7 +329,7 @@ private struct WatchNowSet: View {
         logButton(height: height, compact: compact).frame(height: height)
     }
 
-    /// Buttons jump a plate pair (5 lb / 2.5 kg); the Crown keeps fine 0.5 steps.
+    /// Buttons step 2.5 in either unit, as on the phone; the Crown keeps fine 0.5 steps.
     private var buttonDetents: Double { focus?.buttonDetents(unit: unit) ?? 1 }
 
     @ViewBuilder private func logButton(height: CGFloat, compact: Bool) -> some View {
@@ -342,6 +353,12 @@ private struct WatchNowSet: View {
         editingValue = true
         crownFocused = true
         WatchFeedback.play(.click)
+        Task { @MainActor in
+            // The tiles only become focusable once this update renders, so a first tap's
+            // request can be dropped. Reassert it after the update.
+            await Task.yield()
+            if focus == field { crownFocused = true }
+        }
     }
     private func endEditing() {
         persistCrown()
@@ -358,6 +375,7 @@ private struct WatchNowSet: View {
         guard let focus, crownFocused, trackingType.watchFields.contains(focus) else { return }
         let step = focus.step
         let value = min(focus.maximum, max(0, crownOrigin + crown.rounded() * step))
+        guard abs(focus.value(set, unit: unit) - value) > 0.00001 else { return }
         let exerciseID = exercise.id, setID = set.id, selectedUnit = unit, selectedType = trackingType
         store.updateCurrent { snapshot in
             guard let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }),
@@ -405,61 +423,88 @@ private struct WatchWorkoutControls: View {
     @EnvironmentObject private var store: WorkoutSessionManagerStore
     @EnvironmentObject private var navigation: WatchNavigation
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var entranceVisible = false
     let snapshot: WatchWorkoutSnapshot
 
     var body: some View {
         GeometryReader { proxy in
             let height = proxy.size.height - IronTheme.pageIndicatorClearance
             let width = proxy.size.width - 2 * IronTheme.workoutGutter
+            // Content starts below the toolbar; its midpoint is half the top inset above us.
+            let clockY = -proxy.safeAreaInsets.top / 2
             if typeSize.isAccessibilitySize {
                 ScrollView {
-                    content.frame(width: width)
+                    content(clockY: clockY).frame(width: width)
                         .frame(minHeight: max(0, height), alignment: .top)
                         .padding(.horizontal, IronTheme.workoutGutter)
                         .padding(.bottom, IronTheme.pageIndicatorClearance)
                 }
             } else {
-                content
+                content(clockY: clockY)
                     .frame(width: width, height: height, alignment: .top)
                     .padding(.horizontal, IronTheme.workoutGutter)
             }
         }
+        .coordinateSpace(name: "watchControlsEntrance")
         .ignoresSafeArea(.container, edges: .bottom)
+        // TabView can render this page before it is selected. Restart for every selection.
+        .task(id: navigation.workoutPage) {
+            var reset = Transaction()
+            reset.disablesAnimations = true
+            withTransaction(reset) { entranceVisible = false }
+            guard navigation.workoutPage == .controls else { return }
+            // Give the hidden starting state a frame before beginning the stagger.
+            do { try await Task.sleep(for: .milliseconds(16)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            entranceVisible = true
+        }
     }
 
-    private var content: some View {
+    private func content(clockY: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let manager = store.workoutSessionManager, manager.uuid == snapshot.workoutID {
-                WatchLiveControlsMetrics(snapshot: snapshot, manager: manager)
-            } else { WatchControlsMetrics(snapshot: snapshot, heartRate: "--", energy: snapshot.activeEnergyKilocalories) }
+            entering(order: 0, clockY: clockY) {
+                if let manager = store.workoutSessionManager, manager.uuid == snapshot.workoutID {
+                    WatchLiveControlsMetrics(snapshot: snapshot, manager: manager)
+                } else { WatchControlsMetrics(snapshot: snapshot, heartRate: nil, energy: snapshot.activeEnergyKilocalories) }
+            }
             VStack(spacing: 4) {
                 HStack(spacing: 4) {
-                    if let manager = store.workoutSessionManager,
-                       manager.uuid == snapshot.workoutID, manager.state == .running || manager.state == .paused {
-                        WatchPauseControl(manager: manager)
-                    } else {
-                        Button {} label: {
-                            WatchWorkoutControlLabel(title: "Pause", symbol: "pause.fill",
-                                                     tint: IronTheme.secondaryText, fill: IronTheme.platter)
+                    entering(order: 1, clockY: clockY) {
+                        if let manager = store.workoutSessionManager,
+                           manager.uuid == snapshot.workoutID, manager.state == .running || manager.state == .paused {
+                            WatchPauseControl(manager: manager)
+                        } else {
+                            Button {} label: {
+                                WatchWorkoutControlLabel(title: "Pause", symbol: "pause.fill",
+                                                         tint: IronTheme.secondaryText, fill: IronTheme.platter)
+                            }
+                                .buttonStyle(.plain)
+                                .disabled(true).accessibilityLabel("Pause unavailable without a recording")
                         }
-                            .buttonStyle(.plain)
-                            .disabled(true).accessibilityLabel("Pause unavailable without a recording")
                     }
-                    NavigationLink(value: WatchRoute.catalog(nil)) {
-                        WatchWorkoutControlLabel(title: "Exercise", symbol: "plus",
-                                                 tint: IronTheme.primaryText, fill: IronTheme.platterRaised)
-                    }.buttonStyle(.plain)
+                    entering(order: 2, clockY: clockY) {
+                        NavigationLink(value: WatchRoute.catalog(nil)) {
+                            WatchWorkoutControlLabel(title: "Exercise", symbol: "plus",
+                                                     tint: IronTheme.primaryText, fill: IronTheme.platterRaised)
+                        }.buttonStyle(.plain)
+                    }
                 }
                 .frame(maxHeight: .infinity)
                 HStack(spacing: 4) {
-                    Button(role: .destructive) { navigation.path.append(.discard) } label: {
-                        WatchWorkoutControlLabel(title: "Discard", symbol: "xmark",
-                                                 tint: IronTheme.destructiveText, fill: IronTheme.destructiveWash)
-                    }.buttonStyle(.plain)
-                    NavigationLink(value: WatchRoute.finish) {
-                        WatchWorkoutControlLabel(title: "Finish", symbol: "flag.checkered",
-                                                 tint: IronTheme.accentText, fill: IronTheme.accentWash)
-                    }.buttonStyle(.plain)
+                    entering(order: 3, clockY: clockY) {
+                        Button(role: .destructive) { navigation.path.append(.discard) } label: {
+                            WatchWorkoutControlLabel(title: "Discard", symbol: "xmark",
+                                                     tint: IronTheme.destructiveText, fill: IronTheme.destructiveWash)
+                        }.buttonStyle(.plain)
+                    }
+                    entering(order: 4, clockY: clockY) {
+                        NavigationLink(value: WatchRoute.finish) {
+                            WatchWorkoutControlLabel(title: "Finish", symbol: "flag.checkered",
+                                                     tint: IronTheme.accentText, fill: IronTheme.accentWash)
+                        }.buttonStyle(.plain)
+                    }
                 }
                 .frame(maxHeight: .infinity)
             }
@@ -467,11 +512,28 @@ private struct WatchWorkoutControls: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
+
+    private func entering<Content: View>(order: Int, clockY: CGFloat,
+                                        @ViewBuilder content: () -> Content) -> some View {
+        let visible = entranceVisible
+        let spatial = !reduceMotion
+        return content()
+            .visualEffect { effect, geometry in
+                effect
+                    .scaleEffect(visible || !spatial ? 1 : 0.6)
+                    .offset(y: visible || !spatial ? 0
+                            : clockY - geometry.frame(in: .named("watchControlsEntrance")).midY)
+            }
+            .opacity(visible ? 1 : 0)
+            .animation(visible ? (reduceMotion ? IronMotion.fade : IronMotion.snappy.delay(Double(order) * 0.04)) : nil,
+                       value: visible)
+    }
 }
 
 private struct WatchControlsToolbar: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.isLuminanceReduced) private var reducedLuminance
+    @ScaledMetric(relativeTo: .headline) private var clockReserve: CGFloat = 52
     let snapshot: WatchWorkoutSnapshot
     var body: some View {
         HStack(spacing: 4) {
@@ -482,8 +544,10 @@ private struct WatchControlsToolbar: View {
             TimelineView(.periodic(from: Date(), by: reducedLuminance ? 60 : 1)) { context in
                 Text(WatchNumber.elapsed(snapshot, at: context.date, reduced: reducedLuminance))
                     .font(.ironMetric(.headline)).foregroundStyle(IronTheme.metricTime)
+                    .lineLimit(1).minimumScaleFactor(0.5)
             }
         }
+        .frame(maxWidth: max(0, WKInterfaceDevice.current().screenBounds.width - 18 - clockReserve), alignment: .leading)
     }
 }
 
@@ -538,7 +602,7 @@ private struct WatchLiveControlsMetrics: View {
 private struct WatchControlsMetrics: View {
     @EnvironmentObject private var store: WorkoutSessionManagerStore
     let snapshot: WatchWorkoutSnapshot
-    let heartRate: String
+    let heartRate: String?
     let energy: Double?
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -557,13 +621,13 @@ private struct WatchControlsMetrics: View {
     @ViewBuilder private var vitals: some View {
         #if DEBUG
         // Test workouts run without a Health session, so there are no readings to show.
-        if store.isHealthTestWorkout { vitalsLine(heartRate: "--", energy: "--", testMode: true) }
+        if store.isHealthTestWorkout { vitalsLine(heartRate: nil, energy: "--", testMode: true) }
         else { vitalsLine(heartRate: heartRate, energy: WatchNumber.whole(energy)) }
         #else
         vitalsLine(heartRate: heartRate, energy: WatchNumber.whole(energy))
         #endif
     }
-    private func vitalsLine(heartRate: String, energy: String, testMode: Bool = false) -> some View {
+    private func vitalsLine(heartRate: String?, energy: String, testMode: Bool = false) -> some View {
         // Drop the unit captions before the numbers ever truncate.
         ViewThatFits(in: .horizontal) {
             vitalsRow(heartRate: heartRate, energy: energy, units: true, testMode: testMode).fixedSize()
@@ -572,11 +636,13 @@ private struct WatchControlsMetrics: View {
         .lineLimit(1).minimumScaleFactor(0.7)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(testMode ? "Test mode, heart rate and calories are not recorded"
-                            : "Heart rate \(heartRate) beats per minute, \(energy) active calories")
+                            : (heartRate.map { "Heart rate \($0) beats per minute" } ?? "Heart rate unavailable")
+                                + ", \(energy) active calories")
     }
-    private func vitalsRow(heartRate: String, energy: String, units: Bool, testMode: Bool) -> some View {
+    private func vitalsRow(heartRate: String?, energy: String, units: Bool, testMode: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            vital(heartRate, unit: units ? "BPM" : nil, symbol: "heart.fill", color: IronTheme.metricHeartRate)
+            vital(heartRate ?? "—", unit: units ? "BPM" : nil, symbol: "heart.fill",
+                  color: heartRate == nil ? IronTheme.secondaryText : IronTheme.metricHeartRate)
             vital(energy, unit: units ? "KCAL" : nil, symbol: "flame.fill", color: IronTheme.metricEnergy)
         }
     }
@@ -659,9 +725,8 @@ private struct ExerciseOverviewRow: View {
                 .font(.ironMetric(.footnote, weight: .semibold)).foregroundStyle(IronTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(8).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .background(isCurrent ? IronTheme.currentExerciseWash : IronTheme.platter,
-                    in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
+        .watchPlatter(isCurrent ? IronTheme.currentExerciseWash : IronTheme.platter,
+                      verticalPadding: 8, minHeight: 44)
         .accessibilityElement(children: .combine)
     }
 }
@@ -685,7 +750,7 @@ struct ActiveExerciseView: View {
                 Button { addSet(exercise) } label: { WatchActionLabel(title: "Add Set", symbol: "plus") }
                     .watchGlassButton().padding(.top, 4)
             } else { ContentUnavailableView("Exercise Removed", systemImage: "dumbbell") }
-        }.navigationTitle("").watchVitalsInset()
+        }.navigationTitle("").watchVitalsInset(showsTrailingButton: true)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { navigation.path.append(.exerciseSettings(exerciseID)) } label: { Image(systemName: "ellipsis") }
@@ -697,10 +762,10 @@ struct ActiveExerciseView: View {
         HStack(alignment: .top, spacing: 4) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(exercise.name).font(.title3.bold()).fixedSize(horizontal: false, vertical: true)
-                (Text("Rest " + WatchNumber.clock(exercise.restTimerDuration ?? WatchPreferences.defaultRestDuration))
-                    .foregroundColor(IronTheme.metricTime)
-                 + Text(exercise.supersetID.map { " · + " + partners($0) } ?? "").foregroundColor(IronTheme.accentText))
-                .font(.ironMetric(.footnote, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                Text("Rest " + WatchNumber.clock(exercise.restTimerDuration ?? WatchPreferences.defaultRestDuration)
+                     + (exercise.supersetID.map { " · Superset with " + partners($0) } ?? ""))
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .font(.ironMetric(.footnote, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
             }.frame(maxWidth: .infinity, alignment: .leading)
         }.padding(.bottom, 4)
     }
@@ -715,14 +780,9 @@ struct ActiveExerciseView: View {
     private func addSet(_ exercise: WatchWorkoutExercise) {
         store.updateCurrent { snapshot in
             guard let index = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }) else { return }
-            let source = snapshot.exercises[index].sets.last
-            snapshot.exercises[index].sets.append(WatchWorkoutSet(order: snapshot.exercises[index].sets.count + 1,
-                weight: source?.weight, reps: source?.reps ?? source?.maxTargetReps ?? source?.minTargetReps ?? 8,
-                duration: source?.duration, distance: source?.distance,
-                minTargetReps: source?.minTargetReps, maxTargetReps: source?.maxTargetReps))
-            let last = snapshot.exercises[index].sets.count - 1
-            let type = snapshot.exercises[index].effectiveTrackingType
-            snapshot.exercises[index].sets[last].prepareForTracking(type)
+            let set = WatchWorkoutSet(order: snapshot.exercises[index].sets.count + 1)
+            SetTrackingPreferences.setLoggerFields([], for: set.id)
+            snapshot.exercises[index].sets.append(set)
         }
     }
 }
@@ -741,9 +801,8 @@ private struct WatchSetRow: View {
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(set.completed ? IronTheme.accent : IronTheme.outline).accessibilityHidden(true)
         }
-        .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .background(set.completed ? IronTheme.setFill(set.tag) : IronTheme.platter,
-                    in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
+        .watchPlatter(set.completed ? IronTheme.setFill(set.tag) : IronTheme.platter,
+                      verticalPadding: 0, minHeight: 44)
         .overlay {
             if isCurrent && !set.completed {
                 RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous).strokeBorder(IronTheme.accent, lineWidth: 1.5)
@@ -892,21 +951,20 @@ struct ActiveExerciseSettings: View {
         NavigationLink {
             WatchExerciseTrackingTypePicker(exerciseID: exerciseID)
         } label: {
-            WatchSettingsLabel(title: "Set Type", symbol: "slider.horizontal.3", color: IronTheme.settingsGray,
+            WatchSettingsLabel(title: "Tracking", symbol: "slider.horizontal.3", color: IronTheme.settingsGray,
                                value: exercise.effectiveTrackingType.title)
         }.buttonStyle(.plain)
     }
     private func restTimerRow(_ exercise: WatchWorkoutExercise) -> some View {
         NavigationLink(value: WatchRoute.restTimer(exerciseID)) {
-            WatchSettingsLabel(title: "Rest Timer", symbol: "timer", color: IronTheme.metricTimeContainer,
-                value: WatchNumber.clock(exercise.restTimerDuration ?? WatchPreferences.defaultRestDuration),
-                valueColor: IronTheme.metricTime, symbolColor: IronTheme.metricTime)
+            WatchSettingsLabel(title: "Rest Timer", symbol: "timer", color: IronTheme.metricTime,
+                value: WatchNumber.clock(exercise.restTimerDuration ?? WatchPreferences.defaultRestDuration))
         }.buttonStyle(.plain)
     }
     private func supersetRow(_ exercise: WatchWorkoutExercise) -> some View {
         NavigationLink(value: WatchRoute.superset(exerciseID)) {
-            WatchSettingsLabel(title: "Superset", symbol: "link", color: IronTheme.accentWash,
-                value: partnerNames(exercise), valueColor: IronTheme.accentText, symbolColor: IronTheme.accentText, metricValue: false)
+            WatchSettingsLabel(title: "Superset", symbol: "link", color: IronTheme.accent,
+                value: partnerNames(exercise), metricValue: false)
         }.buttonStyle(.plain)
     }
     private func plateCalculatorRow(_ exercise: WatchWorkoutExercise) -> some View {
@@ -915,7 +973,7 @@ struct ActiveExerciseSettings: View {
                                      unit: store.workoutSnapshot?.weightUnit ?? store.preferredWeightUnit,
                                      exerciseKey: exercise.exerciseUuid?.uuidString ?? exercise.name)
         } label: {
-            WatchSettingsLabel(title: "Plate Calculator", symbol: "plusminus", color: IronTheme.platterRaised)
+            WatchSettingsLabel(title: "Plate Calculator", symbol: "plusminus", color: IronTheme.settingsGray)
         }.buttonStyle(.plain)
     }
     private func notesSection(_ exercise: WatchWorkoutExercise) -> some View {
@@ -966,28 +1024,31 @@ private struct WatchExerciseTrackingTypePicker: View {
     let exerciseID: UUID
     private var exercise: WatchWorkoutExercise? { store.workoutSnapshot?.exercises.first { $0.id == exerciseID } }
     var body: some View {
-        List {
-            Section {
-                ForEach(SetTrackingType.allCases) { type in
-                    Button {
-                        store.setTrackingType(type, exerciseID: exerciseID)
-                        WatchFeedback.play(.click)
-                        dismiss()
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text(type.title).font(.body).foregroundStyle(IronTheme.primaryText)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            if exercise?.effectiveTrackingType == type {
-                                Image(systemName: "checkmark").foregroundStyle(IronTheme.accentText).accessibilityHidden(true)
-                            }
-                        }.frame(minHeight: IronTheme.controlHeight)
-                    }
-                    .accessibilityValue(exercise?.effectiveTrackingType == type ? "Selected" : "")
-                    .accessibilityAddTraits(exercise?.effectiveTrackingType == type ? .isSelected : [])
+        WatchContentList {
+            Text("Tracking").font(.headline.weight(.bold)).padding(.horizontal, 8)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(SetTrackingType.allCases) { type in
+                Button {
+                    store.setTrackingType(type, exerciseID: exerciseID)
+                    WatchFeedback.play(.click)
+                    dismiss()
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(type.title).font(.body).foregroundStyle(IronTheme.primaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if exercise?.effectiveTrackingType == type {
+                            Image(systemName: "checkmark").foregroundStyle(IronTheme.accentText).accessibilityHidden(true)
+                        }
+                    }.frame(minHeight: IronTheme.controlHeight).watchPlatter()
                 }
-            } footer: { Text("Applies to unfinished sets. Completed results are kept.") }
-        }.navigationTitle("Set Type").watchVitalsInset()
+                .buttonStyle(.plain)
+                .accessibilityValue(exercise?.effectiveTrackingType == type ? "Selected" : "")
+                .accessibilityAddTraits(exercise?.effectiveTrackingType == type ? .isSelected : [])
+            }
+            Text("Applies to unfinished sets. Completed results are kept.")
+                .font(.footnote).foregroundStyle(IronTheme.secondaryText).padding(.horizontal, 8)
+        }.watchVitalsInset()
     }
 }
 
@@ -1143,10 +1204,7 @@ struct WatchSupersetRow: View {
             Image(systemName: selected ? "checkmark.circle.fill" : "circle").font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(selected ? IronTheme.accent : IronTheme.outline)
                 .accessibilityHidden(true)
-        }.padding(.horizontal, 8).padding(.vertical, 6)
-            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
-            .background(selected ? IronTheme.accentWash : IronTheme.platter,
-                        in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
+        }.watchPlatter(selected ? IronTheme.accentWash : IronTheme.platter, minHeight: IronTheme.controlHeight)
             .accessibilityElement(children: .combine).accessibilityValue(selected ? "Selected" : "Not selected")
     }
 }
@@ -1159,6 +1217,8 @@ struct ActiveSupersetEditor: View {
     private var anchor: WatchWorkoutExercise? { exercises.first { $0.id == anchorID } }
     var body: some View {
         WatchContentList {
+            Text("Superset").font(.headline.weight(.bold)).padding(.horizontal, 8)
+                .accessibilityAddTraits(.isHeader)
             Text("Alternate sets with " + (anchor?.name ?? "Exercise"))
                 .font(.footnote).foregroundStyle(IronTheme.secondaryText).padding(.bottom, 4)
                 .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8)
@@ -1170,11 +1230,10 @@ struct ActiveSupersetEditor: View {
             if anchor?.supersetID != nil {
                 Button(role: .destructive, action: removeFromSuperset) {
                     WatchSettingsLabel(title: "Remove from Superset", symbol: "link",
-                                       color: IronTheme.destructiveWash, destructive: true,
-                                       symbolColor: IronTheme.destructiveText)
+                                       color: IronTheme.danger, destructive: true)
                 }.buttonStyle(.plain)
             }
-        }.navigationTitle("Superset").watchVitalsInset()
+        }.watchVitalsInset(showsTrailingButton: true)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { dismiss() } label: { Image(systemName: "checkmark") }.accessibilityLabel("Done")
@@ -1220,13 +1279,24 @@ private enum SetValueField: String {
         switch self { case .weight: return unit.symbol; case .reps: return "rep"; case .duration: return "sec"; case .distance: return unit == .pound ? "mi" : "km" }
     }
     func buttonDetents(unit: WatchWorkoutWeightUnit) -> Double {
-        self == .weight ? (unit == .pound ? 10 : 5) : 1
+        self == .weight ? 5 : 1
+    }
+    func isEmpty(in set: WatchWorkoutSet) -> Bool {
+        switch self {
+        case .weight: return set.weight == nil
+        case .reps: return set.reps == nil
+        case .duration: return set.duration == nil
+        case .distance: return set.distance == nil
+        }
     }
     func value(_ set: WatchWorkoutSet, unit: WatchWorkoutWeightUnit) -> Double {
-        switch self { case .weight: return set.weight ?? 0; case .reps: return Double(set.reps ?? set.maxTargetReps ?? set.minTargetReps ?? 0)
+        switch self { case .weight: return set.weight ?? 0; case .reps: return Double(set.reps ?? 0)
         case .duration: return set.duration ?? 0; case .distance: return (set.distance ?? 0) / (unit == .pound ? 1_609.344 : 1_000) }
     }
     func apply(_ value: Double?, unit: WatchWorkoutWeightUnit, to set: inout WatchWorkoutSet) {
+        if let field = SetTrackingType.Column(rawValue: rawValue) {
+            SetTrackingPreferences.markLoggerField(field, for: set.id)
+        }
         switch self { case .weight: set.weight = value; case .reps: set.reps = value.map { Int($0.rounded()) }; case .duration: set.duration = value
         case .distance: set.distance = value.map { WatchNumber.meters(displayValue: $0, unit: unit) } }
     }
@@ -1323,7 +1393,7 @@ private struct WatchSetValueTiles: View {
         WatchSetValueTile(exerciseName: exerciseName, field: field, value: field.value(set, unit: unit), unit: unit, trackingType: trackingType,
             selected: focus == field, metricSize: size, compact: compact,
             verticalPadding: verticalPadding, allowsDeselection: allowsDeselection,
-            fillsPage: fillsPage,
+            fillsPage: fillsPage, isEmpty: field.isEmpty(in: set),
             onSelect: { onSelect(field) }, onAdjust: { onAdjust(field, $0) })
     }
 }
@@ -1343,10 +1413,15 @@ private struct WatchSetValueTile: View {
     let verticalPadding: CGFloat
     let allowsDeselection: Bool
     var fillsPage = false
+    var labelOverride: String? = nil
+    var isEmpty = false
     let onSelect: () -> Void
     let onAdjust: (Double) -> Void
-    private var text: String { field == .duration ? SetTrackingType.durationText(value) : WatchNumber.format(value) }
+    private var text: String {
+        isEmpty ? "—" : (field == .duration ? SetTrackingType.durationText(value) : WatchNumber.format(value))
+    }
     private var spokenValue: String {
+        if isEmpty { return "Not entered" }
         switch field {
         case .duration:
             let seconds = Int(min(max(value.isFinite ? value : 0, 0), field.maximum))
@@ -1374,7 +1449,7 @@ private struct WatchSetValueTile: View {
 
     private var tileContents: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(field.tileLabel(unit: unit, trackingType: trackingType)).font(compact || fillsPage ? .caption2.bold() : .footnote.bold())
+            Text(labelOverride ?? field.tileLabel(unit: unit, trackingType: trackingType)).font(compact || fillsPage ? .caption2.bold() : .footnote.bold())
                 .foregroundStyle(selected ? IronTheme.accentText : IronTheme.secondaryText)
                 .lineLimit(1).minimumScaleFactor(0.8)
                 .layoutPriority(1)
@@ -1406,35 +1481,6 @@ private struct WatchSetValueTile: View {
 }
 
 /// The Now page and full editor share navigation and mutations for set options.
-private struct WatchSetAdjustments: View {
-    let title: String
-    var height: CGFloat = IronTheme.controlHeight
-    var onDone: (() -> Void)? = nil
-    let onAdjust: (Double) -> Void
-    var body: some View {
-        HStack(spacing: 4) {
-            adjustment(-1)
-            if let onDone {
-                Button(action: onDone) {
-                    WatchStepGlyph(symbol: "checkmark")
-                        .foregroundStyle(IronTheme.accentText)
-                        .frame(height: height)
-                        .background(IronTheme.accentWash, in: Capsule())
-                }.buttonStyle(.plain).accessibilityLabel("Done Editing")
-            }
-            adjustment(1)
-        }
-    }
-    private func adjustment(_ direction: Double) -> some View {
-        Button { onAdjust(direction) } label: {
-            WatchStepGlyph(symbol: direction < 0 ? "minus" : "plus")
-                .frame(height: height)
-                .background(IronTheme.platterRaised, in: Capsule())
-        }.buttonStyle(.plain)
-            .accessibilityLabel((direction < 0 ? "Decrease " : "Increase ") + title.lowercased())
-    }
-}
-
 private struct WatchSetOptionRows: View {
     @EnvironmentObject private var store: WorkoutSessionManagerStore
     @EnvironmentObject private var navigation: WatchNavigation
@@ -1445,7 +1491,7 @@ private struct WatchSetOptionRows: View {
     private var unit: WatchWorkoutWeightUnit { store.workoutSnapshot?.weightUnit ?? store.preferredWeightUnit }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 4) {
             if let exercise, let set = exercise.sets.first(where: { $0.id == setID }) {
                 ratingRow(set)
                 typeRow(set)
@@ -1462,14 +1508,14 @@ private struct WatchSetOptionRows: View {
     private func ratingRow(_ set: WatchWorkoutSet) -> some View {
         NavigationLink(value: WatchRoute.rpe(exerciseID, setID)) {
             WatchSettingsLabel(title: "RPE", symbol: "chart.bar.fill", color: IronTheme.metricEffort,
-                value: set.rpe.map(WatchNumber.format) ?? "Add", valueColor: set.rpe == nil ? IronTheme.accentText : IronTheme.metricEffort,
+                value: set.rpe.map(WatchNumber.format) ?? "Add", valueColor: set.rpe == nil ? IronTheme.accentText : IronTheme.secondaryText,
                 metricValue: true)
         }.buttonStyle(.plain)
     }
     private func typeRow(_ set: WatchWorkoutSet) -> some View {
         NavigationLink(value: WatchRoute.setType(exerciseID, setID)) {
-            WatchSettingsLabel(title: "Set Type", symbol: "tag.fill", color: IronTheme.setBadge(set.tag),
-                value: set.kindTitle, valueColor: IronTheme.setTint(set.tag), symbolColor: IronTheme.setTint(set.tag))
+            WatchSettingsLabel(title: "Set Type", symbol: "tag.fill", color: IronTheme.setIconColor(set.tag),
+                value: set.kindTitle)
         }.buttonStyle(.plain)
     }
     private func completionRow(_ set: WatchWorkoutSet, exercise: WatchWorkoutExercise) -> some View {
@@ -1494,9 +1540,8 @@ private struct WatchSetOptionRows: View {
     }
     private func restTimerRow(_ exercise: WatchWorkoutExercise) -> some View {
         NavigationLink(value: WatchRoute.restTimer(exerciseID)) {
-            WatchSettingsLabel(title: "Rest Timer", symbol: "timer", color: IronTheme.metricTimeContainer,
-                value: WatchNumber.clock(exercise.restTimerDuration ?? WatchPreferences.defaultRestDuration),
-                valueColor: IronTheme.metricTime, symbolColor: IronTheme.metricTime)
+            WatchSettingsLabel(title: "Rest Timer", symbol: "timer", color: IronTheme.metricTime,
+                value: WatchNumber.clock(exercise.restTimerDuration ?? WatchPreferences.defaultRestDuration))
         }.buttonStyle(.plain)
     }
     private func measurementRows(_ set: WatchWorkoutSet, type: SetTrackingType) -> some View {
@@ -1533,7 +1578,10 @@ private struct WatchSetOptionRows: View {
         NavigationLink {
             WatchPlateCalculatorView(targetWeight: set.weight ?? 0, unit: unit,
                 exerciseKey: exercise?.exerciseUuid?.uuidString ?? exercise?.name) { value in
-                    mutate { $0.weight = value }
+                    mutate {
+                        $0.weight = value
+                        SetTrackingPreferences.markLoggerField(.weight, for: $0.id)
+                    }
                 }
         } label: {
             WatchSettingsLabel(title: "Plate Calculator", symbol: "plusminus", color: IronTheme.settingsGray)
@@ -1577,21 +1625,26 @@ struct ActiveSetEditor: View {
     var body: some View {
         GeometryReader { proxy in
             let budget = WatchPickerFirstScreenBudget(size: proxy.size, headerHeight: headerSize * 1.35 + 2 + labelLineHeight * 1.35)
-            ScrollView(.vertical) {
-                if let exercise, let set {
-                    VStack(alignment: .leading, spacing: 0) {
-                        firstScreen(exercise: exercise, set: set, budget: budget)
-                        setSettings
-                            .padding(.top, 12).padding(.bottom, budget.bottomClearance + 8)
-                    }
+            if let exercise, let set {
+                let page = firstScreen(exercise: exercise, set: set, budget: budget)
                     .frame(width: max(0, proxy.size.width - 2 * IronTheme.workoutGutter), alignment: .leading)
                     .padding(.horizontal, IronTheme.workoutGutter)
-                } else { ContentUnavailableView("Set Removed", systemImage: "checklist") }
-            }
-            .digitalCrownAccessory(.hidden)
+                // Only accessibility text can outgrow this single-purpose page.
+                // Options have their own Crown-scrolling destination.
+                if typeSize.isAccessibilitySize { ScrollView(.vertical) { page } }
+                else { page }
+            } else { ContentUnavailableView("Set Removed", systemImage: "checklist") }
         }
         .ignoresSafeArea(.container, edges: .bottom)
-        .navigationTitle("").watchVitalsInset()
+        .navigationTitle("").watchVitalsInset(showsTrailingButton: true)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    ActiveSetOptionsPage(exerciseID: exerciseID, setID: setID)
+                } label: { Image(systemName: "ellipsis") }
+                    .accessibilityLabel("Set Options")
+            }
+        }
         .onAppear {
             if !initialized {
                 initialized = true
@@ -1608,6 +1661,7 @@ struct ActiveSetEditor: View {
         .onChange(of: crown) { persistCrown() }
         .onChange(of: unit) { syncCrown() }
         .onChange(of: trackingType) { focus = trackingType.watchFields[0]; syncCrown() }
+        .onDisappear { crownFocused = false }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: crown.rounded())
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: focus)
     }
@@ -1636,10 +1690,10 @@ struct ActiveSetEditor: View {
             .frame(height: typeSize.isAccessibilitySize ? nil : budget.headerHeight)
             fields(set, exerciseName: exercise.name, height: tileHeight, compact: budget.compact)
                 .frame(height: tileHeight)
-                // The Crown edits the focused field; touch still scrolls the page.
+                // Always focus one value; there is no scrolling page at normal sizes.
                 .focusable().focused($crownFocused).focusEffectDisabled()
                 .watchCrownRotation($crown, in: (-focus.maximum / focus.step)...(focus.maximum / focus.step), by: 1,
-                                    sensitivity: .medium, haptics: workoutHaptics)
+                                    sensitivity: .low, haptics: workoutHaptics)
             saveButton(exercise: exercise, set: set, height: buttonHeight)
         }
         .frame(minHeight: budget.contentHeight, alignment: .top)
@@ -1674,12 +1728,6 @@ struct ActiveSetEditor: View {
                 step(field, by: direction * field.buttonDetents(unit: unit))
             })
     }
-    private var setSettings: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            WatchSectionTitle(title: "Set Settings")
-            WatchSetOptionRows(exerciseID: exerciseID, setID: setID, showsCompletion: true)
-        }
-    }
     private func previous(_ set: WatchWorkoutSet, exercise: WatchWorkoutExercise) -> String {
         store.previousSetText(set: set, exercise: exercise, snapshot: store.workoutSnapshot).map { "Last " + $0 } ?? "No previous set"
     }
@@ -1707,6 +1755,21 @@ struct ActiveSetEditor: View {
                   (snapshot.weightUnit ?? store.preferredWeightUnit) == selectedUnit else { return }
             selected.apply(value, unit: selectedUnit, to: &snapshot.exercises[exercise].sets[set])
         }
+    }
+}
+
+private struct ActiveSetOptionsPage: View {
+    let exerciseID: UUID
+    let setID: UUID
+
+    var body: some View {
+        WatchContentList {
+            Text("Set Options").font(.headline.weight(.bold))
+                .padding(.horizontal, 8).padding(.bottom, 4)
+                .accessibilityAddTraits(.isHeader)
+            WatchSetOptionRows(exerciseID: exerciseID, setID: setID, showsCompletion: true)
+        }
+        .navigationTitle("").watchVitalsInset()
     }
 }
 
@@ -1856,11 +1919,12 @@ struct WatchWarmupPage: View {
             let compact = proxy.size.width < 180
             let buttonHeight: CGFloat = compact ? 44 : 52
             let clearance: CGFloat = compact ? 6 : 10
-            let headerHeight = headerSize * (typeSize.isAccessibilitySize ? 2.8 : 1.4)
-            let listHeight = max(0, proxy.size.height - headerHeight - 4 - buttonHeight - clearance - 4)
-            let minimumRow = typeSize.isAccessibilitySize ? rowSize * 2.4 + 4 : rowSize * 1.3
-            let rowHeight = max(minimumRow, (listHeight - CGFloat(max(0, rows.count - 1)) * 2) / CGFloat(max(1, rows.count)))
-            VStack(alignment: .leading, spacing: 4) {
+            let spacing: CGFloat = compact ? 1 : 4
+            let headerHeight = headerSize * (typeSize.isAccessibilitySize ? 2.8 : compact ? 1.2 : 1.4)
+            let listHeight = max(0, proxy.size.height - headerHeight - spacing * 2 - buttonHeight - clearance)
+            let rowHeight = listHeight / CGFloat(max(1, rows.count))
+            let fittingRowSize = min(rowSize, rowHeight / 1.2)
+            VStack(alignment: .leading, spacing: spacing) {
                 (Text("Warm-up").bold().foregroundColor(IronTheme.primaryText)
                  + Text(" · " + (exercise?.name ?? "Exercise")).foregroundColor(IronTheme.secondaryText))
                     .font(.system(size: headerSize))
@@ -1868,24 +1932,37 @@ struct WatchWarmupPage: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .frame(height: headerHeight, alignment: .topLeading)
                     .accessibilityAddTraits(.isHeader)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        if rows.isEmpty {
-                            Text("No lighter warm-up sets for this working weight.")
-                                .font(.body).foregroundStyle(IronTheme.secondaryText)
-                                .frame(maxWidth: .infinity, minHeight: listHeight, alignment: .center)
+                Group {
+                    if typeSize.isAccessibilitySize {
+                        // Retain readable, Crown-driven overflow at accessibility sizes.
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(rows) { row in
+                                    recommendationRow(row, unit: unit, metricSize: rowSize)
+                                        .frame(minHeight: rowSize * 2.4 + 4)
+                                }
+                            }
                         }
-                        ForEach(rows) { row in
-                            recommendationRow(row, unit: unit)
-                                .frame(minHeight: rowHeight)
+                    } else {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(rows) { row in
+                                recommendationRow(row, unit: unit, metricSize: fittingRowSize)
+                                    .frame(height: rowHeight)
+                            }
                         }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .overlay {
+                    if rows.isEmpty {
+                        Text("No lighter warm-up sets for this working weight.")
+                            .font(.body).foregroundStyle(IronTheme.secondaryText)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
                 .focusable().focused($crownFocused).focusEffectDisabled()
                 .digitalCrownAccessory(.hidden)
-                // watchOS scroll content isn't clipped by default; keep rows
-                // from drawing behind the pinned button.
-                .frame(height: listHeight).clipped()
+                // Five rows share this finite band; no row can sit under Add.
+                .frame(maxWidth: .infinity).frame(height: listHeight).clipped()
                 Button {
                     if rows.isEmpty { dismiss() } else { addSets() }
                 } label: {
@@ -1915,17 +1992,17 @@ struct WatchWarmupPage: View {
         }
     }
 
-    private func recommendationRow(_ row: WarmupPlan.Recommendation, unit: WatchWorkoutWeightUnit) -> some View {
+    private func recommendationRow(_ row: WarmupPlan.Recommendation, unit: WatchWorkoutWeightUnit, metricSize: CGFloat) -> some View {
         Group {
             if typeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 2) {
-                    percentage(row)
-                    weightAndReps(row, unit: unit)
+                    percentage(row, size: metricSize)
+                    weightAndReps(row, unit: unit, size: metricSize)
                 }
             } else {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    percentage(row).frame(minWidth: rowSize * 2.3, alignment: .leading)
-                    weightAndReps(row, unit: unit)
+                    percentage(row, size: metricSize).frame(minWidth: metricSize * 2.3, alignment: .leading)
+                    weightAndReps(row, unit: unit, size: metricSize)
                 }
             }
         }
@@ -1933,21 +2010,21 @@ struct WatchWarmupPage: View {
         .accessibilityLabel("\(Int(row.percentage * 100)) percent, \(WatchPlateMath.format(row.weight)) \(unit.symbol), \(row.repetitions) reps")
     }
 
-    private func percentage(_ row: WarmupPlan.Recommendation) -> some View {
+    private func percentage(_ row: WarmupPlan.Recommendation, size: CGFloat) -> some View {
         Text("\(Int(row.percentage * 100))%")
-            .font(.ironMetric(size: rowSize, weight: .semibold))
+            .font(.ironMetric(size: size, weight: .semibold))
             .foregroundStyle(IronTheme.metricSets)
             .lineLimit(1).fixedSize()
     }
 
-    private func weightAndReps(_ row: WarmupPlan.Recommendation, unit: WatchWorkoutWeightUnit) -> some View {
+    private func weightAndReps(_ row: WarmupPlan.Recommendation, unit: WatchWorkoutWeightUnit, size: CGFloat) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 2) {
-            Text(WatchPlateMath.format(row.weight)).font(.ironMetric(size: rowSize))
-            Text(unit.symbol).font(.system(size: rowSize * 0.75, weight: .semibold))
+            Text(WatchPlateMath.format(row.weight)).font(.ironMetric(size: size))
+            Text(unit.symbol).font(.system(size: max(11, size * 0.75), weight: .semibold))
                 .foregroundStyle(IronTheme.secondaryText)
             Spacer(minLength: 2)
-            Text("×").font(.system(size: rowSize * 0.75)).foregroundStyle(IronTheme.secondaryText)
-            Text("\(row.repetitions)").font(.ironMetric(size: rowSize))
+            Text("×").font(.system(size: max(11, size * 0.75))).foregroundStyle(IronTheme.secondaryText)
+            Text("\(row.repetitions)").font(.ironMetric(size: size))
         }
         .foregroundStyle(IronTheme.primaryText)
     }
@@ -1964,6 +2041,7 @@ struct WatchWarmupPage: View {
             guard !rows.isEmpty else { return }
             let insertion = snapshot.exercises[index].sets.firstIndex { $0.tag != "warmUp" } ?? 0
             let sets = rows.map { WatchWorkoutSet(order: 0, weight: $0.weight, reps: $0.repetitions, completed: false, tag: "warmUp") }
+            for set in sets { SetTrackingPreferences.setLoggerFields([.weight, .reps], for: set.id) }
             snapshot.exercises[index].sets.insert(contentsOf: sets, at: insertion)
             snapshot.selectedSetID = WatchWorkoutEditing.nextSet(in: snapshot)
             // The persistence completion runs only after this structure event
@@ -1978,7 +2056,7 @@ struct ActiveSetTypePicker: View {
     let exerciseID: UUID
     let setID: UUID
     private var selected: String? { store.workoutSnapshot?.exercises.first { $0.id == exerciseID }?.sets.first { $0.id == setID }?.tag }
-    private let tags = ["working", "warmUp", "dropSet", "failure"]
+    private let tags = ["working", "warmUp", "dropSet"]
     var body: some View {
         WatchContentList {
             Text("Set Type").font(.headline.weight(.bold)).padding(.bottom, 4).padding(.horizontal, 8)
@@ -1998,21 +2076,15 @@ struct ActiveSetTypePicker: View {
         switch tag { case "warmUp": return "Warm-up"; case "dropSet": return "Drop Set"; case "failure": return "Failure"; default: return "Normal" }
     }
     private func typeLabel(_ tag: String) -> some View {
-        let value: String? = tag == "working" ? nil : tag
         return HStack(spacing: 8) {
-            Image(systemName: symbol(tag)).font(.body.weight(.semibold))
-                .foregroundStyle(IronTheme.setTint(value))
-                .frame(width: 28, height: 28).background(IronTheme.setBadge(value), in: Circle())
-                .accessibilityHidden(true)
+            WatchSettingsIcon(symbol: symbol(tag), color: IronTheme.setIconColor(tag))
             Text(title(tag)).font(.body.weight(.semibold)).foregroundStyle(IronTheme.primaryText)
                 .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
             if (selected ?? "working") == tag {
                 Image(systemName: "checkmark").foregroundStyle(IronTheme.accentText).accessibilityHidden(true)
             }
         }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
-        .background(IronTheme.platter, in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
+        .watchPlatter(verticalPadding: 4, minHeight: 46)
         .contentShape(Rectangle())
     }
     private func symbol(_ tag: String) -> String {
@@ -2221,10 +2293,11 @@ struct WatchRestView: View {
 struct WatchVitalsRow: View {
     let manager: WorkoutSessionManager?
     let snapshot: WatchWorkoutSnapshot
+    var availableWidth: CGFloat? = nil
     @ViewBuilder var body: some View {
         #if DEBUG
         if snapshot.isHealthTestWorkout || manager?.healthTestMode == true {
-            WatchVitalsLine(heartRate: "--", energy: "--")
+            WatchVitalsLine(heartRate: nil, energy: nil, availableWidth: availableWidth)
         } else {
             vitals
         }
@@ -2233,53 +2306,114 @@ struct WatchVitalsRow: View {
         #endif
     }
     @ViewBuilder private var vitals: some View {
-        if let manager, manager.uuid == snapshot.workoutID { LiveWatchVitals(manager: manager) }
-        else { WatchVitalsLine(heartRate: "--", energy: WatchNumber.whole(snapshot.activeEnergyKilocalories)) }
+        if let manager, manager.uuid == snapshot.workoutID { LiveWatchVitals(manager: manager, availableWidth: availableWidth) }
+        else { WatchVitalsLine(heartRate: nil, energy: snapshot.activeEnergyKilocalories, availableWidth: availableWidth) }
     }
 }
 
 private struct WatchVitalsLine: View {
-    let heartRate: String
-    let energy: String
+    let heartRate: String?
+    let energy: Double?
+    let availableWidth: CGFloat?
+    private var validEnergy: Double? {
+        guard let energy, energy.isFinite, energy >= 0 else { return nil }
+        return energy
+    }
+    private var compactEnergy: String? {
+        guard let energy = validEnergy else { return nil }
+        let whole = energy.rounded()
+        if whole < 1_000 {
+            return whole.formatted(.number.grouping(.never).precision(.fractionLength(0)))
+        }
+        let thousands = whole / 1_000
+        // Carry a rounded 9.95k to 10k, rather than overflowing the 9.9k slot.
+        let decimals = (thousands * 10).rounded() < 100 ? 1 : 0
+        return thousands.formatted(.number.grouping(.never).precision(.fractionLength(decimals))) + "k"
+    }
+    private var accessibilitySummary: String {
+        (heartRate.map { "Heart rate \($0) beats per minute" } ?? "Heart rate unavailable")
+            + ", " + (validEnergy.map { "\(WatchNumber.whole($0)) kilocalories" } ?? "Active energy unavailable")
+    }
+
     var body: some View {
-        // Always one line beside the clock: shrink first, then keep only heart rate.
+        // Fit only the widest-value templates. The visible capsule hugs the
+        // available readings, without changing the chosen form as sensors start.
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 7) { heart(.headline); calories(.headline) }
-            HStack(spacing: 4) { heart(.subheadline); calories(.subheadline) }
-            heart(.headline)
-        }.accessibilityElement(children: .ignore)
-            .accessibilityLabel("Heart rate \(heartRate) beats per minute, \(energy) active calories")
+            fittedPill(showsEnergy: true)
+            fittedPill(showsEnergy: false)
+            Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
+        }
+        .font(.ironMetric(.caption, weight: .semibold))
+        .monospacedDigit()
+        .foregroundStyle(IronTheme.primaryText)
+        .lineLimit(1)
+        .frame(maxWidth: availableWidth, alignment: .leading)
     }
-    private func heart(_ style: Font.TextStyle) -> some View {
-        HStack(spacing: 2) {
-            Image(systemName: "heart.fill").font(.system(size: 13, weight: .semibold))
-            Text(heartRate).font(.ironMetric(style, weight: .semibold))
-        }.foregroundStyle(IronTheme.metricHeartRate)
+
+    private func fittedPill(showsEnergy: Bool) -> some View {
+        metrics(heartRate: "188", energy: "9.9k", showsEnergy: showsEnergy)
+            .padding(.horizontal, 4)
+            .frame(height: 34)
+            .fixedSize(horizontal: true, vertical: false)
+            .hidden()
+            .overlay(alignment: .leading) {
+                pill(horizontalPadding: !showsEnergy && heartRate == nil ? 8 : 4) {
+                    metrics(heartRate: heartRate, energy: compactEnergy, showsEnergy: showsEnergy)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilitySummary)
     }
-    private func calories(_ style: Font.TextStyle) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 2) {
-            Image(systemName: "flame.fill").font(.system(size: 13, weight: .semibold))
-            Text(energy).font(.ironMetric(style, weight: .semibold))
-        }.foregroundStyle(IronTheme.metricEnergy)
+
+    private func pill<Content: View>(horizontalPadding: CGFloat, @ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(.horizontal, horizontalPadding)
+            .frame(height: 34)
+            .fixedSize(horizontal: true, vertical: false)
+            .background(IronTheme.glassFill, in: Capsule())
+    }
+
+    private func metrics(heartRate: String?, energy: String?, showsEnergy: Bool) -> some View {
+        HStack(alignment: .center, spacing: 6) {
+            metric("heart.fill", reference: "188", value: heartRate, color: IronTheme.metricHeartRate)
+            if showsEnergy {
+                metric("flame.fill", reference: "9.9k", value: energy, color: IronTheme.metricEnergy)
+            }
+        }
+    }
+
+    private func metric(_ symbol: String, reference: String, value: String?, color: Color) -> some View {
+        HStack(alignment: .center, spacing: 3) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(value == nil ? IronTheme.secondaryText : color)
+            if let value {
+                Text(reference).hidden().accessibilityHidden(true)
+                    .overlay(alignment: .leading) { Text(value).monospacedDigit() }
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
 private struct LiveWatchVitals: View {
     @ObservedObject var manager: WorkoutSessionManager
     @Environment(\.isLuminanceReduced) private var reducedLuminance
+    let availableWidth: CGFloat?
     var body: some View {
         TimelineView(.periodic(from: Date(), by: reducedLuminance ? 60 : 5)) { context in
-            WatchVitalsLine(heartRate: WatchHeartRate.text(manager, at: context.date), energy: WatchNumber.whole(manager.burnedCalories))
+            WatchVitalsLine(heartRate: WatchHeartRate.text(manager, at: context.date), energy: manager.burnedCalories,
+                            availableWidth: availableWidth)
         }
     }
 }
 
 private enum WatchHeartRate {
     /// A reading older than 30 seconds shows as unknown rather than stale.
-    static func text(_ manager: WorkoutSessionManager, at date: Date) -> String {
+    static func text(_ manager: WorkoutSessionManager, at date: Date) -> String? {
         guard let value = manager.mostRecentHeartRate, value.isFinite, value > 0,
               let sampleDate = manager.mostRecentHeartRateDate,
-              (-5...30).contains(date.timeIntervalSince(sampleDate)) else { return "--" }
+              (-5...30).contains(date.timeIntervalSince(sampleDate)) else { return nil }
         return WatchNumber.whole(value)
     }
 }
@@ -2296,7 +2430,8 @@ struct WatchRecordingFailureRow: View {
                 } else {
                     Button { store.clearRecordingError() } label: { Text("Dismiss").font(.footnote.weight(.semibold)) }.watchGlassButton()
                 }
-            }.watchPlatter(IronTheme.destructiveWash)
+            }.padding(.horizontal, 8).padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -2359,7 +2494,7 @@ private struct WatchNoteLabel: View {
         WatchSettingsLabel(title: title, symbol: symbol, color: IronTheme.metricRecord,
             value: note ?? (canEdit ? "Add Note" : "None"),
             valueColor: note == nil && canEdit ? IronTheme.accentText : IronTheme.secondaryText,
-            symbolColor: IronTheme.background, metricValue: false, valueLineLimit: 2)
+            metricValue: false, valueLineLimit: 2)
     }
 }
 
@@ -2614,125 +2749,138 @@ private enum WatchPlateMode: String, CaseIterable, Identifiable {
     }
 }
 
-private struct WatchPlateWeightEditor: View {
+/// One finite page: the Crown always edits weight; presets never release its focus.
+private struct WatchPlateBaseWeightPage: View {
     @AppStorage("workoutHaptics") private var workoutHaptics = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isLuminanceReduced) private var reducedLuminance
-    @ScaledMetric(relativeTo: .largeTitle) private var valueSize: CGFloat = 52
-    @ScaledMetric(relativeTo: .footnote) private var adjustmentHeight: CGFloat = IronTheme.controlHeight
+    @ScaledMetric(relativeTo: .footnote) private var headingSize: CGFloat = 13
+    @ScaledMetric(relativeTo: .caption2) private var footnoteSize: CGFloat = 11
     let title: String
     let unit: WatchWorkoutWeightUnit
     @Binding var value: Double
-    @Binding var editing: Bool
-    var presets: [Double] = []
+    let presets: [Double]
+    let footnote: String
     @State private var crown = 0.0
     @State private var crownOrigin = 0.0
     @FocusState private var crownFocused: Bool
     private let field = SetValueField.weight
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.footnote.weight(.semibold)).foregroundStyle(IronTheme.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-            WatchSetValueTile(exerciseName: title, field: field, value: value, unit: unit, trackingType: .weightReps,
-                selected: editing, metricSize: valueSize, compact: false, verticalPadding: 4,
-                allowsDeselection: true, onSelect: select, onAdjust: { direction in
-                    let changedFocus = !editing
-                    if changedFocus { select() }
-                    adjust(direction * field.buttonDetents(unit: unit), feedback: !changedFocus)
-                })
-                // Selection only recolors the tile. Controls have their own reserved frame.
-                .frame(height: max(88, valueSize * 1.25 + 20))
-                .accessibilityLabel(title == "Target" ? "Target weight" : title)
-                .focusable(editing).focused($crownFocused).focusEffectDisabled()
-                .watchCrownRotation($crown, in: (-field.maximum / field.step)...(field.maximum / field.step), by: 1,
-                                    sensitivity: .medium, haptics: workoutHaptics)
-            Group {
-                if editing {
-                    WatchSetAdjustments(title: title, height: adjustmentHeight, onDone: endEditing) {
-                        adjust($0 * field.buttonDetents(unit: unit))
-                    }
-                } else {
-                    Text("Tap weight to edit").font(.footnote).foregroundStyle(IronTheme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, minHeight: adjustmentHeight)
-                }
-            }.frame(height: adjustmentHeight)
-            if !presets.isEmpty {
-                WatchSectionTitle(title: "Quick Presets")
-                // Two columns retain 44-point targets and room for units on a 40 mm Watch.
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)], spacing: 4) {
-                    ForEach(presets, id: \.self) { preset in
-                        Button {
-                            endEditing()
-                            value = preset
-                            WatchFeedback.play(.click)
-                        } label: {
-                            (Text(WatchPlateMath.format(preset)).font(.ironMetric(.body, weight: .semibold))
-                             + Text(" \(unit.symbol)").font(.footnote).foregroundColor(IronTheme.secondaryText))
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
-                                .background(value == preset ? IronTheme.accentWash : IronTheme.platter,
-                                            in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
-                        }.buttonStyle(.plain)
-                            .foregroundStyle(value == preset ? IronTheme.accentText : IronTheme.primaryText)
-                            .accessibilityLabel("Set \(title.lowercased()) to \(WatchPlateMath.format(preset)) \(unit.symbol)")
-                    }
-                }
+        GeometryReader { proxy in
+            let compact = proxy.size.width < 180
+            let width = max(0, proxy.size.width - 2 * IronTheme.workoutGutter)
+            let spacing: CGFloat = compact ? 2 : 4
+            let clearance: CGFloat = compact ? 6 : 10
+            let presetHeight: CGFloat = presets.isEmpty ? 0 : IronTheme.controlHeight
+            let gaps = spacing * (presets.isEmpty ? 2 : 3)
+            let remaining = max(0, proxy.size.height - presetHeight - gaps - clearance)
+            // Keep at least half the remaining band for the value at large text sizes.
+            let headingHeight = min(headingSize * 1.35, remaining * 0.2)
+            let footnoteHeight = min(footnoteSize * 1.2 * (presets.isEmpty ? 3 : 2), remaining * 0.3)
+            let heroHeight = remaining - headingHeight - footnoteHeight
+            VStack(alignment: .leading, spacing: spacing) {
+                Text(title).font(.system(size: headingSize, weight: .semibold))
+                    .foregroundStyle(IronTheme.primaryText)
+                    .lineLimit(1).minimumScaleFactor(0.4)
+                    .frame(maxWidth: .infinity, alignment: .leading).frame(height: headingHeight)
+                    .accessibilityAddTraits(.isHeader)
+                readout(width: width, height: heroHeight)
+                if !presets.isEmpty { presetRow.frame(height: presetHeight) }
+                Text(footnote).font(.system(size: footnoteSize))
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .lineLimit(presets.isEmpty ? 3 : 2).minimumScaleFactor(0.4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: footnoteHeight, alignment: .topLeading)
+            }
+            .padding(.bottom, clearance)
+            .frame(width: width, height: proxy.size.height, alignment: .top)
+            .padding(.horizontal, IronTheme.workoutGutter)
+        }
+        .ignoresSafeArea(.container, edges: .bottom)
+        .navigationTitle("").watchVitalsInset()
+        .onAppear { resetCrown(); crownFocused = true }
+        .task {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            crownFocused = true
+        }
+        .onDisappear { persistCrown(); crownFocused = false }
+        .onChange(of: crown) { persistCrown() }
+        .onChange(of: unit) { resetCrown(); crownFocused = true }
+        .onChange(of: value) {
+            // Crown-generated changes keep their origin; incoming setup edits reset it.
+            let expected = min(field.maximum, max(0, crownOrigin + crown.rounded() * field.step))
+            if abs(value - expected) > 0.00001 { resetCrown() }
+        }
+    }
+
+    private func readout(width: CGFloat, height: CGFloat) -> some View {
+        // Keep one font size for every value, including 188.5. Only page geometry
+        // changes the size; the Crown never makes the number grow or shrink.
+        let size = max(1, min(height * 0.85, max(0, width - headingSize * 2 - 4) / 2.65))
+        return HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(WatchPlateMath.format(value)).font(.ironMetric(size: size))
+                .foregroundStyle(IronTheme.primaryText)
+                .contentTransition(reduceMotion || reducedLuminance ? .identity : .numericText(value: value))
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion || reducedLuminance), value: value)
+                .lineLimit(1).minimumScaleFactor(0.5)
+            Text(unit.symbol).font(.system(size: headingSize, weight: .semibold))
+                .foregroundStyle(IronTheme.secondaryText)
+        }
+        .frame(maxWidth: .infinity).frame(height: height)
+        .contentShape(Rectangle())
+        .focusable().focused($crownFocused).focusEffectDisabled()
+        .watchCrownRotation($crown, in: (-field.maximum / field.step)...(field.maximum / field.step), by: 1,
+                            sensitivity: .low, haptics: workoutHaptics)
+        .onTapGesture { crownFocused = true }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue("\(WatchPlateMath.format(value)) \(unit == .pound ? "pounds" : "kilograms")")
+        .accessibilityHint("Turn the Digital Crown to adjust in half-\(unit == .pound ? "pound" : "kilogram") steps")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: setWeight(value + field.step * field.buttonDetents(unit: unit))
+            case .decrement: setWeight(value - field.step * field.buttonDetents(unit: unit))
+            @unknown default: break
             }
         }
-        .onChange(of: crown) { persistCrown() }
-        .onChange(of: editing) { if !editing { endEditing() } }
-        .onChange(of: reducedLuminance) { if reducedLuminance { endEditing() } }
-        .onChange(of: unit) { crownFocused = false; editing = false }
-        .onDisappear { endEditing() }
-        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion || reducedLuminance), value: value)
     }
 
-    private func select() {
-        if editing { endEditing(); return }
-        crownFocused = false
-        crownOrigin = value
-        crown = 0
-        editing = true
+    private var presetRow: some View {
+        HStack(spacing: 4) {
+            ForEach(presets, id: \.self) { preset in
+                Button {
+                    setWeight(preset)
+                } label: {
+                    Text(WatchPlateMath.format(preset))
+                        .font(.ironMetric(.caption2, weight: .semibold))
+                        .foregroundStyle(value == preset ? IronTheme.accentText : IronTheme.primaryText)
+                        .lineLimit(1).minimumScaleFactor(0.6)
+                }
+                .watchGlassButton()
+                .accessibilityLabel("Set \(title.lowercased()) to \(WatchPlateMath.format(preset)) \(unit.symbol)")
+                .accessibilityValue(value == preset ? "Selected" : "")
+                .accessibilityAddTraits(value == preset ? .isSelected : [])
+            }
+        }
+    }
+
+    private func resetCrown() { crownOrigin = value; crown = 0 }
+    private func persistCrown() {
+        guard crownFocused else { return }
+        let next = min(field.maximum, max(0, crownOrigin + crown.rounded() * field.step))
+        if abs(next - value) > 0.00001 { value = next }
+    }
+    private func setWeight(_ weight: Double) {
+        value = min(field.maximum, max(0, (weight / field.step).rounded() * field.step))
+        resetCrown()
         crownFocused = true
         WatchFeedback.play(.click)
-    }
-    private func endEditing() {
-        persistCrown()
-        crownFocused = false
-        editing = false
-    }
-    private func adjust(_ detents: Double, feedback: Bool = true) {
-        crown = max((-crownOrigin / field.step).rounded(.down),
-                    min(((field.maximum - crownOrigin) / field.step).rounded(.up), crown.rounded() + detents))
-        persistCrown()
-        if feedback { WatchFeedback.play(.click) }
-    }
-    private func persistCrown() {
-        guard editing, crownFocused else { return }
-        value = min(field.maximum, max(0, crownOrigin + crown.rounded() * field.step))
-    }
-}
-
-// Owns its editing state: a NavigationLink destination doesn't see its parent's @State change,
-// so `watchReturnsCrown` would never learn that editing ended.
-private struct WatchPlateBaseWeightPage: View {
-    let title: String
-    let unit: WatchWorkoutWeightUnit
-    @Binding var value: Double
-    let presets: [Double]
-    let footnote: String
-    @State private var editing = false
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 4) {
-                WatchPlateWeightEditor(title: title, unit: unit, value: $value, editing: $editing, presets: presets)
-                Text(footnote).font(.footnote).foregroundStyle(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }.padding(.horizontal, IronTheme.workoutGutter)
-        }.watchReturnsCrown(afterEditing: editing).navigationTitle("").watchVitalsInset()
+        Task { @MainActor in
+            await Task.yield()
+            crownFocused = true
+        }
     }
 }
 
@@ -2746,6 +2894,9 @@ private struct WatchPlateChoicePicker<Choice: Hashable>: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 4) {
+                Text(title).font(.headline.weight(.bold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
                 ForEach(choices, id: \.self) { choice in
                     Button {
                         selection = choice
@@ -2759,7 +2910,7 @@ private struct WatchPlateChoicePicker<Choice: Hashable>: View {
                         .accessibilityAddTraits(choice == selection ? .isSelected : [])
                 }
             }.padding(.horizontal, IronTheme.workoutGutter)
-        }.navigationTitle(title).watchVitalsInset()
+        }.watchVitalsInset()
     }
 }
 
@@ -2780,19 +2931,23 @@ private struct WatchPlateToggleStyle: ToggleStyle {
 }
 
 private struct WatchPlateCalculatorView: View {
-    fileprivate struct PlateLoad: Identifiable {
+    fileprivate struct PlateLoad: Identifiable, Hashable {
         let weight: Double
         let count: Int
         var id: Double { weight }
     }
+    @AppStorage("workoutHaptics") private var workoutHaptics = true
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let unit: WatchWorkoutWeightUnit
     let exerciseKey: String?
     let onApply: ((Double) -> Void)?
     @State private var targetWeight: Double
     @State private var loadout: PlateLoadout
     @State private var inventory: PlateInventory
-    @State private var editingTarget = false
+    @State private var crown = 0.0
+    @State private var crownOrigin = 0.0
+    @FocusState private var crownFocused: Bool
 
     init(targetWeight: Double, unit: WatchWorkoutWeightUnit, exerciseKey: String? = nil, onApply: ((Double) -> Void)? = nil) {
         self.unit = unit
@@ -2805,7 +2960,194 @@ private struct WatchPlateCalculatorView: View {
 
     private var solution: PlateLoadSolution { PlateLoadSolver.solve(target: targetWeight, loadout: loadout, inventory: inventory) }
     private var platesPerSide: [PlateLoad] { solution.platesPerSide.map { PlateLoad(weight: $0.weight, count: $0.count) } }
-    private var sideTitle: String { loadout.loadedSides == .both ? "Each Side" : "One Side" }
+    // The shared targetStep has different semantics; this page advances one
+    // smallest enabled plate on each loaded side, including quarter-pound plates.
+    private var targetStep: Double {
+        (inventory.enabledPlates(for: unit).min() ?? 0) * Double(loadout.loadedSides.count)
+    }
+    private var minimumTarget: Double { min(loadout.baseWeight, SetValueField.weight.maximum) }
+    private var crownRange: ClosedRange<Double> {
+        guard targetStep > 0 else { return -1...1 }
+        // Zero stays valid during the first render, before onAppear sets the origin.
+        let lower = min(0, ((minimumTarget - crownOrigin) / targetStep).rounded(.down))
+        let upper = max(0, ((SetValueField.weight.maximum - crownOrigin) / targetStep).rounded(.up))
+        return lower < upper ? lower...upper : -1...1
+    }
+    private var drawsBothSides: Bool {
+        if case .machine = loadout.mode { return false }
+        return loadout.loadedSides == .both
+    }
+    private var loadWarning: String? {
+        if targetWeight < loadout.baseWeight {
+            if case .machine = loadout.mode { return "Target is lighter than the machine’s starting weight." }
+            return "Target is lighter than the bar."
+        }
+        let difference = solution.loadedTotal - targetWeight
+        if abs(difference) > 0.001 {
+            return "Loads \(WatchPlateMath.format(solution.loadedTotal)) \(unit.symbol) · \(WatchPlateMath.format(abs(difference))) \(unit.symbol) \(difference < 0 ? "short" : "over")"
+        }
+        if inventory.enabledPlates(for: unit).isEmpty {
+            return "No plates enabled. Only the starting weight can be loaded."
+        }
+        return nil
+    }
+    private var loadSummary: String {
+        if let loadWarning { return loadWarning }
+        let base: String
+        switch loadout.mode {
+        case .barbell: base = "bar \(WatchPlateMath.format(loadout.baseWeight))"
+        case .noBar: base = "no bar"
+        case .machine: base = "starting weight \(WatchPlateMath.format(loadout.baseWeight))"
+        }
+        return "\(WatchPlateMath.format(solution.plateWeightPerSide)) \(unit.symbol) \(loadout.loadedSides == .both ? "per side" : "on one side") · \(base)"
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = max(0, proxy.size.width - IronTheme.workoutGutter * 2)
+            calculator(size: CGSize(width: width, height: proxy.size.height), compact: proxy.size.width < 180)
+                .padding(.horizontal, IronTheme.workoutGutter)
+        }
+        .ignoresSafeArea(.container, edges: .bottom)
+        .navigationTitle("").watchVitalsInset(showsTrailingButton: true)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    WatchPlateSetupPage(unit: unit, exerciseKey: exerciseKey, loadout: $loadout, inventory: $inventory)
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                }.accessibilityLabel("Plate Setup")
+            }
+        }
+        .onAppear {
+            inventory = .load()
+            resetCrown()
+            crownFocused = true
+        }
+        .task {
+            // Navigation installs its focus scope after onAppear. Reassert on
+            // every appearance, including the return from Plate Setup.
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            crownFocused = true
+        }
+        .onDisappear { crownFocused = false }
+        .onChange(of: crown) { persistCrown() }
+        .onChange(of: loadout) { loadout.save(exerciseKey: exerciseKey); resetCrown() }
+        .onChange(of: inventory) { inventory.save(); resetCrown() }
+        .sensoryFeedback(.selection, trigger: loadout) { _, _ in WatchFeedback.hapticsEnabled }
+        .sensoryFeedback(.selection, trigger: inventory) { _, _ in WatchFeedback.hapticsEnabled }
+    }
+
+    private func calculator(size: CGSize, compact: Bool) -> some View {
+        let clearance: CGFloat = compact ? 6 : 10
+        let actionHeight: CGFloat = onApply == nil ? 16 : compact ? 44 : 52
+        // Page geometry already excludes the real toolbar and includes the
+        // bottom safe area. Total 24 + summary 16 + three 2 pt gaps, then the
+        // action and clearance; the diagram receives ALL remaining height.
+        // 40 mm, toolbar 44–50: H=153–147, diagram=57–51 (Apply), 85–79 (hint).
+        // Ultra, toolbar 44–50: H=213–207, diagram=105–99 (Apply), 141–135 (hint).
+        let diagramHeight = max(0, size.height - 24 - 16 - 6 - actionHeight - clearance)
+        return VStack(spacing: 2) {
+            Text("\(WatchPlateMath.format(targetWeight)) \(unit.symbol)")
+                .font(.ironMetric(.title3, weight: .bold)).foregroundStyle(IronTheme.accent)
+                .lineLimit(1).minimumScaleFactor(0.5)
+                .frame(maxWidth: .infinity).frame(height: 24)
+                .contentTransition(reduceMotion ? .identity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: targetWeight)
+                .focusable().focused($crownFocused).focusEffectDisabled()
+                // Emit a light click only when a detent actually changes the
+                // target, avoiding extra haptics at the limits or with no plates.
+                .watchCrownRotation($crown, in: crownRange, by: 1, sensitivity: .low, haptics: false)
+                .accessibilityLabel("Target weight")
+                .accessibilityValue("\(WatchPlateMath.format(targetWeight)) \(unit == .pound ? "pounds" : "kilograms")")
+                .accessibilityHint("Turn the Digital Crown to adjust the target weight")
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: adjustTarget(1)
+                    case .decrement: adjustTarget(-1)
+                    @unknown default: break
+                    }
+                }
+            ZStack {
+                WatchBarbellDiagram(plates: platesPerSide, unit: unit, bothSides: drawsBothSides)
+                    .id(platesPerSide)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+            }
+                .frame(height: diagramHeight)
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: platesPerSide)
+                .accessibilityElement(children: .ignore).accessibilityLabel(diagramDescription)
+            Text(loadSummary).font(.footnote)
+                .foregroundStyle(loadWarning == nil ? IronTheme.secondaryText : IronTheme.warning)
+                .lineLimit(1).minimumScaleFactor(0.5).frame(height: 16)
+                .accessibilityLabel("Loaded weight, " + loadSummary)
+            if let onApply {
+                Button {
+                    onApply(solution.loadedTotal)
+                    dismiss()
+                } label: {
+                    WatchActionLabel(title: "Use \(WatchPlateMath.format(solution.loadedTotal)) \(unit.symbol)")
+                        .frame(height: actionHeight - 16)
+                }.watchGlassButton(prominent: true).frame(height: actionHeight)
+                    .accessibilityHint("Apply the loaded weight to this set")
+            } else {
+                Text("Turn the scroll wheel")
+                    .font(.caption2).foregroundStyle(IronTheme.secondaryText)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity).frame(height: actionHeight)
+            }
+        }
+        .padding(.bottom, clearance)
+        .frame(width: size.width, height: size.height, alignment: .top)
+    }
+
+    private func resetCrown() {
+        // Preserve a too-light initial target for its warning, but start Crown
+        // travel at the minimum so the first upward step adds a plate.
+        crownOrigin = min(SetValueField.weight.maximum, max(minimumTarget, targetWeight))
+        crown = 0
+    }
+
+    private func persistCrown() {
+        guard crownFocused, targetStep > 0 else { return }
+        setTarget(crownOrigin + crown.rounded() * targetStep)
+    }
+
+    private func adjustTarget(_ direction: Double) {
+        guard targetStep > 0 else { return }
+        setTarget(min(SetValueField.weight.maximum, max(minimumTarget, targetWeight)) + direction * targetStep)
+        resetCrown()
+    }
+
+    private func setTarget(_ value: Double) {
+        let value = min(SetValueField.weight.maximum, max(minimumTarget, value))
+        guard abs(value - targetWeight) > 0.00001 else { return }
+        targetWeight = value
+        if workoutHaptics { WatchFeedback.play(.click) }
+    }
+
+    private var diagramDescription: String {
+        let unitName = unit == .pound ? "pound" : "kilogram"
+        let equipment: String
+        switch loadout.mode {
+        case .barbell: equipment = "Barbell: \(WatchPlateMath.format(loadout.baseWeight)) \(unitName) bar"
+        case .noBar: equipment = "No bar"
+        case .machine: equipment = "Machine: starting weight \(WatchPlateMath.format(loadout.baseWeight)) \(unitName)s"
+        }
+        let plates = platesPerSide.map {
+            "\($0.count == 1 ? "one" : String($0.count)) \(WatchPlateMath.format($0.weight)) \(unitName) \($0.count == 1 ? "plate" : "plates")"
+        }.joined(separator: ", ")
+        return equipment + ", " + (loadout.loadedSides == .both ? "per side: " : "on one side: ") + (plates.isEmpty ? "no plates" : plates)
+    }
+}
+
+/// Setup is a separate scrolling page; it never owns a Crown value binding.
+private struct WatchPlateSetupPage: View {
+    let unit: WatchWorkoutWeightUnit
+    let exerciseKey: String?
+    @Binding var loadout: PlateLoadout
+    @Binding var inventory: PlateInventory
+
     private var baseTitle: String { mode == .bar ? "Bar Weight" : "Starting Weight" }
     private var mode: WatchPlateMode {
         switch loadout.mode { case .barbell: return .bar; case .noBar: return .noBar; case .machine: return .machine }
@@ -2828,80 +3170,12 @@ private struct WatchPlateCalculatorView: View {
             }
         })
     }
-    private var emptyTitle: String {
-        switch loadout.mode { case .barbell: return "Empty bar."; case .noBar: return "No plates."; case .machine: return "Starting weight only." }
-    }
-    private var loadSummary: String {
-        let difference = solution.loadedTotal - targetWeight
-        if abs(difference) > 0.001 {
-            return "Loads \(WatchPlateMath.format(solution.loadedTotal)) \(unit.symbol) · \(WatchPlateMath.format(abs(difference))) \(unit.symbol) \(difference < 0 ? "short" : "over")"
-        }
-        return "\(WatchPlateMath.format(solution.plateWeightPerSide)) \(unit.symbol) \(loadout.loadedSides == .both ? "per side" : "on one side")"
-    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 4) {
-                WatchPlateWeightEditor(title: "Target", unit: unit, value: $targetWeight, editing: $editingTarget)
-                note(loadSummary).padding(.vertical, 4)
-                    .accessibilityLabel("Loaded weight, " + loadSummary)
-                WatchBarbellDiagram(plates: platesPerSide, unit: unit, loadout: loadout)
-                    .frame(height: 62).padding(.vertical, 4)
-                    .accessibilityElement(children: .ignore).accessibilityLabel(diagramDescription)
-                if let onApply {
-                    Button {
-                        onApply(solution.loadedTotal)
-                        dismiss()
-                    } label: {
-                        Text("Use \(WatchPlateMath.format(solution.loadedTotal)) \(unit.symbol)")
-                            .font(.ironMetric(.body, weight: .semibold))
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
-                    }.watchGlassButton(prominent: true)
-                        .accessibilityHint("Apply the loaded weight to this set")
-                }
-                if platesPerSide.isEmpty { note(emptyTitle) }
-                if targetWeight < loadout.baseWeight {
-                    note(mode == .machine ? "Target is lighter than the machine’s starting weight." : "Target is lighter than the bar.")
-                }
-                if !platesPerSide.isEmpty {
-                    WatchSectionTitle(title: sideTitle)
-                    ForEach(platesPerSide) { plateRow($0).watchPlatter() }
-                }
-                setup
-                WatchSectionTitle(title: "Available Plates")
-                ForEach(PlateInventory.availablePlates(for: unit), id: \.self) { weight in
-                    Toggle(isOn: Binding(
-                        get: { inventory.isEnabled(weight, unit: unit) },
-                        set: { inventory.setEnabled($0, weight: weight, unit: unit) }
-                    )) {
-                        HStack(spacing: 8) {
-                            plateSwatch(weight)
-                            weightReadout(weight, style: .body)
-                        }
-                    }.toggleStyle(WatchPlateToggleStyle())
-                        .accessibilityLabel("\(WatchPlateMath.format(weight)) \(unit.symbol) plates")
-                }
-                note("Used for every exercise on this device. Plate counts are unlimited.")
-                if inventory.enabledPlates(for: unit).isEmpty {
-                    note("No plates enabled. Only the starting weight can be loaded.")
-                }
-            }.padding(.horizontal, IronTheme.workoutGutter).padding(.bottom, 8)
-        }
-        // As in the full set editor, focus owns the Crown while touch scrolling
-        // keeps Done and the presets reachable on small watches or at large text sizes.
-        .watchReturnsCrown(afterEditing: editingTarget)
-        .navigationTitle("").watchVitalsInset()
-        .onAppear { inventory = .load() }
-        .onChange(of: loadout) { loadout.save(exerciseKey: exerciseKey) }
-        .onChange(of: inventory) { inventory.save() }
-        .sensoryFeedback(.selection, trigger: loadout) { _, _ in WatchFeedback.hapticsEnabled }
-        .sensoryFeedback(.selection, trigger: inventory) { _, _ in WatchFeedback.hapticsEnabled }
-    }
-
-    private var setup: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            WatchSectionTitle(title: "Setup")
+        WatchContentList {
+            Text("Plate Setup").font(.headline.weight(.bold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
             NavigationLink {
                 WatchPlateChoicePicker(title: "Equipment", choices: WatchPlateMode.allCases, selection: modeBinding, label: { $0.title })
             } label: {
@@ -2915,7 +3189,7 @@ private struct WatchPlateCalculatorView: View {
                                              footnote: mode == .bar ? "Includes the bar before any plates." : "Includes the leg-press sled or carriage before any plates.")
                 } label: {
                     WatchSettingsLabel(title: baseTitle, symbol: "scalemass.fill", color: IronTheme.settingsGray,
-                                       value: "\(WatchPlateMath.format(loadout.baseWeight)) \(unit.symbol)", valueColor: IronTheme.accentText)
+                                       value: "\(WatchPlateMath.format(loadout.baseWeight)) \(unit.symbol)")
                 }.buttonStyle(.plain)
                     .accessibilityHint("Open the weight editor")
             }
@@ -2929,7 +3203,25 @@ private struct WatchPlateCalculatorView: View {
                 .accessibilityLabel("Loaded sides")
                 .accessibilityValue(loadout.loadedSides == .both ? "Both sides" : "One side")
             note("Machine weight includes the sled or carriage. One Side suits landmines and single-side T-bars.\(exerciseKey == nil ? "" : " Saved for this exercise.")")
+            WatchSectionTitle(title: "Available Plates")
+            ForEach(PlateInventory.availablePlates(for: unit), id: \.self) { weight in
+                Toggle(isOn: Binding(
+                    get: { inventory.isEnabled(weight, unit: unit) },
+                    set: { inventory.setEnabled($0, weight: weight, unit: unit) }
+                )) {
+                    HStack(spacing: 8) {
+                        plateSwatch(weight)
+                        weightReadout(weight, style: .body)
+                    }
+                }.toggleStyle(WatchPlateToggleStyle())
+                    .accessibilityLabel("\(WatchPlateMath.format(weight)) \(unit.symbol) plates")
+            }
+            note("Used for every exercise on this device. Plate counts are unlimited.")
+            if inventory.enabledPlates(for: unit).isEmpty {
+                note("No plates enabled. Only the starting weight can be loaded.")
+            }
         }
+        .navigationTitle("").watchVitalsInset()
     }
 
     private func weightReadout(_ value: Double, style: Font.TextStyle) -> some View {
@@ -2951,43 +3243,51 @@ private struct WatchPlateCalculatorView: View {
             .frame(width: 8, height: 26 * WatchPlateStyle.height(weight, unit: unit))
             .frame(width: 12, height: 26).accessibilityHidden(true)
     }
-    private func plateRow(_ plate: PlateLoad) -> some View {
-        HStack(spacing: 8) {
-            plateSwatch(plate.weight)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 4) {
-                    weightReadout(plate.weight, style: .body)
-                    Spacer(minLength: 4)
-                    Text("×\(plate.count)").font(.ironMetric(.title3, weight: .semibold)).fixedSize()
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    weightReadout(plate.weight, style: .body)
-                    Text("×\(plate.count)").font(.ironMetric(.body, weight: .semibold))
-                }
-            }
-        }
-        .frame(minHeight: IronTheme.controlHeight)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(plate.count) times \(WatchPlateMath.format(plate.weight)) \(unit.symbol) \(loadout.loadedSides == .both ? "per side" : "on one side")")
-    }
     private func note(_ text: String) -> some View {
         Text(text).font(.footnote).foregroundStyle(IronTheme.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
     }
-    private var diagramDescription: String {
-        let equipment: String
-        switch loadout.mode { case .barbell: equipment = "Barbell"; case .noBar: equipment = "Plate stacks, no bar"; case .machine: equipment = "Front view of a plate-loaded machine with backrest, footplate and left and right plate horns" }
-        return equipment + ", " + sideTitle + ": " + (platesPerSide.isEmpty ? emptyTitle : platesPerSide.map { "\($0.count) times \(WatchPlateMath.format($0.weight)) \(unit.symbol)" }.joined(separator: ", "))
+}
+
+#if DEBUG && targetEnvironment(simulator)
+/// Direct screenshot destinations keep the calculator's setup bindings and save paths.
+private struct WatchPlateSetupDemoPage: View {
+    let unit: WatchWorkoutWeightUnit
+    let exerciseKey: String
+    let showsBaseWeight: Bool
+    @State private var loadout: PlateLoadout
+    @State private var inventory = PlateInventory.load()
+
+    init(unit: WatchWorkoutWeightUnit, exerciseKey: String, showsBaseWeight: Bool) {
+        self.unit = unit
+        self.exerciseKey = exerciseKey
+        self.showsBaseWeight = showsBaseWeight
+        var loadout = PlateLoadout.load(exerciseKey: exerciseKey, unit: unit)
+        if showsBaseWeight { loadout.mode = .barbell(unit == .pound ? 45 : 20) }
+        _loadout = State(initialValue: loadout)
+    }
+
+    var body: some View {
+        Group {
+            if showsBaseWeight {
+                WatchPlateBaseWeightPage(title: "Bar Weight", unit: unit, value: Binding(
+                    get: { loadout.baseWeight },
+                    set: { loadout.mode = .barbell($0) }
+                ), presets: unit == .pound ? [45, 35, 25, 15] : [20, 15, 10],
+                footnote: "Includes the bar before any plates.")
+            } else {
+                WatchPlateSetupPage(unit: unit, exerciseKey: exerciseKey, loadout: $loadout, inventory: $inventory)
+            }
+        }
+        .onChange(of: loadout) { loadout.save(exerciseKey: exerciseKey) }
+        .onChange(of: inventory) { inventory.save() }
     }
 }
+#endif
 
 private enum WatchPlateStyle {
     static func height(_ weight: Double, unit: WatchWorkoutWeightUnit) -> CGFloat {
         PlateProportions.height(for: weight, unit: unit)
-    }
-    static func width(_ weight: Double, unit: WatchWorkoutWeightUnit) -> CGFloat {
-        let largest: Double = unit == .kilogram ? 25 : 45
-        return 0.36 + 0.64 * min(max(weight / largest, 0), 1)
     }
     static func color(_ weight: Double, unit: WatchWorkoutWeightUnit) -> Color {
         switch (unit, weight) {
@@ -3001,93 +3301,130 @@ private enum WatchPlateStyle {
     }
 }
 
-/// Barbell sleeves, loading-pin stacks, or a front view of a plate-loaded machine.
+/// Full barbell, or a single left-anchored sleeve for one-side and machine setups.
 private struct WatchBarbellDiagram: View {
     let plates: [WatchPlateCalculatorView.PlateLoad]
     let unit: WatchWorkoutWeightUnit
-    let loadout: PlateLoadout
+    let bothSides: Bool
 
+    private var groups: [WatchPlateCalculatorView.PlateLoad] {
+        plates.filter { $0.count > 0 }.sorted { $0.weight > $1.weight }
+    }
+    private func drawnCount(_ plate: WatchPlateCalculatorView.PlateLoad) -> Int {
+        plate.count > 4 ? 3 : plate.count
+    }
+    private func plateWidth(_ weight: Double, height: CGFloat) -> CGFloat {
+        // Thick enough to read as plates rather than lines; widthScale still fits heavy loads.
+        height * (weight >= (unit == .kilogram ? 10 : 25) ? 0.12 : 0.08)
+    }
+    private func heightFraction(_ weight: Double) -> CGFloat {
+        let thresholds: [Double] = unit == .kilogram ? [20, 15, 10, 5, 2.5] : [45, 35, 25, 10, 5]
+        let heights: [CGFloat] = [1, 0.85, 0.70, 0.55, 0.45]
+        guard let index = thresholds.firstIndex(where: { weight >= $0 }) else { return 0.35 }
+        return heights[index]
+    }
     var body: some View {
         Canvas { context, size in
-            // Bound drawing cost; the list and VoiceOver retain every plate count.
-            let stack = Array(plates.flatMap { Array(repeating: $0.weight, count: min($0.count, 24)) }.prefix(24))
-            switch loadout.mode {
-            case .noBar: drawStacks(context: context, size: size, stack: stack)
-            case .barbell, .machine: drawBarbell(context: context, size: size, stack: stack)
+            let countHeight: CGFloat = groups.contains { $0.count > 4 } ? min(14, size.height / 3) : 0
+            let labelHeight: CGFloat = groups.isEmpty ? 0 : min(14, size.height / 3)
+            let plateHeight = max(0, size.height - countHeight - labelHeight)
+            let midY = countHeight + plateHeight / 2
+            let collarWidth: CGFloat = 3
+            let plateCount = groups.reduce(0) { $0 + drawnCount($1) }
+            let gaps = CGFloat(max(0, plateCount - 1)) * 2
+            let firstGap: CGFloat = groups.isEmpty ? 0 : 2
+            let nominalPlatesWidth = groups.reduce(CGFloat.zero) {
+                $0 + CGFloat(drawnCount($1)) * plateWidth($1.weight, height: plateHeight)
             }
+            let naturalSleeveWidth = collarWidth + firstGap + nominalPlatesWidth + gaps + 6
+            let gripWidth = bothSides ? max(size.width * 0.26, size.width - naturalSleeveWidth * 2) : min(12, size.width)
+            let sideBudget = max(0, (size.width - gripWidth) / (bothSides ? 2 : 1))
+            // Dense stacks compress only plate widths: gaps stay 2 pt, the
+            // collar stays 3 pt and the sleeve ends exactly 6 pt past the stack.
+            let widthScale = nominalPlatesWidth > 0
+                ? min(1, max(0, sideBudget - collarWidth - firstGap - gaps - 6) / nominalPlatesWidth) : 1
+            let sleeveWidth = collarWidth + firstGap + nominalPlatesWidth * widthScale + gaps + 6
+            let barWidth = gripWidth + sleeveWidth * (bothSides ? 2 : 1)
+            let barX = bothSides ? (size.width - barWidth) / 2 : 0
+            let collarX = barX + gripWidth + (bothSides ? sleeveWidth : 0)
+            let collarHeight = min(plateHeight, max(6, plateHeight * 0.28))
+            fill(context, CGRect(x: barX, y: midY - 1, width: barWidth, height: 2), IronTheme.barSteel, radius: 1)
+            let collar = CGRect(x: collarX, y: midY - collarHeight / 2, width: collarWidth, height: collarHeight)
+            fill(context, collar, IronTheme.barSteel, radius: 1)
+            if bothSides { fill(context, mirrored(collar, width: size.width), IronTheme.barSteel, radius: 1) }
+
+            var x = collarX + collarWidth + firstGap
+            var labels: [(title: String, center: CGFloat)] = []
+            for plate in groups {
+                let count = drawnCount(plate)
+                let width = plateWidth(plate.weight, height: plateHeight) * widthScale
+                let height = plateHeight * heightFraction(plate.weight)
+                let stackWidth = CGFloat(count) * width + CGFloat(count - 1) * 2
+                let center = x + stackWidth / 2
+                for index in 0..<count {
+                    let rect = CGRect(x: x + CGFloat(index) * (width + 2), y: midY - height / 2,
+                                      width: width, height: height)
+                    fill(context, rect, WatchPlateStyle.color(plate.weight, unit: unit))
+                    if bothSides { fill(context, mirrored(rect, width: size.width), WatchPlateStyle.color(plate.weight, unit: unit)) }
+                }
+                if plate.count > 4 {
+                    let countSize = CGSize(width: max(stackWidth, 14), height: countHeight)
+                    label("×\(plate.count)", context: context, at: CGPoint(x: center, y: 0), fitting: countSize, canvasWidth: size.width)
+                    if bothSides {
+                        label("×\(plate.count)", context: context, at: CGPoint(x: size.width - center, y: 0), fitting: countSize, canvasWidth: size.width)
+                    }
+                }
+                let title = WatchPlateMath.format(plate.weight) + (plate.count == 1 ? "" : " ×\(plate.count)")
+                labels.append((title, center))
+                x += stackWidth + 2
+            }
+            plateLabels(labels, context: context, size: size, height: labelHeight)
         }
     }
 
-    private func drawBarbell(context: GraphicsContext, size: CGSize, stack: [Double]) {
-        let midY = size.height / 2
-        let grip = max(size.width * 0.2, 24)
-        let collar: CGFloat = 4, gap: CGFloat = 1.5
-        let sleeveLength = (size.width - grip) / 2
-        let room = max(sleeveLength - collar - 5, 0)
-        let natural = stack.reduce(CGFloat.zero) { $0 + 11 * WatchPlateStyle.width($1, unit: unit) + gap }
-        let scale = natural > room ? room / natural : 1
-        if case .machine = loadout.mode {
-            drawMachine(context: context, size: size, width: grip)
-        } else {
-            fill(context, CGRect(x: 0, y: midY - 2, width: size.width, height: 4), IronTheme.barSteel, radius: 2)
+    private func mirrored(_ rect: CGRect, width: CGFloat) -> CGRect {
+        CGRect(x: width - rect.maxX, y: rect.minY, width: rect.width, height: rect.height)
+    }
+
+    private func plateLabels(_ labels: [(title: String, center: CGFloat)], context: GraphicsContext, size: CGSize, height: CGFloat) {
+        guard !labels.isEmpty else { return }
+        // Pack from the outer plate inward, keeping labels near their groups
+        // without collisions. Only the right sleeve is labelled on a full bar.
+        let left = bothSides ? size.width / 2 : 0
+        let measured = labels.map {
+            context.resolve(Text($0.title).font(.ironMetric(.caption2, weight: .regular)))
+                .measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
         }
-        let sides: [CGFloat] = [-1, 1]
-        for side in sides {
-            let inner = size.width / 2 + side * grip / 2
-            fill(context, CGRect(x: side > 0 ? inner : inner - sleeveLength, y: midY - 3.5, width: sleeveLength, height: 7), IronTheme.barSteel)
-            fill(context, CGRect(x: side > 0 ? inner : inner - collar, y: midY - 8, width: collar, height: 16), IronTheme.barSteel)
-            guard side > 0 || loadout.loadedSides == .both else { continue }
-            var offset = inner + side * collar
-            for weight in stack {
-                let width = 11 * WatchPlateStyle.width(weight, unit: unit) * scale
-                let height = size.height * WatchPlateStyle.height(weight, unit: unit)
-                let x = side > 0 ? offset + gap * scale : offset - gap * scale - width
-                fill(context, CGRect(x: x, y: midY - height / 2, width: width, height: height),
-                     WatchPlateStyle.color(weight, unit: unit), radius: min(2, width / 3))
-                offset += side * (width + gap * scale)
-            }
+        let gaps = CGFloat(labels.count - 1) * 2
+        let totalWidth: CGFloat = measured.reduce(CGFloat.zero) { $0 + $1.width }
+        let tallest: CGFloat = measured.map(\.height).max() ?? 1
+        let widthScale: CGFloat = max(0, size.width - left - gaps) / max(1, totalWidth)
+        let heightScale: CGFloat = height / max(1, tallest)
+        let scale: CGFloat = min(1, widthScale, heightScale)
+        var right = size.width
+        for index in labels.indices.reversed() {
+            let width = measured[index].width * scale
+            let earlierWidth = measured.prefix(index).reduce(CGFloat.zero) { $0 + $1.width } * scale + CGFloat(index) * 2
+            let center = min(right - width / 2, max(left + earlierWidth + width / 2, labels[index].center))
+            label(labels[index].title, context: context, at: CGPoint(x: center, y: size.height - height),
+                  fitting: CGSize(width: width, height: height), canvasWidth: size.width)
+            right = center - width / 2 - 2
         }
     }
 
-    private func drawStacks(context: GraphicsContext, size: CGSize, stack: [Double]) {
-        let centers: [CGFloat] = loadout.loadedSides == .both ? [size.width * 0.27, size.width * 0.73] : [size.width / 2]
-        let maximumWidth = size.width * (loadout.loadedSides == .both ? 0.4 : 0.66)
-        let room = max(0, size.height - 12)
-        let natural = stack.reduce(CGFloat.zero) { $0 + 8 * WatchPlateStyle.width($1, unit: unit) + 1.5 }
-        let scale = natural > room ? room / natural : 1
-        for center in centers {
-            fill(context, CGRect(x: center - 1.5, y: 2, width: 3, height: size.height - 6), IronTheme.barSteel)
-            fill(context, CGRect(x: center - maximumWidth / 2, y: size.height - 4, width: maximumWidth, height: 4), IronTheme.barSteel)
-            var y = size.height - 5
-            for weight in stack {
-                let thickness = 8 * WatchPlateStyle.width(weight, unit: unit) * scale
-                let width = maximumWidth * WatchPlateStyle.height(weight, unit: unit)
-                y -= thickness + 1.5 * scale
-                fill(context, CGRect(x: center - width / 2, y: y, width: width, height: thickness),
-                     WatchPlateStyle.color(weight, unit: unit), radius: min(2, thickness / 3))
-            }
-        }
+    private func label(_ title: String, context: GraphicsContext, at point: CGPoint, fitting size: CGSize, canvasWidth: CGFloat) {
+        let text = context.resolve(Text(title).font(.ironMetric(.caption2, weight: .regular)).foregroundStyle(IronTheme.secondaryText))
+        let measured = text.measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+        let scale = min(1, size.width / max(1, measured.width), size.height / max(1, measured.height))
+        let halfWidth = measured.width * scale / 2
+        let x = min(canvasWidth - halfWidth, max(halfWidth, point.x))
+        var fitted = context
+        fitted.translateBy(x: x, y: point.y)
+        fitted.scaleBy(x: scale, y: scale)
+        fitted.draw(text, at: .zero, anchor: .top)
     }
 
-    private func drawMachine(context: GraphicsContext, size: CGSize, width: CGFloat) {
-        // Only the center changes: horns and plates use the barbell's fitting math,
-        // including at 40 mm and with the maximum drawn stack of 24 plates per side.
-        let bounds = CGRect(x: (size.width - width) / 2, y: 4, width: width, height: size.height - 8)
-        func panel(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ color: Color) {
-            let rect = CGRect(x: bounds.minX + x * bounds.width, y: bounds.minY + y * bounds.height,
-                              width: w * bounds.width, height: h * bounds.height)
-            fill(context, rect, color, radius: 2)
-        }
-        panel(0.09, 0.04, 0.06, 0.90, IronTheme.machineRail)
-        panel(0.85, 0.04, 0.06, 0.90, IronTheme.machineRail)
-        panel(0.09, 0.04, 0.82, 0.04, IronTheme.machineFrame)
-        panel(0, 0.92, 1, 0.04, IronTheme.machineFrame)
-        panel(0, 0.42, 1, 0.16, IronTheme.machineCarriage)
-        panel(0.27, 0.15, 0.46, 0.40, IronTheme.machineSeat)
-        panel(0.21, 0.57, 0.58, 0.08, IronTheme.machineSeat)
-        panel(0.14, 0.72, 0.72, 0.14, IronTheme.machineFootplate)
-    }
-    private func fill(_ context: GraphicsContext, _ rect: CGRect, _ color: Color, radius: CGFloat = 1.5) {
+    private func fill(_ context: GraphicsContext, _ rect: CGRect, _ color: Color, radius: CGFloat = 2) {
         context.fill(Path(roundedRect: rect, cornerRadius: radius, style: .continuous), with: .color(color))
     }
 }

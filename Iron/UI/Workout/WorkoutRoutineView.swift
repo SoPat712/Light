@@ -601,8 +601,7 @@ private struct WorkoutRoutineSetRow: View {
             from: .metric,
             to: settingsStore.weightUnit
         )
-        let formatter = focusedField == .weight ? settingsStore.weightUnit.numberFormatter : settingsStore.weightUnit.displayNumberFormatter
-        return formatter.string(from: NSNumber(value: displayWeight)) ?? ""
+        return settingsStore.weightUnit.numberFormatter.string(from: NSNumber(value: displayWeight)) ?? ""
     }
 
     private var weightText: Binding<String> {
@@ -664,31 +663,12 @@ private struct WorkoutRoutineSetRow: View {
 
     private func sanitizedDecimalInput(_ proposedValue: String) -> String {
         let formatter = settingsStore.weightUnit.numberFormatter
-        let decimalSeparator = formatter.decimalSeparator
-            ?? Locale.current.decimalSeparator
-            ?? "."
-        let maximumFractionDigits = settingsStore.weightUnit.maximumFractionDigits
-        var result = ""
-        var hasDecimalSeparator = false
-        var fractionDigitCount = 0
-
-        for character in proposedValue {
-            if let digit = character.wholeNumberValue {
-                if hasDecimalSeparator {
-                    guard fractionDigitCount < maximumFractionDigits else { continue }
-                    fractionDigitCount += 1
-                }
-                result.append(contentsOf: String(digit))
-            } else if (character == "." || character == "," || String(character) == decimalSeparator),
-                      maximumFractionDigits > 0,
-                      !hasDecimalSeparator {
-                if result.isEmpty {
-                    result = "0"
-                }
-                result.append(contentsOf: decimalSeparator)
-                hasDecimalSeparator = true
-            }
-        }
+        let result = WeightUnit.sanitizedDecimalInput(
+            proposedValue,
+            maximumFractionDigits: settingsStore.weightUnit.maximumFractionDigits,
+            decimalSeparator: formatter.decimalSeparator ?? Locale.current.decimalSeparator ?? ".",
+            groupingSeparator: formatter.groupingSeparator ?? Locale.current.groupingSeparator ?? ","
+        )
 
         if let value = formatter.number(from: result)?.doubleValue,
            value > maximumDisplayWeight {

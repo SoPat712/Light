@@ -108,7 +108,9 @@ public class ExerciseStore: ObservableObject {
                 loadLegacyArt(builtInExercisesURL: builtInExercisesURL), to: exercises
             )
             let aliases = loadPreferredAliases(builtInExercisesURL: builtInExercisesURL)
-            return ExerciseCatalogMetadata.addingAliases(aliases, to: illustrated)
+            return ExerciseCatalogMetadata.usingDisplayTitles(
+                ExerciseCatalogMetadata.addingAliases(aliases, to: illustrated)
+            )
         } catch {
             fatalError("Error decoding built in exercises: \(error.localizedDescription)")
         }
@@ -367,38 +369,74 @@ extension ExerciseStore {
 
 // MARK: - Filter
 extension ExerciseStore {
-    private static func titleMatchesFilter(title: String, filter: String) -> Bool {
-        for s in filter.split(separator: " ") {
-            if !title.lowercased().contains(s) {
-                return false
-            }
-        }
-        return true
+    private struct SearchEntry {
+        let exercise: Exercise
+        let prepared: ExerciseSearch.Prepared<UUID>
     }
 
-    public static func filter(exercises: [Exercise], using filter: String) -> [Exercise] {
-        let filter = filter.lowercased().trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        guard !filter.isEmpty else { return exercises }
-        
-        return exercises.filter { exercise in
-            for title in [exercise.title] + exercise.alias {
-                if titleMatchesFilter(title: title, filter: filter) {
-                    return true
+    /// Shared by the synchronous lists and background Combine search callers.
+    /// A title/alias edit replaces that ID's preparation; history is supplied at ranking time.
+    private final class SearchPreparationCache {
+        private let lock = NSLock()
+        private var entries: [UUID: SearchEntry] = [:]
+
+        func prepare(_ exercises: [Exercise]) -> [SearchEntry] {
+            lock.lock()
+            defer { lock.unlock() }
+            return exercises.map { exercise in
+                if let cached = entries[exercise.uuid], cached.exercise.title == exercise.title,
+                   cached.exercise.originalTitle == exercise.originalTitle,
+                   cached.exercise.alias == exercise.alias {
+                    return SearchEntry(exercise: exercise, prepared: cached.prepared)
                 }
+                let entry = SearchEntry(exercise: exercise, prepared: ExerciseSearch.Prepared(
+                    id: exercise.uuid, title: exercise.title, aliases: exercise.alias,
+                    originalTitle: exercise.originalTitle
+                ))
+                entries[exercise.uuid] = entry
+                return entry
             }
-            return false
         }
     }
+
+    private static let searchPreparationCache = SearchPreparationCache()
+
+    public static func filter(
+        exercises: [Exercise], using filter: String, lastPerformedDates: [UUID: Date] = [:]
+    ) -> [Exercise] {
+        Self.filter(exercises: exercises, query: ExerciseSearch.Query(filter), lastPerformedDates: lastPerformedDates)
+    }
+
+    private static func filter(
+        exercises: [Exercise], query: ExerciseSearch.Query, lastPerformedDates: [UUID: Date]
+    ) -> [Exercise] {
+        guard !query.isEmpty else { return exercises }
+        return ExerciseSearch.ranked(searchPreparationCache.prepare(exercises), prepared: \.prepared,
+                                     matching: query, lastPerformedDates: lastPerformedDates).map(\.exercise)
+    }
     
-    public static func filter(exerciseGroups: [ExerciseGroup], using filter: String) -> [ExerciseGroup] {
-        exerciseGroups
-            .map { ExerciseGroup(title: $0.title, exercises: Self.filter(exercises: $0.exercises, using: filter)) }
+    public static func filter(
+        exerciseGroups: [ExerciseGroup], using filter: String, lastPerformedDates: [UUID: Date] = [:]
+    ) -> [ExerciseGroup] {
+        let query = ExerciseSearch.Query(filter)
+        guard !query.isEmpty else { return exerciseGroups }
+        return exerciseGroups
+            .map { ExerciseGroup(title: $0.title, exercises: Self.filter(
+                exercises: $0.exercises, query: query, lastPerformedDates: lastPerformedDates
+            )) }
             .filter { !$0.exercises.isEmpty }
     }
 }
 
 // MARK: - Custom Exercises
 extension ExerciseStore {
+    private static func hasTitle(_ title: String, exercise: Exercise) -> Bool {
+        [exercise.title, exercise.originalTitle].contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveCompare(title) == .orderedSame
+        }
+    }
+
     public struct CustomExerciseDefinition {
         public let title: String
         public let type: Exercise.ExerciseType
@@ -432,13 +470,13 @@ extension ExerciseStore {
             case .duplicateTitle(let title):
                 return "An exercise named \(title) already exists."
             case .storageUnavailable:
-                return "Iron could not access custom-exercise storage."
+                return "Light could not access custom-exercise storage."
             case .exerciseNotFound:
                 return "This custom exercise no longer exists."
             case .couldNotRead(let error):
-                return "Iron could not read your custom exercises: \(error.localizedDescription)"
+                return "Light could not read your custom exercises: \(error.localizedDescription)"
             case .couldNotWrite(let error):
-                return "Iron could not save the custom exercise: \(error.localizedDescription)"
+                return "Light could not save the custom exercise: \(error.localizedDescription)"
             }
         }
     }
@@ -474,8 +512,7 @@ extension ExerciseStore {
             let title = definition.title.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else { throw CustomExerciseMutationError.invalidTitle }
             guard !allExercises.contains(where: {
-                $0.title.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .localizedCaseInsensitiveCompare(title) == .orderedSame
+                Self.hasTitle(title, exercise: $0)
             }) else {
                 throw CustomExerciseMutationError.duplicateTitle(title)
             }
@@ -551,8 +588,7 @@ extension ExerciseStore {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw CustomExerciseMutationError.invalidTitle }
         guard !exercises.contains(where: {
-            $0.title.trimmingCharacters(in: .whitespacesAndNewlines)
-                .localizedCaseInsensitiveCompare(title) == .orderedSame
+            Self.hasTitle(title, exercise: $0)
         }) else {
             throw CustomExerciseMutationError.duplicateTitle(title)
         }
@@ -596,9 +632,7 @@ extension ExerciseStore {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw CustomExerciseMutationError.invalidTitle }
         guard !exercises.contains(where: {
-            $0.uuid != uuid &&
-                $0.title.trimmingCharacters(in: .whitespacesAndNewlines)
-                .localizedCaseInsensitiveCompare(title) == .orderedSame
+            $0.uuid != uuid && Self.hasTitle(title, exercise: $0)
         }) else {
             throw CustomExerciseMutationError.duplicateTitle(title)
         }

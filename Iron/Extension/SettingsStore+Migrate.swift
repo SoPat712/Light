@@ -10,6 +10,15 @@ import Foundation
 import os.log
 
 extension SettingsStore {
+    static func resetHealthTestModeForRealUseIfNeeded(defaults: UserDefaults = .appGroup) {
+        #if DEBUG
+        let resetKey = "healthTestModeRealUseReset.v1"
+        guard !defaults.bool(forKey: resetKey) else { return }
+        defaults.removeObject(forKey: UserDefaults.SettingsKeys.healthTestMode.rawValue)
+        defaults.set(true, forKey: resetKey)
+        #endif
+    }
+
     static func migrateToAppGroupIfNecessary() {
         let didMigrateSettingsToAppGroup = "didMigrateSettingsToAppGroup"
         guard !UserDefaults.standard.bool(forKey: didMigrateSettingsToAppGroup) else { return }

@@ -21,7 +21,7 @@ enum SetTrackingType: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    enum Column: String, Identifiable, Hashable {
+    enum Column: String, Codable, Identifiable, Hashable {
         case weight, reps, distance, duration
         var id: String { rawValue }
     }
@@ -184,13 +184,79 @@ enum SetTrackingType: String, Codable, CaseIterable, Identifiable {
     }
 
     private static func normalized(_ value: String) -> String {
-        value.lowercased().replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
+        // A display suffix must not hide a final movement token such as "Hold:"
+        // or "Plank:". Preserve the existing handling of source-name parentheses.
+        value.lowercased().replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: ":", with: " ")
     }
 
     static func durationText(_ seconds: TimeInterval) -> String {
         let value = Int(min(max(seconds.isFinite ? seconds.rounded() : 0, 0), 359_999))
         if value >= 3_600 { return String(format: "%d:%02d:%02d", value / 3_600, value / 60 % 60, value % 60) }
         return String(format: "%d:%02d", value / 60, value % 60)
+    }
+}
+
+/// The logger's only prefill rule. Values use the caller's weight unit and
+/// canonical seconds/meters. Nil is empty; an explicitly entered zero is a value.
+enum SetValuePrefill {
+    struct Values: Codable, Equatable {
+        var weight: Double? = nil
+        var repetitions: Int? = nil
+        var duration: TimeInterval? = nil
+        var distance: Double? = nil
+
+        subscript(_ column: SetTrackingType.Column) -> Double? {
+            get {
+                switch column {
+                case .weight: return weight
+                case .reps: return repetitions.map(Double.init)
+                case .duration: return duration
+                case .distance: return distance
+                }
+            }
+            set {
+                switch column {
+                case .weight: weight = newValue
+                case .reps: repetitions = newValue.map { Int($0) }
+                case .duration: duration = newValue
+                case .distance: distance = newValue
+                }
+            }
+        }
+    }
+
+    struct SetInput {
+        var values = Values()
+        var userEnteredFields: Set<SetTrackingType.Column> = []
+        var targets = Values()
+        var isCompleted = false
+        var isWarmup = false
+    }
+
+    /// Resolve in workout order so even an unfinished, automatically filled
+    /// predecessor supplies the next row. Only the first row consults history;
+    /// kind matching applies there, not between rows in the current workout.
+    static func resolve(
+        currentSets: [SetInput], previousSets: [SetInput], trackingType: SetTrackingType
+    ) -> [Values] {
+        var result: [Values] = []
+        for set in currentSets {
+            if set.isCompleted {
+                result.append(set.values)
+                continue
+            }
+            let inherited = result.last
+                ?? previousSets.first(where: { $0.isWarmup == set.isWarmup })?.values
+                ?? Values()
+            var values = Values()
+            for column in trackingType.columns {
+                values[column] = set.userEnteredFields.contains(column)
+                    ? set.values[column] : (set.targets[column] ?? inherited[column])
+            }
+            result.append(values)
+        }
+        return result
     }
 }
 
@@ -318,9 +384,27 @@ struct SetTrackingPreferences: Codable, Equatable {
         var meters: Double
         var updatedAt: TimeInterval
     }
+    struct LoggerFields: Codable, Equatable {
+        var fields: Set<SetTrackingType.Column>
+        /// Frozen plan targets, with load in canonical kilograms.
+        var targets: SetValuePrefill.Values? = nil
+        var updatedAt: TimeInterval
+
+        var contentKey: String {
+            let measurements = [targets?.weight, targets?.repetitions.map(Double.init), targets?.duration, targets?.distance]
+            return fields.map(\.rawValue).sorted().joined(separator: ",") + ":"
+                + measurements.map { $0.map { String($0) } ?? "nil" }.joined(separator: ",")
+        }
+    }
     var overrides: [String: Override] = [:]
     // WorkoutRoutineSet has no distance attribute. Keep its target by stable set UUID.
     var routineDistances: [String: DistanceTarget] = [:]
+    // Optional for archives written before logger provenance was tracked.
+    // Sync field ownership and frozen plan targets. Logged measurements stay
+    // in the workout store.
+    var loggerFields: [String: LoggerFields]? = nil
+    var loggerWorkoutID: UUID? = nil
+    var loggerWorkoutStartedAt: TimeInterval? = nil
 
     static let cache = DefaultsValueCache<Self>(key: storageKey, notification: didChangeNotification) { data in
         data.flatMap { try? JSONDecoder().decode(Self.self, from: $0) } ?? Self()
@@ -348,6 +432,12 @@ struct SetTrackingPreferences: Codable, Equatable {
                 if let watermark = watermarks.routineDistances[key], watermark.meters == entry.meters,
                    watermark.updatedAt > entry.updatedAt {
                     stored.routineDistances[key] = watermark
+                }
+            }
+            for (key, entry) in stored.loggerFields ?? [:] where stored.loggerWorkoutID == watermarks.loggerWorkoutID {
+                if let watermark = watermarks.loggerFields?[key], watermark.contentKey == entry.contentKey,
+                   watermark.updatedAt > entry.updatedAt {
+                    stored.loggerFields?[key] = watermark
                 }
             }
         }
@@ -379,7 +469,46 @@ struct SetTrackingPreferences: Codable, Equatable {
         preferences.save(defaults: defaults)
         NotificationCenter.default.post(name: didChangeNotification, object: defaults)
     }
-    var isEmpty: Bool { overrides.isEmpty && routineDistances.isEmpty }
+    static func loggerFields(for setID: UUID?, defaults: UserDefaults = .standard) -> Set<SetTrackingType.Column>? {
+        setID.flatMap { load(defaults: defaults).loggerFields?[$0.uuidString]?.fields }
+    }
+    /// There is one active workout. A new session replaces the old provenance
+    /// rather than growing every subsequent Watch preference payload forever.
+    static func beginLoggerSession(workoutID: UUID?, startedAt: Date?, defaults: UserDefaults = .standard) {
+        guard let workoutID else { return }
+        SyncedPreferenceStorage.lock.lock()
+        defer { SyncedPreferenceStorage.lock.unlock() }
+        var preferences = load(defaults: defaults)
+        guard preferences.loggerWorkoutID != workoutID else { return }
+        preferences.loggerWorkoutID = workoutID
+        preferences.loggerWorkoutStartedAt = (startedAt ?? Date()).timeIntervalSince1970
+        preferences.loggerFields = nil
+        preferences.save(defaults: defaults)
+        NotificationCenter.default.post(name: didChangeNotification, object: defaults)
+    }
+    static func setLoggerFields(_ fields: Set<SetTrackingType.Column>, for setID: UUID?,
+                                targets: SetValuePrefill.Values? = nil, defaults: UserDefaults = .standard) {
+        guard let setID else { return }
+        SyncedPreferenceStorage.lock.lock()
+        defer { SyncedPreferenceStorage.lock.unlock() }
+        var preferences = load(defaults: defaults)
+        let savedTargets = targets ?? preferences.loggerFields?[setID.uuidString]?.targets
+        guard preferences.loggerFields?[setID.uuidString]?.fields != fields ||
+                preferences.loggerFields?[setID.uuidString]?.targets != savedTargets else { return }
+        if preferences.loggerFields == nil { preferences.loggerFields = [:] }
+        preferences.loggerFields?[setID.uuidString] = LoggerFields(fields: fields, targets: savedTargets,
+                                                                  updatedAt: Date().timeIntervalSince1970)
+        preferences.save(defaults: defaults)
+        NotificationCenter.default.post(name: didChangeNotification, object: defaults)
+    }
+    static func markLoggerField(_ field: SetTrackingType.Column, for setID: UUID?) {
+        SyncedPreferenceStorage.lock.lock()
+        defer { SyncedPreferenceStorage.lock.unlock() }
+        var fields = loggerFields(for: setID) ?? []
+        fields.insert(field)
+        setLoggerFields(fields, for: setID)
+    }
+    var isEmpty: Bool { overrides.isEmpty && routineDistances.isEmpty && (loggerFields?.isEmpty ?? true) && loggerWorkoutID == nil }
     var dictionaryRepresentation: [String: Any] {
         guard let data = try? JSONEncoder().encode(self),
               let payload = try? JSONSerialization.jsonObject(with: data) else { return [:] }
@@ -391,7 +520,9 @@ struct SetTrackingPreferences: Codable, Equatable {
               let data = try? JSONSerialization.data(withJSONObject: value),
               let result = try? JSONDecoder().decode(Self.self, from: data),
               result.overrides.values.allSatisfy({ $0.updatedAt.isFinite && $0.updatedAt >= 0 }),
-              result.routineDistances.values.allSatisfy({ $0.meters.isFinite && $0.meters >= 0 && $0.updatedAt.isFinite && $0.updatedAt >= 0 }) else { return nil }
+              result.routineDistances.values.allSatisfy({ $0.meters.isFinite && $0.meters >= 0 && $0.updatedAt.isFinite && $0.updatedAt >= 0 }),
+              (result.loggerFields ?? [:]).values.allSatisfy({ $0.updatedAt.isFinite && $0.updatedAt >= 0 }),
+              result.loggerWorkoutStartedAt.map({ $0.isFinite && $0 >= 0 }) ?? true else { return nil }
         self = result
     }
     func merging(_ incoming: Self) -> Self {
@@ -404,6 +535,26 @@ struct SetTrackingPreferences: Codable, Equatable {
             if local.updatedAt != remote.updatedAt { return remote.updatedAt > local.updatedAt ? remote : local }
             return remote.meters > local.meters ? remote : local
         }
+        let sameSession = loggerWorkoutID == incoming.loggerWorkoutID
+        let incomingSessionWins = (incoming.loggerWorkoutStartedAt ?? 0) > (loggerWorkoutStartedAt ?? 0) ||
+            ((incoming.loggerWorkoutStartedAt ?? 0) == (loggerWorkoutStartedAt ?? 0) &&
+             (incoming.loggerWorkoutID?.uuidString ?? "") > (loggerWorkoutID?.uuidString ?? ""))
+        if !sameSession, incomingSessionWins {
+            result.loggerWorkoutID = incoming.loggerWorkoutID
+            result.loggerWorkoutStartedAt = incoming.loggerWorkoutStartedAt
+        }
+        var fields = (!sameSession && incomingSessionWins ? incoming.loggerFields : loggerFields) ?? [:]
+        fields.merge(sameSession ? incoming.loggerFields ?? [:] : [:]) { local, remote in
+            var merged = remote.updatedAt > local.updatedAt ||
+                (remote.updatedAt == local.updatedAt && remote.contentKey > local.contentKey) ? remote : local
+            // Ownership only grows during a session. A delayed initialization
+            // or concurrent edit on the other device cannot untype a field.
+            merged.fields.formUnion(local.fields)
+            merged.fields.formUnion(remote.fields)
+            merged.targets = merged.targets ?? local.targets ?? remote.targets
+            return merged
+        }
+        result.loggerFields = fields.isEmpty ? nil : fields
         return result
     }
     func save(defaults: UserDefaults = .standard) {
@@ -422,6 +573,8 @@ struct SetTrackingPreferences: Codable, Equatable {
 
     func hasSameContent(as other: Self) -> Bool {
         overrides.mapValues(\.type) == other.overrides.mapValues(\.type) &&
-            routineDistances.mapValues(\.meters) == other.routineDistances.mapValues(\.meters)
+            routineDistances.mapValues(\.meters) == other.routineDistances.mapValues(\.meters) &&
+            loggerWorkoutID == other.loggerWorkoutID &&
+            (loggerFields ?? [:]).mapValues(\.contentKey) == (other.loggerFields ?? [:]).mapValues(\.contentKey)
     }
 }

@@ -589,26 +589,46 @@ private struct BarbellLoadDiagram: View {
 
     var body: some View {
         Canvas { context, size in
-            let midY = size.height / 2
             let center = size.width / 2
             let noBar = loadout.mode == .noBar
             let grip = noBar ? 20 : max(size.width * 0.22, 44)
             let room = max((size.width - grip) / 2 - 12, 0)
-            // Bound the drawing's cost for very small plates; the list retains full counts.
-            let stack = platesPerSide.flatMap { Array(repeating: $0.weight, count: min($0.count, 24)) }.prefix(24)
-            let natural = stack.reduce(CGFloat.zero) { $0 + PlateAppearance.width(for: $1, unit: unit) + 2 }
+            // Large counts retain their real value in a label above three representative plates.
+            let groups = platesPerSide.filter { $0.weight.isFinite && $0.weight > 0 && $0.count > 0 }.map { plate in
+                let count = plate.count > 4 ? 3 : plate.count
+                let width = PlateAppearance.width(for: plate.weight, unit: unit)
+                let stackWidth = CGFloat(count) * width + CGFloat(count - 1) * 2
+                let labelSize = plate.count > 4 ? context.resolve(
+                    Text("×\(plate.count)").font(.ironMetric(.caption2, weight: .bold))
+                ).measure(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)) : .zero
+                return (plate: plate, count: count, plateWidth: width, stackWidth: stackWidth,
+                        width: max(stackWidth, labelSize.width) + 2, labelHeight: labelSize.height)
+            }
+            let natural = groups.reduce(CGFloat.zero) { $0 + $1.width }
             let scale = natural > room ? room / natural : 1
+            let labelHeight = groups.map { $0.labelHeight }.max() ?? 0
+            let labelBand = labelHeight > 0 ? min(size.height, labelHeight * scale + 2) : 0
+            let plateMaximum = max(size.height - labelBand, 0)
+            let midY = labelBand + plateMaximum / 2
             func fill(_ rect: CGRect, _ color: Color, radius: CGFloat = 2) {
                 context.fill(Path(roundedRect: rect, cornerRadius: radius, style: .continuous), with: .color(color))
             }
+            // Sleeves and horns stop a little past the outermost plate, as on a real bar;
+            // an empty side keeps a short stub. Lengths run from the collar side of the grip.
+            let outerPadding = groups.last.map { ($0.width - 2 - $0.stackWidth) / 2 } ?? 0
+            let stackExtent = (natural - outerPadding) * scale
+            func sleeveLength(loaded: Bool) -> CGFloat {
+                min(max(6 + (loaded ? stackExtent : 0) + 12, 30), (size.width - grip) / 2)
+            }
+            let left = sleeveLength(loaded: loadout.loadedSides == .both)
+            let right = sleeveLength(loaded: true)
             if isMachine {
                 // Both horns share the barbell's centerline and plate layout.
-                let sleeveLength = (size.width - grip) / 2
-                fill(CGRect(x: 0, y: midY - 3, width: sleeveLength, height: 6), IronTheme.secondaryText)
-                fill(CGRect(x: center + grip / 2, y: midY - 3, width: sleeveLength, height: 6), IronTheme.secondaryText)
+                fill(CGRect(x: center - grip / 2 - left, y: midY - 3, width: left, height: 6), IronTheme.secondaryText)
+                fill(CGRect(x: center + grip / 2, y: midY - 3, width: right, height: 6), IronTheme.secondaryText)
                 drawMachine(context: context, size: size, width: grip)
             } else if !noBar {
-                fill(CGRect(x: 0, y: midY - 3, width: size.width, height: 6), IronTheme.secondaryText)
+                fill(CGRect(x: center - grip / 2 - left, y: midY - 3, width: grip + left + right, height: 6), IronTheme.secondaryText)
             }
             let sides: [CGFloat] = loadout.loadedSides == .both ? [-1, 1] : [1]
             for side in sides {
@@ -617,14 +637,31 @@ private struct BarbellLoadDiagram: View {
                     fill(CGRect(x: side > 0 ? inner : inner - 6, y: midY - 14, width: 6, height: 28), IronTheme.secondaryText)
                 }
                 var offset = inner + side * (noBar ? 0 : 6)
-                for weight in stack {
-                    let width = PlateAppearance.width(for: weight, unit: unit) * scale
-                    let height = PlateAppearance.height(for: weight, unit: unit, maximum: size.height)
-                    let x = side > 0 ? offset + 2 * scale : offset - 2 * scale - width
-                    let rect = CGRect(x: x, y: midY - height / 2, width: width, height: height)
-                    fill(rect, PlateAppearance.color(for: weight, unit: unit))
-                    context.stroke(Path(roundedRect: rect, cornerRadius: 2, style: .continuous), with: .color(IronTheme.outline), lineWidth: 0.5)
-                    offset += side * (width + 2 * scale)
+                for group in groups {
+                    let width = group.plateWidth * scale
+                    let height = PlateAppearance.height(for: group.plate.weight, unit: unit, maximum: plateMaximum)
+                    let padding = (group.width - 2 - group.stackWidth) / 2
+                    var plateOffset = offset + side * padding * scale
+                    for _ in 0..<group.count {
+                        let x = side > 0 ? plateOffset + 2 * scale : plateOffset - 2 * scale - width
+                        let rect = CGRect(x: x, y: midY - height / 2, width: width, height: height)
+                        fill(rect, PlateAppearance.color(for: group.plate.weight, unit: unit))
+                        context.stroke(Path(roundedRect: rect, cornerRadius: 2, style: .continuous), with: .color(IronTheme.outline), lineWidth: 0.5)
+                        plateOffset += side * (width + 2 * scale)
+                    }
+                    if group.plate.count > 4 {
+                        var labelContext = context
+                        labelContext.translateBy(x: offset + side * (group.width / 2 + 1) * scale,
+                                                 y: midY - height / 2 - 2)
+                        labelContext.scaleBy(x: scale, y: scale)
+                        labelContext.draw(
+                            Text("×\(group.plate.count)")
+                                .font(.ironMetric(.caption2, weight: .bold))
+                                .foregroundColor(IronTheme.secondaryText),
+                            at: .zero, anchor: .bottom
+                        )
+                    }
+                    offset += side * group.width * scale
                 }
             }
         }
@@ -698,13 +735,19 @@ struct PlateCalculatorView: View {
     let onClose: () -> Void
     let onApply: (Double) -> Void
     private let initialTarget: Double
+    private let savesInitialSetup: Bool
 
     @State private var targetWeight: Double
     @State private var loadout: PlateLoadout
     @State private var inventory: PlateInventory
     @State private var selectionFeedback = 0
+    @State private var drafts: [WeightField: String] = [:]
+    @FocusState private var focusedField: WeightField?
 
-    init(unit: WeightUnit, initialTarget: Double, exerciseKey: String? = nil, onClose: @escaping () -> Void = {}, onApply: @escaping (Double) -> Void) {
+    private enum WeightField: Hashable { case target, base }
+
+    init(unit: WeightUnit, initialTarget: Double, exerciseKey: String? = nil, initialMode: PlateLoadout.Mode? = nil,
+         onClose: @escaping () -> Void = {}, onApply: @escaping (Double) -> Void) {
         self.unit = unit
         self.exerciseKey = exerciseKey
         self.onClose = onClose
@@ -712,7 +755,12 @@ struct PlateCalculatorView: View {
         let target = initialTarget.isFinite ? min(max(initialTarget, 0), 2000) : 0
         self.initialTarget = target
         _targetWeight = State(initialValue: target)
-        _loadout = State(initialValue: PlateLoadout.load(exerciseKey: exerciseKey, unit: unit.plateLoadUnit))
+        let savedSetup = exerciseKey.flatMap { PlateCalculatorPreferences.load().loadouts[$0] }
+        let initialSetup = savedSetup?.converted(to: unit.plateLoadUnit)
+            ?? initialMode.map { PlateLoadout(mode: $0, unit: unit.plateLoadUnit) }
+            ?? PlateLoadout.standard(for: unit.plateLoadUnit)
+        savesInitialSetup = savedSetup == nil && initialMode != nil
+        _loadout = State(initialValue: initialSetup)
         _inventory = State(initialValue: PlateInventory.load())
     }
 
@@ -765,12 +813,9 @@ struct PlateCalculatorView: View {
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 8)
                 .listRowSeparator(.hidden)
-                Stepper(onIncrement: targetWeight >= 2000 ? nil : { adjustTarget(by: targetStep) },
-                        onDecrement: targetWeight <= 0 ? nil : { adjustTarget(by: -targetStep) }) {
-                    weightLabel("Target", value: targetWeight)
-                }
-                .accessibilityLabel("Target weight")
-                .accessibilityValue("\(weightTitle(targetWeight)) \(unit.unit.symbol)")
+                weightRow("Target", accessibilityLabel: "Target weight", field: .target, value: targetWeight,
+                          onIncrement: targetWeight >= 2000 ? nil : { adjustTarget(by: targetStep) },
+                          onDecrement: targetWeight <= 0 ? nil : { adjustTarget(by: -targetStep) })
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Target moves in \(weightTitle(targetStep)) \(unit.unit.symbol) steps and includes any bar or machine starting weight. Done saves a changed target; swipe down to leave the set as it was.")
@@ -816,12 +861,11 @@ struct PlateCalculatorView: View {
                     equipmentPicker.pickerStyle(.segmented)
                 }
                 if mode != .noBar {
-                    Stepper(onIncrement: loadout.baseWeight >= 2000 ? nil : { adjustBase(by: 0.5) },
-                            onDecrement: loadout.baseWeight <= 0 ? nil : { adjustBase(by: -0.5) }) {
-                        weightLabel(mode == .bar ? "Bar" : "Starting Weight", value: loadout.baseWeight)
-                    }
-                    .accessibilityLabel(mode == .bar ? "Bar weight" : "Machine starting weight")
-                    .accessibilityValue("\(weightTitle(loadout.baseWeight)) \(unit.unit.symbol)")
+                    weightRow(mode == .bar ? "Bar" : "Starting Weight",
+                              accessibilityLabel: mode == .bar ? "Bar weight" : "Machine starting weight",
+                              field: .base, value: loadout.baseWeight,
+                              onIncrement: loadout.baseWeight >= 2000 ? nil : { adjustBase(by: 0.5) },
+                              onDecrement: loadout.baseWeight <= 0 ? nil : { adjustBase(by: -0.5) })
                 }
                 Picker("Loaded Sides", selection: Binding(
                     get: { loadout.loadedSides },
@@ -848,14 +892,22 @@ struct PlateCalculatorView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollDismissesKeyboard(.interactively)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 // Opening this just to read the plates must not round the set's weight.
                 Button("Done") {
+                    if savesInitialSetup { loadout.save(exerciseKey: exerciseKey) }
                     if targetWeight != initialTarget { onApply(solution.loadedTotal) } else { onClose() }
                 }
             }
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Hide Keyboard", systemImage: "keyboard.chevron.compact.down") { focusedField = nil }
+                    .labelStyle(.iconOnly)
+            }
         }
+        .onChange(of: focusedField) { drafts = [:] }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: targetWeight)
         .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
         .onChange(of: loadout) { loadout.save(exerciseKey: exerciseKey) }
@@ -869,18 +921,79 @@ struct PlateCalculatorView: View {
         }
     }
 
-    private func weightLabel(_ title: String, value: Double) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) {
-                Text(title).fixedSize()
-                Spacer(minLength: 4)
-                IronMetricValue(value: weightTitle(value), unit: unit.unit.symbol, style: .title2).fixedSize()
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                IronMetricValue(value: weightTitle(value), unit: unit.unit.symbol, style: .title2)
+    /// Layout depends on text size only, never on the value's width: a value that reflowed
+    /// the row moved the segmented control under the finger tapping − or +.
+    private func weightRow(_ title: String, accessibilityLabel: String, field: WeightField, value: Double,
+                           onIncrement: (() -> Void)?, onDecrement: (() -> Void)?) -> some View {
+        let input = HStack(alignment: .firstTextBaseline, spacing: 4) {
+            // The hidden template reserves the width of the longest stepped value.
+            Text("0000.5").font(.ironMetric(.title2, weight: .bold)).hidden()
+                .overlay(alignment: .trailing) {
+                    TextField(weightTitle(value), text: draftBinding(field, value: value))
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .font(.ironMetric(.title2, weight: .bold))
+                        .foregroundStyle(IronTheme.primaryText)
+                        .focused($focusedField, equals: field)
+                        .accessibilityLabel(accessibilityLabel)
+                        .accessibilityValue("\(weightTitle(value)) \(unit.unit.symbol)")
+                }
+            Text(unit.unit.symbol).font(.footnote.weight(.semibold)).foregroundStyle(IronTheme.secondaryText)
+        }
+        let stepper = Stepper(onIncrement: onIncrement, onDecrement: onDecrement) { Text(title) }
+            .labelsHidden()
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue("\(weightTitle(value)) \(unit.unit.symbol)")
+        return Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                    HStack(spacing: 8) { input; Spacer(minLength: 8); stepper }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Text(title).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    input
+                    stepper
+                }
             }
         }
+        .frame(minHeight: IronTheme.controlHeight)
+    }
+
+    /// Typing applies each valid value live. A partial entry ("", "44.") stays as typed;
+    /// a − or + press replaces it with the stepped value.
+    private func draftBinding(_ field: WeightField, value: Double) -> Binding<String> {
+        Binding(
+            get: {
+                guard focusedField == field, let draft = drafts[field] else { return weightTitle(value) }
+                guard let parsed = Self.parseWeight(draft) else { return draft }
+                return min(max(parsed, 0), 2000) == value ? draft : weightTitle(value)
+            },
+            set: { text in
+                drafts[field] = text
+                guard let parsed = Self.parseWeight(text) else { return }
+                let clamped = min(max(parsed, 0), 2000)
+                switch field {
+                case .target: targetWeight = clamped
+                case .base: setBase(clamped)
+                }
+            })
+    }
+
+    private static let weightInputFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter
+    }()
+
+    private static func parseWeight(_ text: String) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        let value = weightInputFormatter.number(from: trimmed)?.doubleValue
+            ?? Double(trimmed.replacingOccurrences(of: ",", with: "."))
+        return value.flatMap { $0.isFinite ? $0 : nil }
     }
 
     private func adjustTarget(by amount: Double) {
@@ -892,8 +1005,12 @@ struct PlateCalculatorView: View {
     private func adjustBase(by amount: Double) {
         let value = min(max(loadout.baseWeight + amount, 0), 2000)
         guard value != loadout.baseWeight else { return }
-        switch loadout.mode { case .barbell: loadout.mode = .barbell(value); case .machine: loadout.mode = .machine(value); case .noBar: break }
+        setBase(value)
         stepFeedback()
+    }
+    private func setBase(_ value: Double) {
+        guard value != loadout.baseWeight else { return }
+        switch loadout.mode { case .barbell: loadout.mode = .barbell(value); case .machine: loadout.mode = .machine(value); case .noBar: break }
     }
     private func stepFeedback() {
         selectionFeedback += 1

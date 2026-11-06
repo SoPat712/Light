@@ -27,7 +27,8 @@ class ExerciseFilter: ObservableObject {
     private var cancellable: Cancellable?
     
     init(exercises: [Exercise], filter: String = "", exerciseStore: ExerciseStore = .shared) {
-        self.exercises = exerciseStore.orderedByRecency(ExerciseStore.filter(exercises: exercises, using: filter))
+        self.exercises = ExerciseStore.filter(exercises: exerciseStore.orderedByRecency(exercises), using: filter,
+                                              lastPerformedDates: exerciseStore.lastPerformedDates)
         self.filter = filter
         self.isEmpty = filter.isEmpty
         
@@ -35,9 +36,11 @@ class ExerciseFilter: ObservableObject {
             .prepend(filter)
             .debounce(for: .milliseconds(500), scheduler: DispatchQueue.global(qos: .userInteractive))
             .removeDuplicates()
-            .map { ExerciseStore.filter(exercises: exercises, using: $0) }
             .combineLatest(exerciseStore.$lastPerformedDates)
-            .map { ExerciseRecency.ordered($0.0, dates: $0.1) }
+            .map { query, dates in
+                ExerciseStore.filter(exercises: ExerciseRecency.ordered(exercises, dates: dates), using: query,
+                                     lastPerformedDates: dates)
+            }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.exercises = $0 }
     }

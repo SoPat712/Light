@@ -58,6 +58,7 @@ struct EditCustomExerciseView: View {
     
     @Binding var exerciseValues: ExerciseValues
     @State private var selectionFeedback = 0
+    @ScaledMetric(relativeTo: .body) private var instructionEditorHeight: CGFloat = 66
     var titleValidationMessage: String? = nil
     var onSelectMuscles: () -> Void = {}
     
@@ -85,8 +86,12 @@ struct EditCustomExerciseView: View {
                 TextField("Name", text: $exerciseValues.title)
                     .textInputAutocapitalization(.words)
 
-                TextField("Description", text: $exerciseValues.description, axis: .vertical)
-                    .lineLimit(1...4)
+                if #available(iOS 16, *) {
+                    TextField("Description", text: $exerciseValues.description, axis: .vertical)
+                        .lineLimit(1...4)
+                } else {
+                    TextField("Description", text: $exerciseValues.description)
+                }
             } header: {
                 Text("Exercise")
             } footer: {
@@ -98,13 +103,27 @@ struct EditCustomExerciseView: View {
 
             Section {
                 Button(action: onSelectMuscles) {
-                    LabeledContent("Muscles") {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("Muscles")
+                            .foregroundStyle(IronTheme.primaryText)
+                        Spacer(minLength: 8)
                         Text(muscleSummary)
+                            .foregroundStyle(IronTheme.secondaryText)
                             .multilineTextAlignment(.trailing)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(IronTheme.secondaryText)
+                            .accessibilityHidden(true)
                     }
+                    .frame(minHeight: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Muscles")
+                .accessibilityValue(muscleSummary)
+                .accessibilityHint("Choose primary and secondary muscles")
 
-                Picker("Equipment", selection: Binding(
+                Picker(selection: Binding(
                     get: { exerciseValues.type },
                     set: {
                         guard exerciseValues.type != $0 else { return }
@@ -115,7 +134,13 @@ struct EditCustomExerciseView: View {
                     ForEach(Exercise.ExerciseType.allCases, id: \.self) { type in
                         Text(type.title.capitalized).tag(type)
                     }
+                } label: {
+                    Text("Equipment")
+                        .foregroundStyle(IronTheme.primaryText)
                 }
+                .pickerStyle(.menu)
+                .tint(IronTheme.secondaryText)
+                .accessibilityLabel("Equipment")
                 .sensoryFeedback(.selection, trigger: selectionFeedback) { _, _ in SettingsStore.shared.workoutHaptics }
             } header: {
                 Text("Classification")
@@ -126,19 +151,39 @@ struct EditCustomExerciseView: View {
             }
 
             Section {
-                TextField("One instruction per line", text: $exerciseValues.stepsText, axis: .vertical)
-                    .lineLimit(3...8)
+                instructionField("Steps", prompt: "One instruction per line", text: $exerciseValues.stepsText)
+                instructionField("Coach Cues", prompt: "One coaching cue per line", text: $exerciseValues.tipsText)
             } header: {
-                Text("Steps")
-            }
-
-            Section {
-                TextField("One coaching cue per line", text: $exerciseValues.tipsText, axis: .vertical)
-                    .lineLimit(3...8)
-            } header: {
-                Text("Coach Cues")
+                Text("Instructions (Optional)")
             } footer: {
                 Text("Steps and cues appear in the exercise’s How To section.")
+            }
+        }
+    }
+
+    private func instructionField(_ title: String, prompt: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(IronTheme.primaryText)
+            if #available(iOS 16, *) {
+                TextField(prompt, text: text, axis: .vertical)
+                    .lineLimit(3...3)
+                    .accessibilityLabel(title)
+            } else {
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: text)
+                        .frame(height: instructionEditorHeight)
+                        .accessibilityLabel(title)
+                    if text.wrappedValue.isEmpty {
+                        Text(prompt)
+                            .foregroundStyle(IronTheme.tertiaryText)
+                            .padding(.top, 8)
+                            .padding(.leading, 4)
+                            .accessibilityHidden(true)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
         }
     }

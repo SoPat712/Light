@@ -16,73 +16,40 @@ struct WatchSettingsView: View {
 
     @State private var isRefreshing = false
     @State private var watchAppUnavailable = false
+    /// Values shown while a refresh runs. WatchConnectivity reports in several quick steps
+    /// (reachability especially flaps), so the page holds still and shows only the result.
+    @State private var frozenStatus: WatchStatus?
+    @State private var refreshToken = 0
 
     @ObservedObject private var connection = WatchConnectionManager.shared
+
+    private struct WatchStatus: Equatable {
+        let isPaired: Bool
+        let isInstalled: Bool
+        let isReachable: Bool
+    }
+
+    private var liveStatus: WatchStatus {
+        WatchStatus(isPaired: connection.isPaired, isInstalled: connection.isWatchAppInstalled,
+                    isReachable: connection.isReachable)
+    }
+
+    private var shownStatus: WatchStatus { frozenStatus ?? liveStatus }
 
     private enum ConnectionState {
         case unavailable
         case installRequired
-        case connected
         case ready
 
-        var title: String {
-            switch self {
-            case .unavailable: return "Pair an Apple Watch"
-            case .installRequired: return "Install Light on your watch"
-            case .connected: return "Connected now"
-            case .ready: return "Ready to sync"
-            }
-        }
-
-        var detail: String {
-            switch self {
-            case .unavailable:
-                return "Pair a watch in the Watch app on your iPhone to use the workout companion."
-            case .installRequired:
-                return "Open the Watch app on your iPhone and install Light from Available Apps."
-            case .connected:
-                return "Light can exchange workout changes with your watch right now."
-            case .ready:
-                return "Your current workout will sync whenever Light is available on both devices."
-            }
-        }
-
-        var badge: String {
-            switch self {
-            case .unavailable, .installRequired: return "SETUP"
-            case .connected: return "LIVE"
-            case .ready: return "READY"
-            }
-        }
-
-        var tint: Color {
-            switch self {
-            case .unavailable, .installRequired: return IronTheme.warning
-            case .connected: return IronTheme.success
-            case .ready: return IronTheme.accent
-            }
-        }
-
-        var needsSetup: Bool {
-            switch self {
-            case .unavailable, .installRequired: return true
-            case .connected, .ready: return false
-            }
-        }
-
-        var setupActionTitle: String {
-            switch self {
-            case .unavailable: return "Pair in the Watch app"
-            case .installRequired: return "Install Light on Apple Watch"
-            case .connected, .ready: return "Open the Watch app"
-            }
-        }
+        var needsSetup: Bool { self != .ready }
     }
 
+    /// Paired and installed decide readiness. Reachability only says whether the watch app
+    /// is awake right now, so it stays in the Connection row instead of flipping the badge.
     private var connectionState: ConnectionState {
-        guard connection.isPaired else { return .unavailable }
-        guard connection.isWatchAppInstalled else { return .installRequired }
-        return connection.isReachable ? .connected : .ready
+        guard shownStatus.isPaired else { return .unavailable }
+        guard shownStatus.isInstalled else { return .installRequired }
+        return .ready
     }
 
     private var isCompanionAvailable: Bool {
@@ -102,75 +69,72 @@ struct WatchSettingsView: View {
 
     var body: some View {
         List {
-            Section("Connection") {
-                connectionStatusRow
-                LabeledContent("Paired", value: connection.isPaired ? "Yes" : "No")
-                LabeledContent("Light installed", value: connection.isWatchAppInstalled ? "Yes" : "No")
-                LabeledContent("Connection", value: connection.isReachable ? "Live" : "Standby")
-
-                Button(action: openWatchSetup) {
-                    SettingsSubpageLabel(connectionState.setupActionTitle, systemImage: "applewatch", tint: IronTheme.mediaBackdrop)
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint("Opens the Watch app on this iPhone")
-
-                Button(action: refreshConnectionStatus) {
-                    HStack(spacing: 12) {
-                        SettingsSubpageLabel(isRefreshing ? "Checking…" : "Refresh watch status", systemImage: "arrow.clockwise")
-                        if isRefreshing { ProgressView() }
+            Section {
+                SettingsConnectionHeader(title: "Apple Watch", systemImage: "applewatch", tint: IronTheme.mediaBackdrop,
+                                         status: statusTitle, isGood: !connectionState.needsSetup) {
+                    if connectionState.needsSetup {
+                        Button(action: openWatchSetup) {
+                            Label(shownStatus.isPaired ? "Install Light on Watch" : "Pair in Watch App",
+                                  systemImage: "arrow.up.forward.app")
+                                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityHint("Opens the Watch app on this iPhone")
                     }
                 }
-                .buttonStyle(.plain)
-                .disabled(isRefreshing)
+            } footer: {
+                Text(connectionState.needsSetup
+                     ? "Pair your watch and install Light using the Watch app on iPhone."
+                     : "Light on your watch is ready for workouts.")
             }
 
             Section {
-                Toggle(isOn: watchCompanionBinding) {
-                    SettingsSubpageLabel("Launch with workouts",
-                                         detail: "Start the watch workout when logging begins on iPhone.",
-                                         systemImage: "applewatch", tint: IronTheme.mediaBackdrop)
+                LabeledContent {
+                    Text(shownStatus.isPaired ? "Yes" : "No")
+                } label: {
+                    SettingsRowLabel("Paired", systemImage: "applewatch.radiowaves.left.and.right", tint: IronTheme.accent)
                 }
-                .toggleStyle(.switch)
-                .tint(IronTheme.accent)
-                .disabled(!isCompanionAvailable)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Launch watch companion with workouts")
-                .accessibilityValue(
-                    isCompanionAvailable
-                        ? (displayedWatchCompanion ? "On" : "Off")
-                        : (displayedWatchCompanion ? "On, setup required" : "Off, setup required")
-                )
+                LabeledContent {
+                    Text(shownStatus.isInstalled ? "Yes" : "No")
+                } label: {
+                    SettingsRowLabel("Light Installed", systemImage: "app.badge.checkmark", tint: IronTheme.metricVolume)
+                }
+                LabeledContent {
+                    Text(shownStatus.isReachable ? "Live" : "Standby")
+                        .foregroundStyle(shownStatus.isReachable ? IronTheme.success : IronTheme.secondaryText)
+                } label: {
+                    SettingsRowLabel("Connection", systemImage: "dot.radiowaves.left.and.right", tint: IronTheme.metricTime)
+                }
+                Button { refreshConnectionStatus(announce: true) } label: {
+                    SettingsActionLabel("Refresh Status", systemImage: "arrow.clockwise", tint: IronTheme.accent,
+                                        trailingSymbol: "arrow.clockwise.circle", isPreparing: isRefreshing)
+                }
+                .accessibilityLabel(isRefreshing ? "Checking watch status" : "Refresh Status")
+                .disabled(isRefreshing)
+            } header: {
+                Text("Details")
+            }
+
+            Section {
+                SettingsToggle("Start with iPhone Workouts", systemImage: "figure.strengthtraining.traditional",
+                               tint: IronTheme.accent, isOn: watchCompanionBinding)
+                    .toggleStyle(.switch)
+                    .tint(IronTheme.accent)
+                    .disabled(!isCompanionAvailable)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Start with iPhone Workouts")
+                    .accessibilityValue(
+                        isCompanionAvailable
+                            ? (displayedWatchCompanion ? "On" : "Off")
+                            : (displayedWatchCompanion ? "On, setup required" : "Off, setup required")
+                    )
             } header: {
                 Text("Workout Companion")
             } footer: {
                 Text(companionDetail)
             }
-
-            Section("On Your Wrist") {
-                featureRow(
-                    icon: "checkmark.circle.fill",
-                    title: "Log complete sets",
-                    detail: "Edit weight, reps and RPE, then mark sets complete.",
-                    tint: IronTheme.accent
-                )
-                featureRow(
-                    icon: "timer",
-                    title: "Keep rest time visible",
-                    detail: "Rest timers and the selected set stay aligned across devices.",
-                    tint: IronTheme.metricTime
-                )
-                featureRow(
-                    icon: "heart.fill",
-                    title: "Capture workout metrics",
-                    detail: "See live heart rate and estimated active calories.",
-                    tint: IronTheme.metricHeartRate
-                )
-            }
-
-            Section("Offline Continuity") {
-                offlineContinuityRow
-            }
         }
+        .labeledContentStyle(SettingsValueStyle())
         .listStyle(.insetGrouped)
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
@@ -178,65 +142,35 @@ struct WatchSettingsView: View {
         .navigationTitle("Apple Watch")
         .navigationBarTitleDisplayMode(.inline)
         .ironScreen()
-        .onAppear(perform: refreshConnectionStatus)
+        .onAppear { refreshConnectionStatus(announce: false) }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
-            refreshConnectionStatus()
+            refreshConnectionStatus(announce: false)
         }
         .onChange(of: connection.connectionRevision) { _, _ in
-            isRefreshing = false
+            // Each report restarts a short settle window; the page updates once it's quiet.
+            guard isRefreshing else { return }
+            scheduleFinish(after: 1.0)
         }
         .alert("Could not open the Watch app", isPresented: $watchAppUnavailable) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Open the Watch app from your iPhone Home Screen to pair your watch or install Iron.")
+            Text("Open the Watch app from your iPhone Home Screen to pair your watch or install Light.")
         }
     }
 
-    private var connectionStatusRow: some View {
-        let state = connectionState
-
-        return HStack(spacing: 12) {
-            SettingsSubpageIconTile(systemImage: "applewatch.radiowaves.left.and.right", tint: IronTheme.mediaBackdrop)
-            VStack(alignment: .leading, spacing: 4) {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) {
-                        connectionTitle(state).fixedSize()
-                        connectionBadge(state).fixedSize()
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        connectionTitle(state)
-                        connectionBadge(state)
-                    }
-                }
-                Text(state.detail)
-                    .font(.subheadline)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+    private var statusTitle: String {
+        switch connectionState {
+        case .unavailable: return "Not Paired"
+        case .installRequired: return "Light Not Installed"
+        case .ready: return "Ready"
         }
-        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func connectionTitle(_ state: ConnectionState) -> some View {
-        Text(state.title)
-            .font(.headline)
-            .foregroundStyle(IronTheme.primaryText)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func connectionBadge(_ state: ConnectionState) -> some View {
-        Text(state.badge)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(state.tint)
     }
 
     private var companionDetail: String {
         #if DEBUG
         if settingsStore.healthTestMode {
-            return "Test mode is on. Watch workouts don't record heart rate or calories or save to Apple Health."
+            return "In test mode, Watch workouts skip heart rate, calories, and Apple Health."
         }
         #endif
         if !isCompanionAvailable {
@@ -248,43 +182,53 @@ struct WatchSettingsView: View {
         return "You can keep logging on iPhone, but Light will not automatically begin a watch workout."
     }
 
-    private var offlineContinuityRow: some View {
-        SettingsSubpageLabel(offlineContinuityTitle, detail: offlineContinuityDetail,
-                             systemImage: "arrow.triangle.2.circlepath")
-    }
+    @State private var announcesRefresh = false
 
-    private var offlineContinuityTitle: String {
-        guard isCompanionAvailable else { return "Available after Apple Watch setup" }
-        guard displayedWatchCompanion else { return "Your active workout stays on iPhone" }
-        return "Your active workout stays on the watch"
-    }
-
-    private var offlineContinuityDetail: String {
-        guard isCompanionAvailable else {
-            return "Pair an Apple Watch and install Light to keep an active workout locally on your wrist when the phone disconnects."
-        }
-        guard displayedWatchCompanion else {
-            return "Turn on Launch with workouts to begin the companion automatically. Until then, your active workout continues locally on iPhone."
-        }
-        return "If the phone disconnects, Light stores the current workout and queues your edits locally. Changes reconcile automatically when the connection returns."
-    }
-
-    private func featureRow(icon: String, title: String, detail: String, tint: Color) -> some View {
-        SettingsSubpageLabel(title, detail: detail, systemImage: icon, tint: tint)
-    }
-
-    private func refreshConnectionStatus() {
+    private func refreshConnectionStatus(announce: Bool) {
         guard !isRefreshing else { return }
+        frozenStatus = liveStatus
+        announcesRefresh = announce
         isRefreshing = true
         connection.refreshConnectionStatus()
-
-        // Delegate callbacks normally end the refresh. Keep a conservative
-        // escape hatch for a broken or suspended WatchConnectivity service so
-        // the button can never remain disabled forever.
+        scheduleFinish(after: 1.0)
+        // An escape hatch for a broken or suspended WatchConnectivity service, so the
+        // row can never stay busy forever.
+        let token = refreshToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
-            guard isRefreshing else { return }
+            guard isRefreshing, refreshToken == token else { return }
+            finishRefresh()
+        }
+    }
+
+    private func scheduleFinish(after delay: TimeInterval) {
+        refreshToken += 1
+        let token = refreshToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard isRefreshing, refreshToken == token else { return }
+            finishRefresh()
+        }
+    }
+
+    private func finishRefresh() {
+        withAnimation(IronMotion.preferred(IronMotion.fade, reduceMotion: UIAccessibility.isReduceMotionEnabled)) {
+            frozenStatus = nil
             isRefreshing = false
         }
+        guard announcesRefresh else { return }
+        let status = liveStatus
+        let toast: LightToast
+        if !status.isPaired {
+            toast = LightToast(title: "Watch Not Paired", subtitle: "Pair it in the Watch app",
+                               systemImage: "applewatch.slash", style: .warning)
+        } else if !status.isInstalled {
+            toast = LightToast(title: "Light Not on Watch", subtitle: "Install it from the Watch app",
+                               systemImage: "exclamationmark.applewatch", style: .warning)
+        } else {
+            toast = LightToast(title: "Apple Watch Ready",
+                               subtitle: status.isReachable ? "Connection: Live" : "Connection: Standby",
+                               systemImage: "checkmark.applewatch", style: .success)
+        }
+        LightToastCenter.shared.show(toast)
     }
 
     private func openWatchSetup() {

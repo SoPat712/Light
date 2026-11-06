@@ -9,20 +9,38 @@ import WorkoutDataKit
 
 // MARK: - Home preferences
 
-/// How the This Week card draws the week. Chosen from the card's menu or Customize Home.
-enum HomeWeekStyle: String, CaseIterable, Identifiable {
-    case rings, pace, muscles, bars
+/// The cards Home can show. Each This Week view is a card of its own, so any number of them can sit on Home together.
+enum HomeSection: String, CaseIterable, Identifiable {
+    case rings, pace, muscleWeek, bars, calendar, recent, muscles, body, pinned, records, nextWorkout, trainingTrend, muscleLoad
 
-    static let storageKey = "home.weekStyle"
+    static let cardsKey = "home.cards"
+    static let defaultCards: [HomeSection] = [.rings, .calendar, .muscles, .body, .pinned]
+
+    /// Build 71 stored one This Week style plus a section order and a hidden list.
+    static let legacyStyleKey = "home.weekStyle"
+    static let legacyOrderKey = "home.sectionOrder"
+    static let legacyHiddenKey = "home.hiddenSections"
 
     var id: String { rawValue }
+
+    /// The cards that draw this week; the first one on Home is titled This Week and shows its date range.
+    var isWeekCard: Bool { [.rings, .pace, .muscleWeek, .bars].contains(self) }
 
     var title: String {
         switch self {
         case .rings: return "Rings"
         case .pace: return "Pace"
-        case .muscles: return "Muscles"
-        case .bars: return "Bars"
+        case .muscleWeek: return "Muscle Week"
+        case .bars: return "Daily Volume"
+        case .calendar: return "Last 4 Weeks"
+        case .recent: return "Recent Training"
+        case .muscles: return "Muscle Focus"
+        case .body: return "Body"
+        case .pinned: return "Pinned Charts"
+        case .records: return "Recent Records"
+        case .nextWorkout: return "Next Workout"
+        case .trainingTrend: return "Training Trend"
+        case .muscleLoad: return "Muscle Load"
         }
     }
 
@@ -30,8 +48,17 @@ enum HomeWeekStyle: String, CaseIterable, Identifiable {
         switch self {
         case .rings: return "Volume, sets and workouts close as you match last week."
         case .pace: return "Your running volume against last week's line."
-        case .muscles: return "Which muscle groups you trained on each day."
+        case .muscleWeek: return "Which muscle groups you trained on each day."
         case .bars: return "Volume for each day of the week."
+        case .calendar: return "The days you trained over the last four weeks."
+        case .recent: return "Your latest workouts, ready to repeat."
+        case .muscles: return "Weekly sets for each muscle group against your target."
+        case .body: return "Body weight trend and measurements."
+        case .pinned: return "Exercise charts you pinned."
+        case .records: return "New personal records from the last 30 days."
+        case .nextWorkout: return "The saved workout that's up next, ready to start."
+        case .trainingTrend: return "Duration, volume or reps by week or month."
+        case .muscleLoad: return "Muscles you trained over the last 7 days."
         }
     }
 
@@ -39,47 +66,64 @@ enum HomeWeekStyle: String, CaseIterable, Identifiable {
         switch self {
         case .rings: return "circle.circle"
         case .pace: return "chart.line.uptrend.xyaxis"
-        case .muscles: return "circle.grid.3x3"
+        case .muscleWeek: return "circle.grid.3x3"
         case .bars: return "chart.bar"
-        }
-    }
-}
-
-/// The sections Home can show, stored as the user arranged them.
-enum HomeSection: String, CaseIterable, Identifiable {
-    case week, calendar, recent, muscles, body, pinned
-
-    static let orderKey = "home.sectionOrder"
-    static let hiddenKey = "home.hiddenSections"
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .week: return "This Week"
-        case .calendar: return "Last 4 Weeks"
-        case .recent: return "Recent Training"
-        case .muscles: return "Muscle Focus"
-        case .body: return "Body"
-        case .pinned: return "Pinned Charts"
+        case .calendar: return "calendar"
+        case .recent: return "clock.arrow.circlepath"
+        case .muscles: return "figure.strengthtraining.traditional"
+        case .body: return "figure"
+        case .pinned: return "pin"
+        case .records: return "trophy"
+        case .nextWorkout: return "list.bullet.clipboard"
+        case .trainingTrend: return "chart.bar.xaxis"
+        case .muscleLoad: return "figure.arms.open"
         }
     }
 
-    /// The stored order, then any section added since the user last arranged Home.
-    static func ordered(_ stored: String) -> [HomeSection] {
+    /// The saved cards in order, merging Body Weight into Body before skipping unknown and repeated names.
+    /// An empty string means Home has no cards.
+    static func decode(_ stored: String) -> [HomeSection] {
         var seen = Set<HomeSection>()
-        let saved = stored.split(separator: ",")
-            .compactMap { HomeSection(rawValue: String($0)) }
+        return stored.split(separator: ",")
+            .compactMap { HomeSection(rawValue: canonicalName(String($0))) }
             .filter { seen.insert($0).inserted }
-        return saved + allCases.filter { !seen.contains($0) }
     }
 
-    static func hidden(_ stored: String) -> Set<HomeSection> {
-        Set(stored.split(separator: ",").compactMap { HomeSection(rawValue: String($0)) })
+    private static func canonicalName(_ name: String) -> String {
+        name == "bodyWeight" ? "body" : name
     }
 
-    static func encode<S: Sequence>(_ sections: S) -> String where S.Element == HomeSection {
-        sections.map(\.rawValue).joined(separator: ",")
+    static func encode<S: Sequence>(_ cards: S) -> String where S.Element == HomeSection {
+        cards.map(\.rawValue).joined(separator: ",")
+    }
+
+    /// The saved cards, or the build 71 layout carried over, or the default layout.
+    static func resolve(_ stored: String?, defaults: UserDefaults = .standard) -> [HomeSection] {
+        if let stored { return decode(stored) }
+        return migrated(
+            style: defaults.string(forKey: legacyStyleKey),
+            order: defaults.string(forKey: legacyOrderKey),
+            hidden: defaults.string(forKey: legacyHiddenKey)
+        )
+    }
+
+    /// Build 71's layout as cards: its single This Week section becomes the card for the style it showed.
+    static func migrated(style: String?, order: String?, hidden: String?) -> [HomeSection] {
+        guard style != nil || order != nil || hidden != nil else { return defaultCards }
+        let legacy = ["week", "calendar", "recent", "muscles", "body", "pinned"]
+        let hiddenNames = Set((hidden ?? "").split(separator: ",").map { canonicalName(String($0)) })
+        var names = (order ?? "").split(separator: ",").map { canonicalName(String($0)) }.filter { legacy.contains($0) }
+        names += legacy.filter { !names.contains($0) }
+        let weekCard: HomeSection = switch style {
+        case "pace": .pace
+        case "muscles": .muscleWeek
+        case "bars": .bars
+        default: .rings
+        }
+        var seen = Set<HomeSection>()
+        return names.filter { !hiddenNames.contains($0) }
+            .compactMap { $0 == "week" ? weekCard : HomeSection(rawValue: $0) }
+            .filter { seen.insert($0).inserted }
     }
 }
 
@@ -89,6 +133,80 @@ enum WeeklySetTarget {
     static let highKey = "home.weeklySetTargetHigh"
     static let defaultLow = 10
     static let defaultHigh = 20
+}
+
+/// Spoken Home metrics use full units rather than the compact chart labels.
+enum HomeCardSpeech {
+    static func number(_ value: Double, maximumFractionDigits: Int = 1) -> String {
+        let magnitude = abs(value)
+        let scale: (Double, String)
+        switch magnitude {
+        case 1_000_000_000...: scale = (1_000_000_000, " billion")
+        case 1_000_000...: scale = (1_000_000, " million")
+        case 1_000...: scale = (1_000, " thousand")
+        default: scale = (1, "")
+        }
+        return (value / scale.0).formatted(.number.precision(.fractionLength(0...maximumFractionDigits))) + scale.1
+    }
+
+    static func count(_ value: Int, singular: String, plural: String) -> String {
+        "\(number(Double(value))) \(value == 1 ? singular : plural)"
+    }
+
+    static func weightUnit(_ unit: WeightUnit) -> String {
+        unit == .metric ? "kilograms" : "pounds"
+    }
+
+    static func displayWeight(_ value: Double, unit: WeightUnit) -> String {
+        "\(number(value)) \(weightUnit(unit))"
+    }
+
+    static func weight(_ kilograms: Double, unit: WeightUnit) -> String {
+        displayWeight(WeightUnit.convert(weight: kilograms, from: .metric, to: unit), unit: unit)
+    }
+
+    static func duration(_ seconds: TimeInterval, includesSeconds: Bool = false) -> String {
+        let minutes = max(Int(seconds / 60), 0)
+        let remainingSeconds = max(Int(seconds), 0) % 60
+        guard minutes > 0 else {
+            return includesSeconds ? count(remainingSeconds, singular: "second", plural: "seconds") : "less than 1 minute"
+        }
+        let hours = minutes / 60
+        let remaining = minutes % 60
+        return [hours > 0 ? count(hours, singular: "hour", plural: "hours") : nil,
+                remaining > 0 ? count(remaining, singular: "minute", plural: "minutes") : nil,
+                includesSeconds && remainingSeconds > 0 ? count(remainingSeconds, singular: "second", plural: "seconds") : nil]
+            .compactMap { $0 }.joined(separator: " ")
+    }
+}
+
+/// Display-only regions are one element; interactive siblings remain reachable.
+struct HomeCardAccessibilitySummary: ViewModifier {
+    let title: String
+    let value: String
+    var isSummary = false
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(title)
+            .accessibilityValue(value)
+            .accessibilityAddTraits(isSummary ? .isSummaryElement : [])
+            .accessibilitySortPriority(1)
+    }
+}
+
+struct HomeCardAccessibilityContainer: ViewModifier {
+    var isSingleElement = false
+
+    func body(content: Content) -> some View {
+        if isSingleElement {
+            // Do not replace an existing display-only summary's ignore behavior.
+            content.accessibilitySortPriority(0)
+        } else {
+            content.accessibilityElement(children: .contain)
+        }
+    }
 }
 
 // MARK: - Week summary
@@ -247,19 +365,25 @@ struct WeekRingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Text(summary.lastWorkouts > 0
-                 ? "Each ring closes when you match last week."
-                 : "Nothing was logged last week, so any training closes a ring.")
-                .font(.footnote)
-                .foregroundStyle(IronTheme.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
             Divider()
 
             dayStrip
         }
         .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: hasAppeared)
         .onAppear { hasAppeared = true }
+    }
+
+    func accessibilitySummary(weightUnit: WeightUnit) -> String {
+        let volume = HomeCardSpeech.weight(summary.volume, unit: weightUnit)
+        let volumeTarget = summary.lastVolume > 0
+            ? "Volume \(HomeCardSpeech.number(WeightUnit.convert(weight: summary.volume, from: .metric, to: weightUnit))) of \(HomeCardSpeech.weight(summary.lastVolume, unit: weightUnit))"
+            : "Volume \(volume)"
+        let sets = summary.lastSets > 0 ? "\(summary.sets) of \(summary.lastSets) sets" : HomeCardSpeech.count(summary.sets, singular: "set", plural: "sets")
+        let workouts = summary.lastWorkouts > 0 ? "\(summary.workouts) of \(summary.lastWorkouts) workouts" : HomeCardSpeech.count(summary.workouts, singular: "workout", plural: "workouts")
+        let meaning = summary.lastWorkouts > 0
+            ? "Each ring closes when you match last week."
+            : "Nothing was logged last week, so any training closes a ring."
+        return "\(volumeTarget), \(sets), \(workouts). \(meaning)"
     }
 
     private var ringStack: some View {
@@ -333,16 +457,6 @@ struct WeekRingsView: View {
                     .accessibilityValue(day.volume > 0 ? "\(valueLabel(day.volume)) \(unit)" : day.isFuture ? "Upcoming" : "Rest day")
                 }
             }
-
-            if best > 0, let top = summary.days.first(where: { $0.volume == best }) {
-                (Text("Best day \(top.date.formatted(.dateTime.weekday(.wide))) · ")
-                 + Text(valueLabel(top.volume))
-                    .font(.ironMetric(.footnote, weight: .semibold))
-                    .foregroundColor(IronTheme.metricVolume)
-                 + Text(" \(unit)").font(.caption).foregroundColor(IronTheme.secondaryText))
-                    .font(.footnote)
-                    .foregroundStyle(IronTheme.secondaryText)
-            }
         }
     }
 }
@@ -386,39 +500,32 @@ struct WeekPaceView: View {
     }
 
     /// How far ahead of or behind last week's running total this week is, at the end of the same weekday.
-    private var comparison: (text: String, symbol: String?, tint: Color) {
+    private var comparison: (difference: Double, detail: String) {
         let now = thisWeek[min(todayEnd, thisWeek.count - 1)]
         let then = lastWeek[min(todayEnd, lastWeek.count - 1)]
-        guard summary.lastVolume > 0 else {
-            return ("Nothing logged last week", nil, IronTheme.secondaryText)
-        }
         let difference = now - then
-        guard abs(difference) > max(then, 1) * 0.03 else {
-            return ("Level with last \(weekdayName)", "equal", IronTheme.secondaryText)
+        guard summary.lastVolume > 0 else {
+            return (abs(difference), "Nothing logged last week")
         }
-        let amount = "\(valueLabel(abs(difference))) \(unit)"
+        guard abs(difference) > max(then, 1) * 0.03 else {
+            return (abs(difference), "even with last \(weekdayName)")
+        }
         return difference > 0
-            ? ("\(amount) ahead of last \(weekdayName)", "arrow.up", IronTheme.metricVolume)
-            : ("\(amount) behind last \(weekdayName)", "arrow.down", IronTheme.secondaryText)
+            ? (difference, "ahead of last \(weekdayName)")
+            : (abs(difference), "behind last \(weekdayName)")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                IronChartHeader(
-                    caption: "Volume so far",
-                    value: IronChartText.value(valueLabel(summary.volume), unit: unit, tint: IronTheme.metricVolume, style: .title)
-                )
                 let pace = comparison
-                Label {
-                    Text(pace.text)
-                } icon: {
-                    if let symbol = pace.symbol { Image(systemName: symbol) }
-                }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(pace.tint)
-                .labelStyle(.titleAndIcon)
+                IronMetricValue(value: valueLabel(pace.difference), unit: unit,
+                                style: .title, weight: .bold, tint: IronTheme.primaryText)
+                Text(pace.detail)
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
             }
+            .accessibilityElement(children: .combine)
 
             chart
 
@@ -478,9 +585,14 @@ struct WeekPaceView: View {
             }
         }
         .frame(height: 150)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Running volume this week against last week")
-        .accessibilityValue("\(valueLabel(summary.volume)) \(unit) so far. \(comparison.text). Last week finished at \(valueLabel(summary.lastVolume)) \(unit).")
+    }
+
+    func accessibilitySummary(weightUnit: WeightUnit) -> String {
+        let pace = comparison
+        let description = summary.lastVolume > 0
+            ? "\(HomeCardSpeech.weight(pace.difference, unit: weightUnit)) \(pace.detail)"
+            : pace.detail
+        return "This week's running volume compared with last week. \(HomeCardSpeech.weight(summary.volume, unit: weightUnit)) so far. \(description). Last week finished at \(HomeCardSpeech.weight(summary.lastVolume, unit: weightUnit))."
     }
 
     private func legendItem(dashed: Bool, title: String) -> some View {
@@ -541,6 +653,13 @@ struct MuscleWeekGrid: View {
             }
             sizeKey
         }
+    }
+
+    var accessibilitySummary: String {
+        let details = groups.map { group in
+            "\(HomeWeekSummary.displayName(group)): \(accessibilityValue(group, sets: summary.muscleSets[group] ?? []))"
+        }.joined(separator: " ")
+        return "Muscle groups trained each day this week; larger dots mean more sets. \(details)" + (restedInsight.map { " " + $0 } ?? "")
     }
 
     private var headerRow: some View {
@@ -804,41 +923,66 @@ struct WeeklySetsChart: View {
 
 // MARK: - Customize Home
 
-/// Fitness-style editor for Home: the This Week style, the weekly set target, and which sections show.
+/// Fitness-style Edit Summary for Home: the cards on Home in order, the cards that can be added, and the weekly set target.
 struct CustomizeHomeSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(HomeWeekStyle.storageKey) private var weekStyle = HomeWeekStyle.rings.rawValue
-    @AppStorage(HomeSection.orderKey) private var storedOrder = ""
-    @AppStorage(HomeSection.hiddenKey) private var storedHidden = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(HomeSection.cardsKey) private var storedCards: String?
     @AppStorage(WeeklySetTarget.lowKey) private var targetLow = WeeklySetTarget.defaultLow
     @AppStorage(WeeklySetTarget.highKey) private var targetHigh = WeeklySetTarget.defaultHigh
 
-    private var shownCount: Int { HomeSection.allCases.count - HomeSection.hidden(storedHidden).count }
+    private var cards: [HomeSection] { HomeSection.resolve(storedCards) }
+    private var available: [HomeSection] { HomeSection.allCases.filter { !cards.contains($0) } }
+
+    private func update(_ change: (inout [HomeSection]) -> Void) {
+        var updated = cards
+        change(&updated)
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+            storedCards = HomeSection.encode(updated)
+        }
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    Picker("This Week", selection: $weekStyle) {
-                        ForEach(HomeWeekStyle.allCases) { style in
-                            Label {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(style.title)
-                                        .foregroundStyle(IronTheme.primaryText)
-                                    Text(style.summary)
-                                        .font(.footnote)
-                                        .foregroundStyle(IronTheme.secondaryText)
-                                }
-                            } icon: {
-                                Image(systemName: style.systemImage)
-                            }
-                            .tag(style.rawValue)
-                        }
+                    ForEach(cards) { card in
+                        cardLabel(card)
                     }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
+                    .onMove { source, destination in update { $0.move(fromOffsets: source, toOffset: destination) } }
+                    .onDelete { offsets in update { $0.remove(atOffsets: offsets) } }
                 } header: {
-                    Text("This Week")
+                    Text("On Home")
+                } footer: {
+                    Text(cards.isEmpty
+                         ? "Add a card below to fill Home."
+                         : "Drag to change the order.")
+                }
+
+                if !available.isEmpty {
+                    Section {
+                        // Row IDs differ from On Home's, so an added card arrives as a new editable row
+                        // rather than this row moved across, which would keep its non-editable cell.
+                        ForEach(available, id: \.addRowID) { card in
+                            Button {
+                                update { $0.append(card) }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "plus.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(IronTheme.success)
+                                    cardLabel(card)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Add \(card.title)")
+                            .accessibilityHint(card.summary)
+                        }
+                    } header: {
+                        Text("Add to Home")
+                    }
                 }
 
                 Section {
@@ -855,15 +999,14 @@ struct CustomizeHomeSheet: View {
                 }
 
                 Section {
-                    NavigationLink {
-                        HomeSectionsEditor()
-                    } label: {
-                        LabeledContent("Sections", value: "\(shownCount) of \(HomeSection.allCases.count) shown")
+                    Button("Restore Default Layout") {
+                        update { $0 = HomeSection.defaultCards }
                     }
-                } footer: {
-                    Text("Choose which sections appear on Home and in what order.")
+                    .buttonStyle(.borderless)
+                    .disabled(cards == HomeSection.defaultCards)
                 }
             }
+            .environment(\.editMode, .constant(.active))
             .navigationTitle("Customize Home")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -873,56 +1016,25 @@ struct CustomizeHomeSheet: View {
             }
         }
     }
+
+    private func cardLabel(_ card: HomeSection) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(card.title)
+                    .foregroundStyle(IronTheme.primaryText)
+                Text(card.summary)
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .multilineTextAlignment(.leading)
+        } icon: {
+            Image(systemName: card.systemImage)
+                .foregroundStyle(IronTheme.accent)
+        }
+    }
 }
 
-/// Show, hide and reorder Home's sections.
-struct HomeSectionsEditor: View {
-    @AppStorage(HomeSection.orderKey) private var storedOrder = ""
-    @AppStorage(HomeSection.hiddenKey) private var storedHidden = ""
-
-    private var order: [HomeSection] { HomeSection.ordered(storedOrder) }
-    private var hidden: Set<HomeSection> { HomeSection.hidden(storedHidden) }
-
-    var body: some View {
-        List {
-            Section {
-                ForEach(order) { section in
-                    let isShown = !hidden.contains(section)
-                    Button {
-                        var updated = hidden
-                        if isShown { updated.insert(section) } else { updated.remove(section) }
-                        storedHidden = HomeSection.encode(HomeSection.allCases.filter { updated.contains($0) })
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: isShown ? "checkmark.circle.fill" : "circle")
-                                .font(.title3)
-                                .foregroundStyle(isShown ? IronTheme.accent : IronTheme.tertiaryText)
-                            Text(section.title)
-                                .foregroundStyle(IronTheme.primaryText)
-                        }
-                    }
-                    .accessibilityValue(isShown ? "Shown" : "Hidden")
-                    .accessibilityHint(isShown ? "Hides this section from Home" : "Shows this section on Home")
-                }
-                .onMove { source, destination in
-                    var updated = order
-                    updated.move(fromOffsets: source, toOffset: destination)
-                    storedOrder = HomeSection.encode(updated)
-                }
-            } footer: {
-                Text("Tap a section to show or hide it. Drag to change the order.")
-            }
-
-            Section {
-                Button("Restore Default Layout") {
-                    storedOrder = ""
-                    storedHidden = ""
-                }
-                .disabled(storedOrder.isEmpty && storedHidden.isEmpty)
-            }
-        }
-        .environment(\.editMode, .constant(.active))
-        .navigationTitle("Sections")
-        .navigationBarTitleDisplayMode(.inline)
-    }
+private extension HomeSection {
+    var addRowID: String { "add." + rawValue }
 }

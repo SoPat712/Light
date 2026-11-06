@@ -131,12 +131,13 @@ extension UserDefaults {
         }
     }
 
-    /// Debug builds protect the owner's real Health data by default.
+    /// Off by default: the owner uses debug builds for real training (2026-11-02), so
+    /// workouts and effort go to Apple Health unless test mode is switched on deliberately.
     /// Release builds ignore even a preference left by an installed debug build.
     var healthTestMode: Bool {
         get {
             #if DEBUG
-            object(forKey: SettingsKeys.healthTestMode.rawValue) as? Bool ?? true
+            return object(forKey: SettingsKeys.healthTestMode.rawValue) as? Bool ?? false
             #else
             false
             #endif
